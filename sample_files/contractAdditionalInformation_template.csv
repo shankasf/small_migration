@@ -1,0 +1,12 @@
+FieldName,FieldType,Required,Description,ValidationRules,AgreementTypes
+Contract_ID,VARCHAR(50),Yes,Unique contract identifier,Must match existing contract,All
+Contract_Name,VARCHAR(255),Yes,Contract display name,Max 255 characters,All
+Agreement_Type,VARCHAR(50),Yes,Type of agreement,Must be one of: funder_2_LOA;funder_2_Outcome_Agreement;funder_2_Migration_Variation,All
+Supplier_Name,VARCHAR(255),Yes,Primary supplier name,Must exist in supplier master,All
+Contract_Value,NUMBER(18;2),Yes,Total contract value,Must be positive number,All
+Start_Date,DATE,Yes,Contract start date,Must be valid date format YYYY-MM-DD,All
+End_Date,DATE,Yes,Contract end date,Must be after Start_Date,All
+Status,VARCHAR(20),Yes,Contract status,Active;Inactive;Pending;Terminated,All
+Supplier_Performance_Reports,BOOLEAN,No,Flag for supplier performance reporting,TRUE or FALSE,funder_2_LOA;funder_2_Outcome_Agreement
+Performance_Score,NUMBER(3;0),No,Supplier performance score,0-100,funder_2_LOA;funder_2_Outcome_Agreement
+Last_Review_Date,DATE,No,Last performance review date,Must be valid date,funder_2_LOA;funder_2_Outcome_Agreement

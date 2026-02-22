@@ -1,0 +1,12 @@
+Target_Field,Source_Database,Source_Schema,Source_Table_Name,Source_Columns,Selection,Transform_Rules,Notes
+Contract_ID,CLM_DB,CONTRACT,CONTRACTS,contract_id,WHERE active = 1,TRIM(contract_id),Primary key mapping
+Contract_Name,CLM_DB,CONTRACT,CONTRACTS,contract_name,WHERE active = 1,UPPER(contract_name),Standardize to uppercase
+Agreement_Type,CLM_DB,CONTRACT,CONTRACT_TYPES,type_code,JOIN on contract_id,"CASE WHEN type_code = 'LOA' THEN 'funder_2_LOA' WHEN type_code = 'OA' THEN 'funder_2_Outcome_Agreement' ELSE 'funder_2_Migration_Variation' END",Map source codes to AMS types
+Supplier_Name,CLM_DB,VENDOR,SUPPLIERS,supplier_name,JOIN on supplier_id,TRIM(supplier_name),Direct mapping
+Contract_Value,CLM_DB,CONTRACT,CONTRACT_FINANCIALS,total_value,JOIN on contract_id,COALESCE(total_value; 0),Handle nulls
+Start_Date,CLM_DB,CONTRACT,CONTRACTS,effective_date,WHERE active = 1,TO_DATE(effective_date),Convert to standard date
+End_Date,CLM_DB,CONTRACT,CONTRACTS,expiry_date,WHERE active = 1,TO_DATE(expiry_date),Convert to standard date
+Status,CLM_DB,CONTRACT,CONTRACTS,status_code,WHERE active = 1,"CASE WHEN status_code = 'A' THEN 'Active' WHEN status_code = 'I' THEN 'Inactive' WHEN status_code = 'P' THEN 'Pending' ELSE 'Terminated' END",Map status codes
+Supplier_Performance_Reports,CLM_DB,VENDOR,SUPPLIER_METRICS,has_performance_reporting,JOIN on supplier_id,"CASE WHEN has_performance_reporting = 'Y' THEN TRUE ELSE FALSE END",New field - convert Y/N to boolean
+Performance_Score,CLM_DB,VENDOR,SUPPLIER_METRICS,perf_score,JOIN on supplier_id,COALESCE(perf_score; 0),Handle null scores
+Last_Review_Date,CLM_DB,VENDOR,SUPPLIER_METRICS,last_review_dt,JOIN on supplier_id,TO_DATE(last_review_dt),Convert date format

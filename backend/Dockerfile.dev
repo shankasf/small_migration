@@ -1,0 +1,23 @@
+# Development Dockerfile with hot reload using tsx watch
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install OpenSSL and other dependencies for Prisma
+RUN apt-get update && apt-get install -y openssl libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies first (cached layer)
+COPY package*.json ./
+RUN npm install
+
+# Copy prisma schema and generate client
+COPY prisma ./prisma/
+RUN npx prisma generate
+
+# Source code will be mounted as volume
+# No COPY of source needed
+
+EXPOSE 3001
+
+# Run tsx watch for hot reload
+CMD ["npm", "run", "dev"]

@@ -1,0 +1,90 @@
+You
+hi
+
+02:09 PM
+Migration Agent
+Hi—tell me which AdditionalInfo field you want to add/migrate (exact field name from the template), and I’ll pull its template requirements, mapping, and generate the ADD_INFO + STG_ADD_INFO DBT SQL updates.
+
+02:10 PM
+You
+[Attached: AMS_AI_DBT_ADD_INFO-input.txt, AMS_AI_DBT_STG_ADD_INF-input.txt, AMS_Maps_AI_Input.xlsx, contractAdditionalInformationtemplate-AI-Input.xlsx]
+
+give sql migration code
+
+02:10 PM
+Migration Agent
+STEP 1 — Template analysis
+Found in template: Supplier Performance Reports → field name supplier_performance_reports — Type: Boolean (lookups include Monthly/Quarterly/6 Monthly/Annual etc.; template marks it NOT nullable).
+
+STEP 2 — Mapping review
+Mapping: CLM.SYS.CLM.Contract.FREQUENCYID → Transform:
+case when frequencyid='NONE' then 'None' when '1MONT' then 'Monthly Reports' when '3MONT' then 'Quarterly Reports' when '6MONT' then '6 Monthly Reports' when 'ANOCT' then 'Annual Reports' end
+Note: mapping outputs text, but template type is Boolean → we should load a Boolean like TRUE when FREQUENCYID <> 'NONE' else FALSE (or confirm vendor expects a text/list field instead).
+
+SQL
+
+Copy
+-- ADD_INFO model update (source + transform)
+-- Add to select list in AMS_AI_DBT_ADD_INFO (additional_info model)
+,sc.frequencyid
+,iff(sc.frequencyid is null or sc.frequencyid = 'NONE', false, true) as supplier_performance_reports
+SQL
+
+Copy
+-- STG_ADD_INFO model update (staging field)
+-- Add to select list in AMS_AI_DBT_STG_ADD_INF
+,ai.supplier_performance_reports as supplier_performance_reports
+Want me to generate downloadable .sql files?
+
+02:10 PM
+You
+Not fully correct yet.
+
+Your Boolean approach (iff(frequencyid is null or 'NONE', false, true)) matches the template’s “field type = Boolean”, but it does not match the template’s lookup values (Monthly/Quarterly/Annual etc.) and it also diverges from the mapping sheet logic (which maps FREQUENCYID to the text labels like “Monthly Reports”, “Quarterly Reports”, etc.).
+
+What to change
+If the vendor truly wants the frequency label list (as the lookups suggest), keep it as a text/varchar mapping (Monthly Reports / Quarterly Reports / etc.), not a Boolean.
+
+If you must output Boolean anyway, then you still need to apply the additional condition you provided earlier: “when sc.transitionalfunder <> 'MDP' then null”. (Also note: this conflicts with “not nullable” in the template—so you may need false instead of null if AMS rejects nulls.)
+​
+
+Correct Boolean version (including MDP condition)
+sql
+,case
+    when sc.transitionalfunder <> 'MDP' then null   -- or false if vendor really enforces NOT NULL
+    when sc.frequencyid is null or sc.frequencyid = 'NONE' then false
+    else true
+ end as supplier_performance_reports
+And the staging passthrough is fine:
+
+sql
+,ai.supplier_performance_reports as supplier_performance_reports
+
+02:13 PM
+Migration Agent
+STEP 1 — Template analysis
+Found in template: Supplier Performance Reports → field name supplier_performance_reports — Type: Boolean (lookups list Monthly/Quarterly/6 Monthly/Annual etc., but field type is Boolean).
+
+STEP 2 — Mapping review
+Mapping: CLM.SYS.CLM.Contract.FREQUENCYID → Transform: map FREQUENCYID codes to reporting frequency labels (NONE/1MONT/3MONT/6MONT/ANOCT). Note: mapping logic is text labels, which conflicts with template Boolean—so below is the Boolean presence implementation.
+
+STEP 3 — Generate code
+SQL
+
+Copy
+-- ADD_INFO model update (source + transform)
+-- Add this column to the SELECT list in additional_info (ADD_INFO) model
+
+,case
+    when sc.transitionalfunder <> 'MDP' then null   -- use false instead if AMS enforces NOT NULL
+    when sc.frequencyid is null or sc.frequencyid = 'NONE' then false
+    else true
+ end as supplier_performance_reports
+SQL
+
+Copy
+-- STG_ADD_INFO model update (staging field)
+-- Add this column to the SELECT list in STG_ADD_INFO model
+
+,ai.supplier_performance_reports as supplier_performance_reports
+Want me to generate downloadable .sql files?

@@ -1,0 +1,59 @@
+Prompt
+
+ 
+
+We are producing a data migration. The data object we are migrating is a contract. AdditionalInfo is one table of the migration, and contains additional information about the contract.
+
+ 
+
+The data migration solution is built in DBT in SQL and creates Snowflake tables. The migration is already built.
+
+ 
+
+Other models already exist earlier in the lineage which select the contracts. There are two models that form additional info
+
+ 
+
+The source solution is called CLM. The target is called AMS.
+
+ 
+
+In the most recent release to AMS the Additionalinfo table got a new field "Supplier_Performance_reporting" I want th
+
+ 
+
+Inputs:
+
+1) This is a template provided by the target vendor about the table they require. The template defines for each row the fields of the table they need and data type and the rules for data provided. The table is to have one row per contract. fields are populated depending on the agreement type,
+
+there are three types "funder_2_LOA" "funder_2_Outcome_Agreement" and "funder_2_Migration Variation"
+
+ 
+
+2) This is a mapping document explaining how we will create the table requested in the template with references to source in fields
+
+ 
+
+3) AMS_AI_DBT-ADD_INFO-input contains the dbt model which creates a  table of transformed source solution data prepared for staging.
+
+ 
+
+4) AMS_AI_DBT_STG_ADD_INF-input is the dbt model which creates the table for consumption by the vendor, it must meet requirements of template in input 1
+
+ 
+
+Step 1:
+
+Please open contractAdditionalInformation-aitable and confirm the requirements to add  new field "Supplier Performance Reports" into the table produced by model "AMS_AI_DBT_STG_ADD_INFO" by looking at fieldname, fieldtype
+
+ 
+
+Step 2:
+
+Please open mapping document and review the mapping we've created in the row for "Supplier Performance Reports" in columns 'Source Data Base', 'Source Schema', 'Source Table Name', 'Source Columns' and 'Selection' to determine data source and transform rules.
+
+ 
+
+Step 3:
+
+Please update the model AMS_AI_DBT-ADD_INFO to add code to source and transform data based on information sourced in prior step and then update subsequent model AMS_AI_DBT_STF_ADD_INFO" add code to build the new field into the staging table and populate with transformed data from previous model.

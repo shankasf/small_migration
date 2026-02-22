@@ -1,0 +1,412 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: migration-agent
+
+# NOTE: ConfigMap and Secret are managed by deploy.sh script
+# They are created from .env file - do not hardcode values here
+# Run: ./deploy.sh to create/update ConfigMap and Secret from .env
+
+---
+# Outputs PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: outputs-pvc
+  namespace: migration-agent
+spec:
+  storageClassName: local-path
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# AI Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: migration-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-service
+  template:
+    metadata:
+      labels:
+        app: ai-service
+    spec:
+      containers:
+        - name: ai-service
+          image: migration-agent-ai-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8084
+          env:
+            - name: PORT
+              value: "8084"
+            - name: OPENAI_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-agent-config
+                  key: OPENAI_MODEL
+            - name: OUTPUT_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-agent-config
+                  key: OUTPUT_DIR
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: OPENAI_API_KEY
+          volumeMounts:
+            - name: outputs
+              mountPath: /data/outputs
+            - name: ai-service-code
+              mountPath: /app
+            - name: env-file
+              mountPath: /app/.env
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /ai/health
+              port: 8084
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ai/health
+              port: 8084
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: outputs
+          persistentVolumeClaim:
+            claimName: outputs-pvc
+        - name: ai-service-code
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/ai-service
+            type: Directory
+        - name: env-file
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/.env
+            type: File
+
+---
+# AI Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-service
+  namespace: migration-agent
+spec:
+  selector:
+    app: ai-service
+  ports:
+    - port: 8084
+      targetPort: 8084
+
+---
+# Backend Deployment (Dev mode with hot reload)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: migration-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: migration-agent-backend-dev:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+          env:
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-agent-config
+                  key: PORT
+            - name: AI_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-agent-config
+                  key: AI_SERVICE_URL
+            - name: CORS_ORIGIN
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-agent-config
+                  key: CORS_ORIGIN
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: backend-src
+              mountPath: /app/src
+            - name: backend-prisma
+              mountPath: /app/prisma
+            - name: env-file
+              mountPath: /app/.env
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: backend-src
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/backend/src
+            type: Directory
+        - name: backend-prisma
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/backend/prisma
+            type: Directory
+        - name: env-file
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/.env
+            type: File
+
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: migration-agent
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 3001
+      targetPort: 3001
+
+---
+# Frontend Deployment (Dev mode with hot reload)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: migration-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: migration-agent-frontend-dev:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5173
+          volumeMounts:
+            - name: frontend-src
+              mountPath: /app/src
+            - name: frontend-public
+              mountPath: /app/public
+            - name: frontend-index
+              mountPath: /app/index.html
+            - name: frontend-vite-config
+              mountPath: /app/vite.config.ts
+            - name: frontend-tsconfig
+              mountPath: /app/tsconfig.json
+            - name: frontend-tsconfig-node
+              mountPath: /app/tsconfig.node.json
+            - name: frontend-tailwind-config
+              mountPath: /app/tailwind.config.js
+            - name: frontend-postcss-config
+              mountPath: /app/postcss.config.js
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5173
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5173
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: frontend-src
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/src
+            type: Directory
+        - name: frontend-public
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/public
+            type: Directory
+        - name: frontend-index
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/index.html
+            type: File
+        - name: frontend-vite-config
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/vite.config.ts
+            type: File
+        - name: frontend-tsconfig
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/tsconfig.json
+            type: File
+        - name: frontend-tsconfig-node
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/tsconfig.node.json
+            type: File
+        - name: frontend-tailwind-config
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/tailwind.config.js
+            type: File
+        - name: frontend-postcss-config
+          hostPath:
+            path: /home/ubuntu/apps/small_migration/frontend/postcss.config.js
+            type: File
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: migration-agent
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 5173
+      targetPort: 5173
+
+---
+# Ingress with TLS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: migration-agent-ingress
+  namespace: migration-agent
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.middlewares: migration-agent-strip-prefix@kubernetescrd
+spec:
+  tls:
+    - hosts:
+        - migration.callsphere.tech
+      secretName: migration-agent-tls
+  rules:
+    - host: migration.callsphere.tech
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 3001
+          - path: /ai
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-service
+                port:
+                  number: 8084
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 5173
+
+---
+# Traefik Middleware for API paths
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-prefix
+  namespace: migration-agent
+spec:
+  stripPrefix:
+    prefixes: []
+
+---
+# HorizontalPodAutoscaler for Backend (disabled for dev mode)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: migration-agent
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# PodDisruptionBudget for Backend
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: migration-agent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: backend
