@@ -278,7 +278,7 @@ export default function ChatInput({
 
         {/* Helper text */}
         <p className="text-[11px] text-gray-400 text-center mt-3 tracking-wide">
-          Callsphere migration agent can make mistakes, please verify responses manually.
+          Circini migration agent can make mistakes, please verify responses manually.
         </p>
       </div>
     </div>

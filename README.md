@@ -1,6 +1,6 @@
-# Data Migration Agent
+# Circini Migration Agent
 
-A full-stack application for AI-powered DBT/SQL data migrations with a ChatGPT-like interface.
+An AI-powered DBT/SQL data migration assistant with a ChatGPT-like interface. Upload your mapping documents, templates, and existing DBT models — then chat with the agent to analyze, generate, and download updated Snowflake-compatible DBT models.
 
 ## Architecture
 
@@ -22,22 +22,30 @@ A full-stack application for AI-powered DBT/SQL data migrations with a ChatGPT-l
 ```
 small_migration/
 ├── frontend/           # React + Vite + TypeScript (ChatGPT-like UI)
-├── backend/            # Node.js + Express + Prisma
-├── ai-service/         # Python FastAPI (migration agent logic)
+├── backend/            # Node.js + Express + Prisma + Socket.IO
+├── ai-service/         # Python FastAPI (migration agent + STT)
+│   ├── routes/
+│   │   ├── migration.py    # Chat & migration endpoints
+│   │   └── stt.py          # Speech-to-text (Whisper)
+│   ├── utils/
+│   │   └── realtime_logger.py
+│   └── config.py
 ├── kubernetes/         # K8s deployment manifests
 ├── sample_files/       # Sample migration files for testing
-├── output/             # Generated files storage
-├── app.py              # Legacy Streamlit UI (still available)
-└── agent.py            # Original agent logic (referenced by ai-service)
+├── output/             # Generated files storage (local dev)
+└── app.py              # Legacy Streamlit UI (still available)
 ```
 
 ## Features
 
-- **Chat Interface**: ChatGPT-like UI with conversation history
-- **Session Management**: Create, switch, and delete chat sessions
-- **File Upload**: Drag & drop support for template, mapping, and DBT files
-- **AI-Powered Migration**: Analyze files and generate updated DBT models
-- **Download Generated Files**: Export updated SQL files
+- **Chat Interface**: ChatGPT-like UI with persistent conversation history
+- **Session Management**: Create, switch, search, and delete chat sessions with resizable sidebar
+- **File Upload**: Attach up to 10 files per message (CSV, XLSX, SQL, JSON, YAML, and more)
+- **Voice Input**: Record audio directly in the chat — transcribed via OpenAI Whisper (`gpt-4o-transcribe`)
+- **AI Migration Agent**: Analyze templates and mapping documents, then generate complete Snowflake-compatible DBT models
+- **Realtime Logs**: Live status updates streamed from the AI service during processing
+- **Download Generated Files**: Export updated SQL files directly from chat messages
+- **Session TTL**: In-memory sessions auto-evict after 1 hour of inactivity (max 50 concurrent)
 
 ## Local Development
 
@@ -47,7 +55,17 @@ small_migration/
 - Python 3.12+
 - PostgreSQL 15+ (running on localhost)
 
-### 1. Start AI Service
+### Quick Start (all services)
+
+```bash
+./start-dev.sh
+```
+
+This starts all three services simultaneously and prints their URLs.
+
+### Manual Start
+
+#### 1. Start AI Service
 
 ```bash
 cd ai-service
@@ -55,27 +73,27 @@ source venv/bin/activate
 uvicorn main:app --port 8084 --reload
 ```
 
-### 2. Start Backend
+#### 2. Start Backend
 
 ```bash
 cd backend
 npm run dev
 ```
 
-### 3. Start Frontend
+#### 3. Start Frontend
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-### 4. Access Application
+#### 4. Access Application
 
 Open http://localhost:5173
 
 ## Environment Variables
 
-### Backend (backend/.env)
+### Backend (`backend/.env`)
 ```env
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/migration_agent?schema=public"
 AI_SERVICE_URL="http://localhost:8084"
@@ -83,12 +101,13 @@ PORT=3001
 CORS_ORIGIN="http://localhost:5173"
 ```
 
-### AI Service (ai-service/.env)
+### AI Service (`ai-service/.env`)
 ```env
 OPENAI_API_KEY=your-api-key
 OPENAI_MODEL=gpt-5.2
 PORT=8084
 OUTPUT_DIR=/home/ubuntu/apps/small_migration/output
+BACKEND_URL=http://localhost:3001
 ```
 
 ## Kubernetes Deployment
@@ -128,30 +147,52 @@ kubectl get pods -n migration-agent
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | /ai/health | Health check |
-| POST | /ai/chat | Process message |
-| GET | /ai/status/:id | Get migration status |
-| POST | /ai/reset/:id | Reset session |
+| POST | /ai/chat | Process message with agent |
+| GET | /ai/status/:id | Get session file status |
+| POST | /ai/reset/:id | Reset session state and agent |
+| POST | /ai/stt | Transcribe audio to text (Whisper) |
+
+## Agent Tools
+
+The migration agent has access to these tools per session:
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Store an uploaded file in session memory |
+| `generate_output` | Write a generated SQL model to disk and return it |
+| `list_files` | List all input and output files in the session |
+| `get_file_content` | Retrieve content of a stored input or output file |
 
 ## Usage
 
-1. **Create a new chat** - Click "New Chat" in the sidebar
-2. **Upload files** - Drop your template, mapping, and DBT files
-3. **Ask questions** - "Analyze the template" or "What mappings are available?"
-4. **Generate files** - "Generate the updated DBT models"
-5. **Download outputs** - Click download buttons for generated SQL files
+1. **Create a new chat** — Click "New chat" in the sidebar or start typing on the welcome screen
+2. **Upload files** — Click the paperclip icon to attach template, mapping, ADD_INFO, and STG files
+3. **Use voice input** — Click the mic icon to dictate your question (transcribed automatically)
+4. **Ask questions** — "Analyze the template" or "What mappings are available?"
+5. **Generate files** — "Generate the updated DBT models"
+6. **Download outputs** — Click download buttons attached to the AI response
 
-## File Types
+## Supported File Types
 
 | Category | Description | Example |
 |----------|-------------|---------|
-| Template | Field requirements | contractAdditionalInformation_template.csv |
-| Mapping | Source-to-target mappings | mapping_document.csv |
-| ADD_INFO | DBT transformation model | AMS_AI_DBT_ADD_INFO.sql |
-| STG | DBT staging model | AMS_AI_DBT_STG_ADD_INFO.sql |
+| Template | Field requirements & nullability rules | `contractAdditionalInformation_template.csv` |
+| Mapping | Source-to-target field mappings | `mapping_document.csv` |
+| ADD_INFO | DBT transformation model | `AMS_AI_DBT_ADD_INFO.sql` |
+| STG | DBT staging model | `AMS_AI_DBT_STG_ADD_INFO.sql` |
+
+File extensions accepted: `.csv`, `.xlsx`, `.xls`, `.txt`, `.sql`, `.json`, `.xml`, `.md`, `.py`, `.js`, `.ts`, `.yaml`, `.yml`, `.log`
+
+## Tech Stack
+
+- **Frontend**: React 18, Vite, TypeScript, TailwindCSS, Socket.IO client, Lucide icons
+- **Backend**: Node.js, Express, Prisma, PostgreSQL, Socket.IO, Multer
+- **AI Service**: Python, FastAPI, OpenAI Agents SDK, OpenAI Whisper (STT)
+- **Deployment**: K3s, Traefik, cert-manager
 
 ## Legacy Streamlit UI
 
-The original Streamlit UI is still available:
+The original Streamlit UI is still available for quick local testing:
 
 ```bash
 source venv/bin/activate
@@ -160,30 +201,10 @@ streamlit run app.py
 
 Access at http://localhost:8501
 
-## Tech Stack
-
-- **Frontend**: React 18, Vite, TypeScript, TailwindCSS
-- **Backend**: Node.js, Express, Prisma, PostgreSQL
-- **AI Service**: Python, FastAPI, OpenAI Agents SDK
-- **Deployment**: K3s, Traefik, cert-manager
-
-## Agent Tools
-
-The migration agent has access to these tools:
-
-| Tool | Description |
-|------|-------------|
-| `read_template_file` | Parse template requirements |
-| `read_mapping_document` | Extract source-target mappings |
-| `read_dbt_add_info_model` | Analyze ADD_INFO model |
-| `read_dbt_stg_add_info_model` | Analyze STG model |
-| `generate_updated_dbt_add_info` | Create updated ADD_INFO |
-| `generate_updated_dbt_stg_add_info` | Create updated STG |
-| `generate_analysis_report` | Create migration report |
-| `get_migration_status` | Check progress |
-
 ## Troubleshooting
 
-- **API Key Error**: Ensure `OPENAI_API_KEY` is set in ai-service/.env
-- **Database Error**: Ensure PostgreSQL is running and database exists
-- **Port Conflicts**: Check ports 3001, 5173, 8084 are available
+- **API Key Error**: Ensure `OPENAI_API_KEY` is set in `ai-service/.env`
+- **Database Error**: Ensure PostgreSQL is running and the database exists; run `cd backend && npx prisma db push` to sync the schema
+- **Port Conflicts**: Check ports 3001, 5173, and 8084 are available
+- **Voice not working**: Browser microphone permission must be granted; HTTPS required in production
+- **Session lost after restart**: Files are re-hydrated from the database on the next message automatically

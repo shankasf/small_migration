@@ -5,7 +5,7 @@ set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "Starting Migration Agent Development Environment..."
+echo "Starting Circini Migration Agent Development Environment..."
 
 # Function to cleanup on exit
 cleanup() {
@@ -39,7 +39,7 @@ FRONTEND_PID=$!
 
 echo ""
 echo "========================================="
-echo "Migration Agent is starting..."
+echo "Circini Migration Agent is starting..."
 echo "========================================="
 echo "Frontend:   http://localhost:5173"
 echo "Backend:    http://localhost:3001"

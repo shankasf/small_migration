@@ -1,7 +1,7 @@
 {
-  "name": "migration-agent-backend",
+  "name": "circini-migration-agent-backend",
   "version": "1.0.0",
-  "description": "Backend API for Data Migration Agent",
+  "description": "Backend API for Circini Migration Agent",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

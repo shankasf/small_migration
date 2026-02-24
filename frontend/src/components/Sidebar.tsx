@@ -134,7 +134,7 @@ const Sidebar = memo(function Sidebar({
           <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
             <Sparkles className="w-3.5 h-3.5 text-white" />
           </div>
-          <span className="text-xs font-semibold text-gray-700">Migration Agent</span>
+          <span className="text-xs font-semibold text-gray-700">Circini Migration Agent</span>
         </div>
         <button
           onClick={onToggle}

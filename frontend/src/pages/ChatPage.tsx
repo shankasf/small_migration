@@ -47,7 +47,7 @@ const ChatPage = memo(function ChatPage({
           <div className="w-7" />
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 text-blue-600" />
-            <h1 className="text-sm font-medium text-gray-800">CallSphere Migration Agent</h1>
+            <h1 className="text-sm font-medium text-gray-800">Circini Migration Agent</h1>
           </div>
           <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center">
             <User className="w-3.5 h-3.5 text-gray-500" />
@@ -87,7 +87,7 @@ const ChatPage = memo(function ChatPage({
         <div className="flex flex-col items-center">
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 text-blue-600" />
-            <h1 className="text-sm font-medium text-gray-800">CallSphere Migration Agent</h1>
+            <h1 className="text-sm font-medium text-gray-800">Circini Migration Agent</h1>
           </div>
           {uploadedFiles.length > 0 && (
             <span className="text-[10px] text-green-600 mt-0.5">

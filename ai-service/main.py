@@ -1,5 +1,5 @@
 """
-Data Migration Agent - FastAPI Service
+Circini Migration Agent - FastAPI Service
 Wraps the existing agent logic with a REST API
 """
 
@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
     print("AI Service shutting down")
 
 app = FastAPI(
-    title="Migration Agent AI Service",
+    title="Circini Migration Agent AI Service",
     description="AI-powered data migration assistant",
     version="1.0.0",
     lifespan=lifespan
@@ -48,7 +48,7 @@ app.include_router(stt_router, prefix="/ai", tags=["STT"])
 
 @app.get("/")
 async def root():
-    return {"message": "Migration Agent AI Service", "version": "1.0.0"}
+    return {"message": "Circini Migration Agent AI Service", "version": "1.0.0"}
 
 @app.get("/ai/health")
 async def health_check():

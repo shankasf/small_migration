@@ -1,5 +1,5 @@
 """
-Data Migration Agent - Streamlit UI
+Circini Migration Agent - Streamlit UI
 Persistent chat threads with clean interface
 """
 
@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="Migration Agent",
+    page_title="Circini Migration Agent",
     page_icon="database",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -154,7 +154,7 @@ def clear_chat():
 # Header
 col1, col2 = st.columns([4, 1])
 with col1:
-    st.markdown("## Migration Agent")
+    st.markdown("## Circini Migration Agent")
 with col2:
     if st.session_state.messages:
         if st.button("Clear Chat"):

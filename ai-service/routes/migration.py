@@ -1,5 +1,5 @@
 """
-dbt Migration Agent - FastAPI Routes
+Circini Migration Agent - FastAPI Routes
 """
 
 import os
