@@ -1,130 +1,146 @@
 # Circini Migration Agent
 
-An AI-powered DBT/SQL data migration assistant with a ChatGPT-like interface. Upload your mapping documents, templates, and existing DBT models — then chat with the agent to analyze, generate, and download updated Snowflake-compatible DBT models.
+AI-powered DBT/SQL data migration assistant with a ChatGPT-like interface for analyzing mapping documents and generating Snowflake-compatible DBT models.
+
+## Tech Stack
+
+- **Frontend**: React 18, Vite, TypeScript, TailwindCSS, Socket.IO client, React Markdown, React Syntax Highlighter
+- **Backend**: Node.js, Express, TypeScript, Prisma, PostgreSQL, Socket.IO, Multer (file uploads)
+- **AI Service**: Python, FastAPI, OpenAI Agents SDK, OpenAI Whisper (speech-to-text via `gpt-4o-transcribe`)
+- **Database**: PostgreSQL
+- **Deployment**: Kubernetes (K3s), Docker, Traefik, cert-manager
 
 ## Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  React Frontend │────▶│ Node/Express    │────▶│ Python AI       │
-│  Port: 5173     │     │ Port: 3001      │     │ Port: 8084      │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                               │                        │
-                               ▼                        ▼
-                        ┌─────────────────┐     ┌─────────────────┐
-                        │  PostgreSQL     │     │ PersistentVolume│
-                        │  Port: 5432     │     │ /data/outputs   │
-                        └─────────────────┘     └─────────────────┘
+Frontend (React/Vite)      Backend (Express)         AI Service (FastAPI)
+    :5173            --->      :3001            --->      :8084
+                                  |                          |
+                                  v                          v
+                            PostgreSQL               OpenAI API
+                            (Prisma ORM)             (Agents SDK + Whisper)
+                                                     PersistentVolume (/data/outputs)
 ```
+
+## Features
+
+- **Chat Interface**: ChatGPT-style UI with persistent conversation history stored in PostgreSQL
+- **Session Management**: Create, switch, search, rename, and delete chat sessions with a resizable sidebar
+- **File Upload**: Attach up to 10 files per message (CSV, XLSX, SQL, JSON, YAML, TXT, XML, MD, PY, JS, TS, LOG)
+- **Voice Input**: Record audio in the browser, transcribed server-side via OpenAI Whisper (`gpt-4o-transcribe`)
+- **AI Migration Agent**: Analyzes template and mapping documents, then generates Snowflake-compatible DBT SQL models using the OpenAI Agents SDK
+- **Realtime Logs**: Live status updates streamed from the AI service to the frontend via Socket.IO during processing
+- **File Downloads**: Export generated SQL output files directly from chat messages
+- **Session TTL**: In-memory agent sessions auto-evict after 1 hour of inactivity (max 50 concurrent)
+- **File Re-hydration**: Session files are automatically reloaded from the database when resuming a conversation
+- **Legacy Streamlit UI**: Original single-file Streamlit interface still available for quick local testing
 
 ## Project Structure
 
 ```
 small_migration/
-├── frontend/           # React + Vite + TypeScript (ChatGPT-like UI)
-├── backend/            # Node.js + Express + Prisma + Socket.IO
-├── ai-service/         # Python FastAPI (migration agent + STT)
+├── frontend/              # React + Vite + TypeScript
+│   └── src/
+│       ├── components/    # ChatArea, ChatInput, FileUpload, MessageBubble, Sidebar
+│       ├── hooks/         # useRealtimeLogs (Socket.IO)
+│       ├── pages/         # ChatPage
+│       ├── services/      # API client
+│       └── types/         # TypeScript interfaces
+├── backend/               # Node.js + Express + Prisma
+│   ├── prisma/            # Schema (Session, Message, UploadedFile, GeneratedOutput)
+│   └── src/
+│       ├── routes/        # sessions, chat, files, stt
+│       └── services/      # aiService (proxy to AI service)
+├── ai-service/            # Python FastAPI
 │   ├── routes/
-│   │   ├── migration.py    # Chat & migration endpoints
-│   │   └── stt.py          # Speech-to-text (Whisper)
-│   ├── utils/
-│   │   └── realtime_logger.py
-│   └── config.py
-├── kubernetes/         # K8s deployment manifests
-├── sample_files/       # Sample migration files for testing
-├── output/             # Generated files storage (local dev)
-└── app.py              # Legacy Streamlit UI (still available)
+│   │   ├── migration.py   # Chat and migration endpoints
+│   │   └── stt.py         # Speech-to-text (Whisper)
+│   ├── utils/             # Realtime log broadcasting
+│   └── config.py          # Settings from environment
+├── kubernetes/            # K8s deployment manifests and deploy script
+├── sample_files/          # Sample template/mapping files for testing
+├── output/                # Generated files storage (local dev)
+├── app.py                 # Legacy Streamlit UI
+├── agent.py               # Legacy standalone agent script
+├── requirements.txt       # Python deps for legacy Streamlit agent
+└── start-dev.sh           # Start all 3 services for local development
 ```
 
-## Features
-
-- **Chat Interface**: ChatGPT-like UI with persistent conversation history
-- **Session Management**: Create, switch, search, and delete chat sessions with resizable sidebar
-- **File Upload**: Attach up to 10 files per message (CSV, XLSX, SQL, JSON, YAML, and more)
-- **Voice Input**: Record audio directly in the chat — transcribed via OpenAI Whisper (`gpt-4o-transcribe`)
-- **AI Migration Agent**: Analyze templates and mapping documents, then generate complete Snowflake-compatible DBT models
-- **Realtime Logs**: Live status updates streamed from the AI service during processing
-- **Download Generated Files**: Export updated SQL files directly from chat messages
-- **Session TTL**: In-memory sessions auto-evict after 1 hour of inactivity (max 50 concurrent)
-
-## Local Development
+## Setup
 
 ### Prerequisites
 
 - Node.js 20+
 - Python 3.12+
-- PostgreSQL 15+ (running on localhost)
+- PostgreSQL 15+
 
-### Quick Start (all services)
+### 1. Environment Variables
+
+**Backend** (`backend/.env`):
+
+```
+DATABASE_URL=postgresql://user:password@localhost:5432/migration_agent?schema=public
+AI_SERVICE_URL=http://localhost:8084
+PORT=3001
+CORS_ORIGIN=http://localhost:5173
+```
+
+**AI Service** (`ai-service/.env`):
+
+```
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.2
+PORT=8084
+OUTPUT_DIR=/path/to/output
+BACKEND_URL=http://localhost:3001
+```
+
+### 2. Install Dependencies
+
+```bash
+# Backend
+cd backend
+npm install
+npx prisma generate
+npx prisma db push
+
+# Frontend
+cd ../frontend
+npm install
+
+# AI Service
+cd ../ai-service
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Run Locally
+
+The quickest way to start all services:
 
 ```bash
 ./start-dev.sh
 ```
 
-This starts all three services simultaneously and prints their URLs.
+This launches:
+- Frontend at http://localhost:5173
+- Backend at http://localhost:3001
+- AI Service at http://localhost:8084
 
-### Manual Start
+Press Ctrl+C to stop all services.
 
-#### 1. Start AI Service
-
-```bash
-cd ai-service
-source venv/bin/activate
-uvicorn main:app --port 8084 --reload
-```
-
-#### 2. Start Backend
+To start services individually:
 
 ```bash
-cd backend
-npm run dev
-```
+# AI Service
+cd ai-service && source venv/bin/activate && uvicorn main:app --port 8084 --reload
 
-#### 3. Start Frontend
+# Backend
+cd backend && npm run dev
 
-```bash
-cd frontend
-npm run dev
-```
-
-#### 4. Access Application
-
-Open http://localhost:5173
-
-## Environment Variables
-
-### Backend (`backend/.env`)
-```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/migration_agent?schema=public"
-AI_SERVICE_URL="http://localhost:8084"
-PORT=3001
-CORS_ORIGIN="http://localhost:5173"
-```
-
-### AI Service (`ai-service/.env`)
-```env
-OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=gpt-5.2
-PORT=8084
-OUTPUT_DIR=/home/ubuntu/apps/small_migration/output
-BACKEND_URL=http://localhost:3001
-```
-
-## Kubernetes Deployment
-
-Deploy to K3s at migration.callsphere.tech:
-
-```bash
-# Build and push images
-docker build -t migration-agent-frontend:latest ./frontend
-docker build -t migration-agent-backend:latest ./backend
-docker build -t migration-agent-ai:latest ./ai-service
-
-# Apply manifests
-kubectl apply -f kubernetes/deployment.yaml
-
-# Check status
-kubectl get pods -n migration-agent
+# Frontend
+cd frontend && npm run dev
 ```
 
 ## API Endpoints
@@ -136,18 +152,18 @@ kubectl get pods -n migration-agent
 | GET | /api/health | Health check |
 | POST | /api/sessions | Create session |
 | GET | /api/sessions | List sessions |
-| GET | /api/sessions/:id | Get session |
+| GET | /api/sessions/:id | Get session with messages |
 | DELETE | /api/sessions/:id | Delete session |
-| POST | /api/chat/:id/messages | Send message |
-| POST | /api/files/:id/upload | Upload files |
-| GET | /api/files/output/:id/download | Download output |
+| POST | /api/chat/:id/messages | Send message (proxies to AI) |
+| POST | /api/files/:id/upload | Upload files to session |
+| GET | /api/files/output/:id/download | Download generated output |
 
 ### AI Service (port 8084)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | /ai/health | Health check |
-| POST | /ai/chat | Process message with agent |
+| POST | /ai/chat | Process message with migration agent |
 | GET | /ai/status/:id | Get session file status |
 | POST | /ai/reset/:id | Reset session state and agent |
 | POST | /ai/stt | Transcribe audio to text (Whisper) |
@@ -163,48 +179,38 @@ The migration agent has access to these tools per session:
 | `list_files` | List all input and output files in the session |
 | `get_file_content` | Retrieve content of a stored input or output file |
 
-## Usage
-
-1. **Create a new chat** — Click "New chat" in the sidebar or start typing on the welcome screen
-2. **Upload files** — Click the paperclip icon to attach template, mapping, ADD_INFO, and STG files
-3. **Use voice input** — Click the mic icon to dictate your question (transcribed automatically)
-4. **Ask questions** — "Analyze the template" or "What mappings are available?"
-5. **Generate files** — "Generate the updated DBT models"
-6. **Download outputs** — Click download buttons attached to the AI response
-
 ## Supported File Types
 
 | Category | Description | Example |
 |----------|-------------|---------|
-| Template | Field requirements & nullability rules | `contractAdditionalInformation_template.csv` |
+| Template | Field requirements and nullability rules | `contractAdditionalInformation_template.csv` |
 | Mapping | Source-to-target field mappings | `mapping_document.csv` |
 | ADD_INFO | DBT transformation model | `AMS_AI_DBT_ADD_INFO.sql` |
 | STG | DBT staging model | `AMS_AI_DBT_STG_ADD_INFO.sql` |
 
-File extensions accepted: `.csv`, `.xlsx`, `.xls`, `.txt`, `.sql`, `.json`, `.xml`, `.md`, `.py`, `.js`, `.ts`, `.yaml`, `.yml`, `.log`
+## Kubernetes Deployment
 
-## Tech Stack
+```bash
+# Build images
+docker build -t migration-agent-frontend:latest ./frontend
+docker build -t migration-agent-backend:latest ./backend
+docker build -t migration-agent-ai:latest ./ai-service
 
-- **Frontend**: React 18, Vite, TypeScript, TailwindCSS, Socket.IO client, Lucide icons
-- **Backend**: Node.js, Express, Prisma, PostgreSQL, Socket.IO, Multer
-- **AI Service**: Python, FastAPI, OpenAI Agents SDK, OpenAI Whisper (STT)
-- **Deployment**: K3s, Traefik, cert-manager
+# Deploy
+kubectl apply -f kubernetes/deployment.yaml
+
+# Check status
+kubectl get pods -n migration-agent
+```
 
 ## Legacy Streamlit UI
 
-The original Streamlit UI is still available for quick local testing:
+The original Streamlit interface is still available:
 
 ```bash
 source venv/bin/activate
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
 Access at http://localhost:8501
-
-## Troubleshooting
-
-- **API Key Error**: Ensure `OPENAI_API_KEY` is set in `ai-service/.env`
-- **Database Error**: Ensure PostgreSQL is running and the database exists; run `cd backend && npx prisma db push` to sync the schema
-- **Port Conflicts**: Check ports 3001, 5173, and 8084 are available
-- **Voice not working**: Browser microphone permission must be granted; HTTPS required in production
-- **Session lost after restart**: Files are re-hydrated from the database on the next message automatically
