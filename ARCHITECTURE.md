@@ -404,52 +404,299 @@ graph TB
 
 ### 9.1 Agent Architecture
 
+The agent is built on the **OpenAI Agents SDK** (`openai-agents >= 0.0.7`). A single `Agent` instance is created per session, cached in memory, and reused across messages.
+
 ```mermaid
 graph TB
-    subgraph Agent["OpenAI Agent (gpt-5.2-2025-12-11)"]
-        SP["System Prompt<br/>dbt migration specialist<br/>Never truncate, always validate"]
-        
-        subgraph Tools["4 Function Tools"]
-            T1["read_file()<br/>Store file in session memory"]
-            T2["generate_output()<br/>Save SQL to disk + memory"]
-            T3["list_files()<br/>Show all session files"]
-            T4["get_file_content()<br/>Retrieve file content"]
+    subgraph AgentSDK["OpenAI Agents SDK"]
+        subgraph AgentInstance["Agent: MigrationAgent"]
+            SP["System Prompt<br/>(~2,500 word instruction set)<br/>Role: dbt migration specialist"]
+            MS["ModelSettings<br/>model: gpt-5.2<br/>reasoning.effort: low<br/>max_tokens: 16,000<br/>extra_body: {background: true}"]
         end
+
+        subgraph Tools["4 Function Tools (per-session closure)"]
+            T1["read_file(file_name, content)<br/>→ stores in session_storage.files"]
+            T2["generate_output(file_name, content)<br/>→ writes to /data/outputs + session_storage.outputs"]
+            T3["list_files()<br/>→ returns input + output file inventory"]
+            T4["get_file_content(file_name)<br/>→ retrieves from files or outputs dict"]
+        end
+
+        Runner["Runner.run_streamed(agent, messages)<br/>Consumes stream events to completion<br/>Returns result.final_output (string)"]
     end
 
     SP --> Tools
-    Agent -->|"Max 16K tokens<br/>Reasoning: low"| Output["Generated SQL Models"]
+    Tools --> Runner
+    Runner -->|"final_output"| Response["ChatResponse<br/>{response, generated_files[]}"]
 
-    style Agent fill:#ede9fe,stroke:#8b5cf6
+    style AgentSDK fill:#ede9fe,stroke:#8b5cf6
+    style Tools fill:#fef3c7,stroke:#f59e0b
 ```
 
-### 9.2 Session Lifecycle
+**Agent instantiation** (`get_or_create_agent()` in `migration.py`):
+```python
+Agent(
+    name="MigrationAgent",
+    instructions=INSTRUCTIONS,       # ~2,500 word system prompt
+    model=settings.OPENAI_MODEL,     # "gpt-5.2" from env/config
+    tools=tools,                     # 4 function_tool closures
+    model_settings=ModelSettings(
+        reasoning=Reasoning(effort="low"),  # lightweight reasoning for speed
+        max_tokens=16000,
+        extra_body={"background": True},    # background processing mode
+    )
+)
+```
+
+### 9.2 Session Management
+
+Three in-memory dictionaries manage session state in the AI service:
+
+| Dictionary | Key | Value | Purpose |
+|-----------|-----|-------|---------|
+| `session_storage` | session_id | `{"files": {}, "outputs": {}, "output_folder": None}` | File content for agent tools |
+| `session_agents` | session_id | `Agent` instance | Cached agent with bound tools |
+| `session_last_access` | session_id | `float` (timestamp) | TTL tracking |
+
+**Eviction** (`_evict_stale_sessions()`, called on every storage access):
+1. Delete sessions idle > `SESSION_TTL_SECONDS` (3600s / 1 hour)
+2. If count > `SESSION_MAX_COUNT` (50), evict oldest by access time
+
+**Rehydration**: When backend sends `request.files` dict, the AI service repopulates `session_storage["files"]` from the request payload (files originally persisted in PostgreSQL by the backend).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> New: Create Session
-    New --> Active: First Message
-    Active --> Active: Subsequent Messages
-    Active --> Evicted: Idle > 1 hour
-    Evicted --> Active: New Request (rehydrate from DB)
-    Active --> Deleted: User Deletes Session
+    [*] --> New: First message for session_id
+    New --> Active: Agent created + tools bound
 
     state New {
-        [*] --> CreateAgent: Create Agent instance
-        CreateAgent --> RegisterTools: Register 4 tools
-        RegisterTools --> InitStorage: Initialize empty storage
+        [*] --> EvictCheck: _evict_stale_sessions()
+        EvictCheck --> CreateStorage: Init {files:{}, outputs:{}, output_folder:None}
+        CreateStorage --> CreateAgent: Agent() with 4 tool closures
+        CreateAgent --> CacheAgent: Store in session_agents dict
     }
 
-    state Active {
-        [*] --> ReuseAgent: Reuse cached Agent
-        ReuseAgent --> SharedStorage: Tools share session storage
-        SharedStorage --> HistoryPerReq: History passed per request
-    }
+    Active --> Active: Subsequent messages (reuse cached agent)
+    Active --> Evicted: Idle > 1 hour (or >50 sessions)
+    Evicted --> Active: New request triggers rehydration from DB
+    Active --> Reset: POST /ai/reset/{session_id}
+    Reset --> [*]: Delete from all 3 dicts
 ```
 
-### 9.3 SQL Generation Rules
+### 9.3 Tool Implementations
 
-The agent enforces strict dbt SQL rules: `{{ ref('...') }}` for model references, all CTEs for every JOIN, all mapped fields propagated to final SELECT, template datatype matching, `IFNULL()` for nulls, WHERE clauses for filtering, ELSE in all CASE statements, and self-validation before output.
+Each tool is a `@function_tool`-decorated closure that captures the session's storage reference:
+
+**`read_file(file_name: str, content: str) -> str`**
+- Stores `content` in `storage["files"][file_name]`
+- Returns: `"File '{file_name}' loaded ({len(content)} characters)."`
+- Called by agent when it processes uploaded file content from the user message
+
+**`generate_output(file_name: str, content: str) -> str`**
+- Creates output folder if needed: `/data/outputs/{session_id}/{YYYY-MM-DD_HH-MM-SS}/`
+- Writes file to disk: `Path(output_folder/file_name).write_text(content)`
+- Stores in `storage["outputs"][file_name]`
+- Returns: `"File saved to: {saved_path}"`
+
+**`list_files() -> str`**
+- Returns formatted string: `"Input files: a.csv, b.sql\nOutput files: model.sql\nOutput folder: /path"`
+
+**`get_file_content(file_name: str) -> str`**
+- Searches `storage["files"]` first, then `storage["outputs"]`
+- Returns file content or `"File '{file_name}' not found."`
+
+### 9.4 Chat Request Processing (POST /ai/chat)
+
+The complete flow from request to response:
+
+```mermaid
+sequenceDiagram
+    participant BE as Backend
+    participant EP as POST /ai/chat
+    participant SS as Session Storage
+    participant AG as Cached Agent
+    participant RN as Runner.run_streamed()
+    participant OAI as OpenAI API
+    participant RL as RealtimeLogger
+    participant DSK as /data/outputs (disk)
+
+    BE->>EP: {session_id, message, files?, history?}
+    EP->>SS: get_session_storage(session_id)<br/>triggers _evict_stale_sessions()
+    EP->>RL: Create RealtimeLogger(session_id)
+
+    alt request.files exists AND storage.files is empty
+        EP->>SS: Hydrate: storage.files = request.files<br/>(pod restart recovery)
+    end
+
+    Note over EP: Build user message string:<br/>"[Uploaded files: a.csv, b.sql]\n[a.csv]:\n{content}\n..."
+
+    Note over EP: Build messages list:<br/>1. Append each history entry as {role, content}<br/>2. Append current message as {role: "user"}
+
+    EP->>SS: Snapshot existing output keys<br/>(to detect only NEW outputs)
+
+    EP->>RL: await logger.ai_thinking("Processing your request...")
+    EP->>AG: get_or_create_agent(session_id)
+    EP->>RL: await logger.thinking("AI agent is analyzing...")
+    EP->>RN: Runner.run_streamed(agent, messages)
+    RN->>OAI: Agent execution with tools
+    
+    loop Agent tool calls
+        OAI-->>RN: Tool call (read_file / generate_output / etc.)
+        RN->>SS: Execute tool against session storage
+        opt generate_output called
+            RN->>DSK: Write .sql file to disk
+        end
+        RN-->>OAI: Tool result
+    end
+
+    OAI-->>RN: Final response text
+    RN-->>EP: result.final_output
+
+    EP->>RL: await logger.complete("Response ready")
+
+    Note over EP: Build generated_files[]:<br/>Only outputs NOT in snapshot (new this turn)<br/>Each: {name, path, content}
+
+    EP-->>BE: ChatResponse {response, generated_files[]}
+    EP->>RL: await logger.close()
+```
+
+**Request payload** (`ChatRequest`):
+```python
+{
+    "session_id": "uuid",
+    "message": "Add field X to the staging model",
+    "files": {"template.csv": "content...", "mapping.csv": "content..."},  # optional
+    "history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]  # optional
+}
+```
+
+**Response payload** (`ChatResponse`):
+```python
+{
+    "response": "Here is the updated model with field X added...",
+    "generated_files": [
+        {"name": "AMS_AI_DBT_STG_ADD_INFO_updated.sql", "path": "/data/outputs/.../file.sql", "content": "SELECT..."}
+    ]
+}
+```
+
+### 9.5 Message Construction
+
+The backend constructs the AI service request in `chat.ts`:
+
+1. Fetches session with uploaded files and last 20 messages (DESC order)
+2. Builds `files` dict: `{filename: content}` from all `UploadedFile` rows with non-empty content
+3. Reverses messages to chronological order, maps to `[{role, content}]`
+4. Sends to AI service with 600-second timeout (10 minutes)
+
+The AI service then augments the user message with file context:
+```
+[Uploaded files: template.csv, mapping.csv, reference_model.sql]
+[template.csv]:
+{full CSV content}
+[mapping.csv]:
+{full CSV content}
+{original user message}
+```
+
+### 9.6 System Prompt (Agent Instructions)
+
+The agent operates under a ~2,500 word instruction set with 4 sections:
+
+**Hard Rules** (never skip):
+1. Confirm base/dependency model before writing FROM clause — never guess `{{ ref('...') }}` targets
+2. Never drop a CTE between regenerations — compare against previous version
+3. Never truncate or omit fields — output all 50+ if needed, no `...` abbreviations
+4. Never assume or fabricate context — stop and ask clarifying questions
+
+**Workflow** (strict order):
+1. Analyze all uploaded files first using `get_file_content` tool
+2. Ask before assuming — flag TBD fields, datatype conflicts, ambiguous joins, unclear transforms
+3. Generate dbt model following code rules
+4. Run self-validation checklist
+
+**Code Generation Rules**:
+
+| Rule | Detail |
+|------|--------|
+| Source Selection | Always use `{{ ref('...') }}`, never default to base tables without explicit instruction |
+| CTEs | Every source table gets its own CTE; never drop CTEs between regenerations |
+| Field Propagation | Every mapped field must appear in final SELECT |
+| Null Handling | `IFNULL(field, default)` to replace nulls; `NULLIF` only to convert value TO null |
+| Datatype Alignment | Match template exactly; flag Boolean-vs-VARCHAR conflicts |
+| Defaults | Use template defaults; NOT NULL fields must never output NULL |
+| WHERE Clauses | Include filtering macros, filter to current/non-deleted rows |
+| CASE Expressions | Always include ELSE branch; handle NULLs explicitly |
+| Jinja Patterns | Match `{{ config() }}`, `{{ source() }}`, `{{ ref() }}` from existing models |
+| MINUS/EXCEPT | Ensure both sides produce same type and default to avoid false-positive diffs |
+
+**Self-Validation Checklist** (11 checks before output):
+1. Every mapping field present in final SELECT
+2. FROM/JOIN use ref models, not raw tables
+3. All referenced CTEs are defined
+4. Datatypes match template
+5. No `NULLIF` where `IFNULL` intended
+6. NOT NULL fields have defaults
+7. WHERE clauses present with correct source macros
+8. Row count sanity (filters implemented)
+9. CASE expressions have ELSE and handle NULLs
+10. No CTEs dropped from prior generation
+11. Defaults consistent for MINUS/EXCEPT comparisons
+
+### 9.7 Real-Time Logging
+
+The `RealtimeLogger` class sends HTTP POST requests to the backend during agent execution:
+
+```mermaid
+graph LR
+    AI["AI Service"] -->|"POST /api/logs/{sessionId}<br/>{step, message, type, data}"| BE["Backend :3001"]
+    BE -->|"Socket.IO emit('log')<br/>to room session:{sid}"| FE["Frontend"]
+    FE --> Hook["useRealtimeLogs() hook<br/>renders colored log entries"]
+
+    style AI fill:#ede9fe,stroke:#8b5cf6
+    style BE fill:#dbeafe,stroke:#3b82f6
+    style FE fill:#d1fae5,stroke:#10b981
+```
+
+| Log Method | Step | Type | When Called |
+|-----------|------|------|------------|
+| `logger.ai_thinking(msg)` | `ai_processing` | `progress` | Start of request processing |
+| `logger.thinking(msg)` | `thinking` | `thinking` | Agent begins analysis |
+| `logger.complete(msg)` | `complete` | `success` | Response ready |
+| `logger.error(msg)` | `error` | `error` | Exception during processing |
+
+Logger uses `httpx.AsyncClient(timeout=5.0)` and silently catches all exceptions — logging failures never break the main agent flow.
+
+### 9.8 Speech-to-Text
+
+The STT endpoint (`POST /ai/stt`) accepts audio uploads and returns transcribed text:
+
+1. Validates content type: `audio/*` or `application/octet-stream` (MediaRecorder default)
+2. Maps content type to extension: webm, ogg, wav, mp4, mp3 (defaults to webm)
+3. Calls `client.audio.transcriptions.create(model="gpt-4o-transcribe", file=(filename, audio_bytes))`
+4. Returns `{"text": transcript.text}`
+
+### 9.9 Backend-AI Service Integration
+
+The backend (`aiService.ts`) wraps the AI service call with:
+- **Timeout**: 600,000ms (10 minutes) for long SQL generation tasks
+- **Content-Type**: `application/json`
+- **Error handling**: Extracts error detail from AI service response, re-throws with context
+
+After receiving the AI response, the backend:
+1. Saves assistant message to `Message` table
+2. Upserts each generated file to `GeneratedOutput` table (compound unique on `sessionId_filename`)
+3. On first message, auto-names the session (first 50 chars of user message)
+
+### 9.10 Bug Fixes in Agent Code
+
+The codebase contains documented fixes for production issues:
+
+| Bug | Problem | Fix |
+|-----|---------|-----|
+| Bug 2 | Message truncation from string concatenation | Changed to structured message list with `{role, content}` objects |
+| Bug 3 | New agent created per message (lost context) | Cache agents in `session_agents` dict, reuse across messages |
+| Bug 4 | All outputs returned on every response (duplicates) | Snapshot output keys before processing, only return new outputs |
+| Bug 7 | Empty session after pod restart (lost files) | Hydrate `session_storage` from `request.files` when storage is empty |
 
 ---
 
