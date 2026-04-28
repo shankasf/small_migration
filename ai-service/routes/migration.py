@@ -280,7 +280,6 @@ def get_or_create_agent(session_id: str) -> "Agent":
             model_settings=ModelSettings(
                 reasoning=Reasoning(effort="low"),
                 max_tokens=16000,
-                extra_body={"background": True},
             )
         )
     return session_agents[session_id]
