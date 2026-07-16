@@ -70,8 +70,6 @@ spec:
               mountPath: /data/outputs
             - name: ai-service-code
               mountPath: /app
-            - name: env-file
-              mountPath: /app/.env
           resources:
             requests:
               memory: "512Mi"
@@ -99,10 +97,6 @@ spec:
           hostPath:
             path: /home/ubuntu/apps/small_migration/ai-service
             type: Directory
-        - name: env-file
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/.env
-            type: File
 
 ---
 # AI Service
@@ -167,8 +161,6 @@ spec:
               mountPath: /app/src
             - name: backend-prisma
               mountPath: /app/prisma
-            - name: env-file
-              mountPath: /app/.env
           resources:
             requests:
               memory: "256Mi"
@@ -197,10 +189,6 @@ spec:
           hostPath:
             path: /home/ubuntu/apps/small_migration/backend/prisma
             type: Directory
-        - name: env-file
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/.env
-            type: File
 
 ---
 # Backend Service

@@ -21,6 +21,8 @@ set +a
 echo "Creating Kubernetes resources from .env..."
 
 # Create ConfigMap from non-sensitive env vars
+# Server-side apply avoids the kubectl.kubernetes.io/last-applied-configuration
+# annotation that would otherwise embed values in plaintext on the object.
 kubectl create configmap migration-agent-config \
     --namespace=migration-agent \
     --from-literal=PORT="${PORT}" \
@@ -28,14 +30,18 @@ kubectl create configmap migration-agent-config \
     --from-literal=CORS_ORIGIN="${CORS_ORIGIN}" \
     --from-literal=OUTPUT_DIR="${OUTPUT_DIR}" \
     --from-literal=OPENAI_MODEL="${OPENAI_MODEL}" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --dry-run=client -o yaml \
+    | kubectl apply --server-side --force-conflicts -f -
 
 # Create Secret from sensitive env vars
+# Server-side apply is required for Secrets so the base64 values are NOT
+# stored in the last-applied-configuration annotation.
 kubectl create secret generic migration-agent-secret \
     --namespace=migration-agent \
     --from-literal=DATABASE_URL="${DATABASE_URL}" \
     --from-literal=OPENAI_API_KEY="${OPENAI_API_KEY}" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --dry-run=client -o yaml \
+    | kubectl apply --server-side --force-conflicts -f -
 
 echo "ConfigMap and Secret updated from .env"
 
