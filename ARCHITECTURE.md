@@ -1,1125 +1,514 @@
-# Circini Migration Agent — Architecture Document
+# Circini Migration Agent — Secure Architecture (New Zealand Health)
 
-> **Version**: 1.0 | **Date**: April 14, 2026  
-> **Domain**: https://migration.callsphere.tech  
-> **Repository**: https://github.com/shankasf/E-Commerce-Voice-Agent.git
+> **Version**: 2.0 | **Date**: July 20, 2026
+> **Classification**: SENSITIVE — MEDICAL IN CONFIDENCE
+> **Audience**: Client security & architecture review (New Zealand health sector)
+
+This document describes the **target secure architecture** for deploying the Circini Migration
+Agent inside a New Zealand health client's environment. It is designed to be compliant with NZ
+health information rules (Privacy Act 2020, Health Information Privacy Code 2020, HISO 10029:2022),
+cross-mapped to HIPAA-equivalent safeguards. See [§14 Sources & Compliance References](#14-sources--compliance-references).
 
 ---
 
 ## Table of Contents
 
-1. [Executive Summary](#1-executive-summary)  
-2. [Current Architecture Overview](#2-current-architecture-overview)  
-3. [System Design Flowcharts — Current](#3-system-design-flowcharts--current)  
-4. [Software & Technology Stack](#4-software--technology-stack)  
-5. [Data Flow](#5-data-flow)  
-6. [Data at Rest / Storage](#6-data-at-rest--storage)  
-7. [Hosting & Infrastructure](#7-hosting--infrastructure)  
-8. [Security](#8-security)  
-9. [AI Agent Design](#9-ai-agent-design)  
-10. [API Surface](#10-api-surface)  
-11. [Monitoring & Observability](#11-monitoring--observability)  
-12. [Known Limitations](#12-known-limitations)  
-13. [Scalable Architecture Plan](#13-scalable-architecture-plan)  
-14. [System Design Flowcharts — Scalable](#14-system-design-flowcharts--scalable)  
-15. [Migration Roadmap: Current to Scalable](#15-migration-roadmap-current-to-scalable)
+1. [Executive Summary](#1-executive-summary)
+2. [Compliance Basis & Data Classification](#2-compliance-basis--data-classification)
+3. [High-Level Design (HLD)](#3-high-level-design-hld)
+4. [Technology Stack](#4-technology-stack)
+5. [Data Formats Ingested & Processed](#5-data-formats-ingested--processed)
+6. [Data Flow Diagram (DFD) & Trust Boundaries](#6-data-flow-diagram-dfd--trust-boundaries)
+7. [Authentication & Authorization (Entra ID / AD)](#7-authentication--authorization-entra-id--ad)
+8. [Data Protection & Security Controls](#8-data-protection--security-controls)
+9. [AI Governance & Guardrails](#9-ai-governance--guardrails)
+10. [Observability & Telemetry (OpenTelemetry)](#10-observability--telemetry-opentelemetry)
+11. [Deployment View — AWS Infrastructure Security](#11-deployment-view--aws-infrastructure-security)
+12. [Low-Level Design (LLD)](#12-low-level-design-lld)
+13. [Compliance Control Matrix — How Each Concern Is Ensured](#13-compliance-control-matrix--how-each-concern-is-ensured)
+14. [Sources & Compliance References](#14-sources--compliance-references)
 
 ---
 
 ## 1. Executive Summary
 
-The **Circini Migration Agent** is an AI-powered assistant that generates Snowflake-compatible DBT models for contract data migrations (CLM to AMS). Users upload mapping documents, templates, and reference SQL through a ChatGPT-like interface, and the agent produces complete, validated dbt SQL models.
+The **Circini Migration Agent** is an AI assistant that generates Snowflake-compatible dbt/SQL
+models for data migrations. Technical users upload mapping documents, templates and reference SQL
+through a chat interface; an LLM agent produces validated dbt models.
+
+Deployed in a health environment, the tool sits behind the client's identity provider (Microsoft
+**Entra ID / Active Directory**), runs on hardened **AWS** infrastructure, and reaches the LLM only
+via **Azure OpenAI** in-region with retention disabled. Every request passes through a **guardrail
+pipeline** (PII/DLP, input sanitisation, prompt-injection and malware scanning, redaction) before
+any content leaves a trust boundary, and every user action is captured as **OpenTelemetry** audit
+telemetry for AI governance.
 
 | Tier | Technology | Role |
 |------|-----------|------|
-| **Frontend** | React 18 + Vite + TypeScript | Chat UI, file upload, real-time logs |
-| **Backend** | Node.js + Express + Prisma | REST API, session management, file storage |
-| **AI Service** | Python FastAPI + OpenAI Agents SDK | LLM orchestration, SQL generation |
-
-All three run as containers in a Kubernetes (K3s) cluster, fronted by Traefik with TLS.
+| Frontend | React 18 + Vite + TypeScript | Chat UI, file upload, live logs |
+| Backend | Node.js + Express + Prisma | REST API, RBAC, guardrail enforcement |
+| AI Service | Python FastAPI + Agents SDK | LLM orchestration via Azure OpenAI |
+| Identity | Microsoft Entra ID (OIDC/SAML) | SSO, AD-group → role mapping, MFA |
+| Data | Amazon RDS PostgreSQL + S3 (KMS) | Encrypted sessions, files, outputs |
 
 ---
 
-## 2. Current Architecture Overview
+## 2. Compliance Basis & Data Classification
+
+### 2.1 Regulatory basis
+
+| Framework | Applied to |
+|-----------|-----------|
+| **Privacy Act 2020** (13 IPPs) | Lawful collection, use, storage, access of personal information |
+| **Health Information Privacy Code 2020** (13 rules) | Health-specific handling, retention, disclosure controls |
+| **HISO 10029:2022 Health Information Security Framework** | Technical & organisational security controls baseline |
+| **HISO 10064:2017 Health Information Governance** | Governance, roles, accountability |
+| **NZISM / PSR** | Government-grade infrastructure & protective security |
+| **ISO/IEC 27001:2022** | ISMS control set |
+| **NIST AI RMF + OWASP LLM Top 10** | AI-specific risk & guardrails |
+| **HIPAA Security Rule** (cross-map) | Equivalent administrative/physical/technical safeguards |
+
+### 2.2 Two operating modes (config-gated)
+
+The tool defaults to a **metadata-only** posture. Handling of real health data is a separate,
+explicitly-enabled mode with stricter controls.
+
+| | **Mode A — Metadata-only (default)** | **Mode B — PHI-permitted (config-gated)** |
+|--|--------------------------------------|-------------------------------------------|
+| Data in scope | Schema, mappings, DDL, dbt/SQL, config, tech docs | Real health-identifiable data (e.g. NHI, patient fields) |
+| Health PII | **Blocked** by guardrails before egress | De-identified/redacted before model submission |
+| LLM egress | Redacted metadata only | In-region Azure OpenAI only, redaction enforced |
+| Audit | Standard action audit | Full access audit of every health-information touch |
+| Enabled by | Default | `PHI_MODE=true` + data-custodian sign-off |
+
+`NHI` = National Health Index number — treated as a first-class identifier for detection/redaction.
+
+---
+
+## 3. High-Level Design (HLD)
 
 ```mermaid
 graph TB
-    User["User Browser"] -->|HTTPS| Traefik["Traefik Ingress<br/>TLS: Let's Encrypt<br/>Host: migration.callsphere.tech"]
+    User["Health-sector User<br/>(managed device)"] -->|"HTTPS + MFA"| Entra["Microsoft Entra ID<br/>OIDC/SAML SSO<br/>AD groups, MFA,<br/>Conditional Access"]
+    User -->|"HTTPS 443"| WAF["AWS WAF + CloudFront<br/>Rate limit, OWASP rules,<br/>geo/IP allowlist"]
 
-    subgraph K3s["Kubernetes Cluster (K3s) — Namespace: migration-agent"]
-        Traefik -->|"/* route"| Frontend["Frontend<br/>React 18 + Vite<br/>Nginx :5173"]
-        Traefik -->|"/api/* route"| Backend["Backend<br/>Express.js + Prisma<br/>Socket.IO :3001"]
-        Backend -->|"POST /ai/chat"| AI["AI Service<br/>FastAPI + OpenAI Agents<br/>Uvicorn :8084"]
-        AI -->|"POST /api/logs"| Backend
-        Backend -->|"Socket.IO"| Frontend
+    subgraph AWS["AWS VPC — Private (ap-southeast-2, health-approved)"]
+        WAF --> ALB["Application Load Balancer<br/>TLS (ACM), JWT verify"]
+        ALB --> FE["Frontend<br/>React/Nginx"]
+        ALB --> BE["Backend / API Gateway<br/>Express + RBAC +<br/>Guardrail Pipeline"]
+        BE --> AI["AI Service<br/>FastAPI Agent"]
+        BE --> RDS[("RDS PostgreSQL<br/>KMS-encrypted, Multi-AZ")]
+        BE --> S3[("S3<br/>KMS-encrypted files/outputs")]
+        BE --> Redis[("ElastiCache Redis<br/>session/rate state")]
+        BE -->|OTLP| OTEL["OTel Collector"]
+        AI -->|OTLP| OTEL
     end
 
-    Backend -->|TCP :5432| DB[("PostgreSQL<br/>External<br/>72.62.162.83")]
-    AI -->|HTTPS| OpenAI["OpenAI API<br/>gpt-5.2 | gpt-4o-transcribe"]
-    AI -->|R/W| PV[("PersistentVolume<br/>/data/outputs<br/>10Gi")]
+    Entra -. "token validation" .-> ALB
+    OTEL --> SIEM["Client SIEM / Monitoring<br/>(CloudWatch, Splunk, Sentinel)"]
+    AI -->|"egress-controlled HTTPS<br/>redacted payload only"| AOAI["Azure OpenAI (in-region)<br/>Retention OFF, no training,<br/>Private Endpoint"]
 
-    style K3s fill:#f0f4ff,stroke:#3b82f6
-    style DB fill:#fef3c7,stroke:#f59e0b
-    style OpenAI fill:#d1fae5,stroke:#10b981
-    style PV fill:#fce7f3,stroke:#ec4899
+    style AWS fill:#f0f4ff,stroke:#3b82f6
+    style AOAI fill:#d1fae5,stroke:#10b981
+    style Entra fill:#ede9fe,stroke:#8b5cf6
+    style SIEM fill:#fef3c7,stroke:#f59e0b
 ```
+
+**Key properties:** identity is delegated to the client's Entra ID/AD; all compute runs in a private
+AWS VPC; the only outbound path is an egress-controlled, redaction-gated call to in-region Azure
+OpenAI; all data at rest is KMS-encrypted; all telemetry flows to the client's SIEM.
 
 ---
 
-## 3. System Design Flowcharts — Current
+## 4. Technology Stack
 
-### 3.1 High-Level Request Flow
+| Layer | Components |
+|-------|-----------|
+| Frontend | React 18, Vite, TypeScript, TailwindCSS, Socket.IO client |
+| Backend | Node.js 20, Express, Prisma, Socket.IO, Multer, `zod` validation |
+| AI Service | Python 3.12, FastAPI, OpenAI Agents SDK (Azure OpenAI backend), Pydantic |
+| Guardrails | Presidio (PII/DLP), ClamAV (malware), prompt-injection classifier, allow/deny lists |
+| Identity | Microsoft Entra ID (OIDC/SAML), MSAL, JWT (RS256) |
+| Data | Amazon RDS PostgreSQL 15, Amazon S3, ElastiCache Redis — all AWS KMS-encrypted |
+| Infra | Amazon EKS, ALB, AWS WAF, CloudFront, Secrets Manager, KMS, VPC private subnets |
+| Observability | OpenTelemetry SDK + Collector → CloudWatch / client SIEM |
+| LLM | Azure OpenAI (in-region, retention disabled, Private Endpoint) |
+
+---
+
+## 5. Data Formats Ingested & Processed
+
+All inputs are parsed to normalized UTF-8 text server-side, validated, and scanned by guardrails
+before storage or model submission.
+
+| Format | Extensions | Parsing / Handling |
+|--------|-----------|--------------------|
+| Excel | `.xlsx`, `.xls` | SheetJS → CSV text; macro/formula stripped; malware-scanned |
+| Delimited | `.csv`, `.tsv` | Parsed to typed rows; header + type inference |
+| Structured relational | DDL, schema exports | Treated as metadata; no live DB connection required |
+| JSON documents | `.json` | Parsed, schema-validated, pretty-printed |
+| Configuration files | `.yaml`, `.yml`, `.xml`, `.env`-style | Secret patterns detected & redacted on ingest |
+| Technical documentation | `.md`, `.txt`, `.sql`, `.py`, `.js`, `.ts`, `.log` | UTF-8 text; size- and content-validated |
+| Metadata repositories | catalog/mapping exports | Ingested as reference metadata for model generation |
+
+**Limits:** ≤ 10 files/request, ≤ 10 MB/file, extension **and** MIME sniffing enforced, magic-byte
+verification, malware scan (ClamAV) before persistence.
+
+---
+
+## 6. Data Flow Diagram (DFD) & Trust Boundaries
+
+### 6.1 End-to-end request/response path with security controls
 
 ```mermaid
 sequenceDiagram
-    participant U as User Browser
-    participant T as Traefik Ingress
-    participant B as Backend (Express)
-    participant A as AI Service (FastAPI)
-    participant O as OpenAI API
-    participant DB as PostgreSQL
+    autonumber
+    participant U as User (Managed Device)
+    participant UI as Web UI (React)
+    participant IdP as Entra ID / AD
+    participant GW as API Gateway (Backend + RBAC)
+    participant GR as Guardrail Pipeline
+    participant AI as AI Service
+    participant AO as Azure OpenAI (in-region)
+    participant DS as Data Sources (RDS / S3)
+    participant OB as Observability (OTEL → SIEM)
 
-    U->>T: HTTPS Request
-    T->>B: /api/* routes
-    T->>U: /* static (Nginx)
-    B->>DB: Read/Write sessions, messages, files
-    B->>A: POST /ai/chat (message + files + history)
-    A->>O: Agent call (gpt-5.2 + tools)
-    O-->>A: LLM response + tool calls
-    A-->>B: HTTP POST /api/logs (real-time)
-    B-->>U: Socket.IO log stream
-    A-->>B: Final response + generated outputs
-    B->>DB: Save assistant message + outputs
-    B-->>U: JSON response
+    Note over U,IdP: TRUST BOUNDARY 1 — Identity
+    U->>IdP: SSO login (OIDC + MFA)
+    IdP-->>UI: Signed JWT (roles from AD groups)
+    U->>UI: Upload files + prompt
+    UI->>GW: HTTPS request + Bearer JWT
+
+    Note over GW: TRUST BOUNDARY 2 — App perimeter
+    GW->>GW: Verify JWT, RBAC check, rate limit
+    GW->>GR: Input + files
+    GR->>GR: MIME/magic-byte + malware scan
+    GR->>GR: PII/DLP detect, prompt-injection detect
+    GR->>GR: Sanitise + redact sensitive data
+    alt Policy violation (blocked PII / injection / malware)
+        GR-->>UI: 422 Blocked + reason (audited)
+    else Clean
+        GR->>DS: Persist (KMS-encrypted, row-level scoped)
+        GW->>AI: Redacted payload
+        Note over AI,AO: TRUST BOUNDARY 3 — External LLM egress
+        AI->>AO: HTTPS (redacted only, retention OFF)
+        AO-->>AI: Generated dbt/SQL
+        AI->>GR: Output content filter (PII/secrets)
+        AI-->>GW: Response + outputs
+        GW->>DS: Save outputs (encrypted)
+        GW-->>UI: Response + download links
+    end
+    GW->>OB: Emit OTEL span (user, action, decision)
+    AI->>OB: Emit OTEL span (model, tokens, latency)
 ```
 
-### 3.2 File Upload and Chat Message Flow
+### 6.2 Trust boundaries, ingress & egress
+
+| Boundary | Ingress point | Egress point | Controls at boundary |
+|----------|--------------|--------------|----------------------|
+| **B1 — Identity** | Entra ID login | Signed JWT to UI | MFA, Conditional Access, device compliance |
+| **B2 — App perimeter** | WAF → ALB → API GW | Response to UI | WAF/OWASP, JWT verify, RBAC, rate limit, guardrails |
+| **B3 — Data** | API GW → RDS/S3 | Query results | KMS encryption at rest, TLS in transit, row-level scoping |
+| **B4 — LLM egress** | — | AI Service → Azure OpenAI | Redaction enforced, allowlisted endpoint, no retention |
+| **B5 — Telemetry** | Services → OTel Collector | Collector → SIEM | Scrubbed logs (no payload PII), mTLS to SIEM |
+
+---
+
+## 7. Authentication & Authorization (Entra ID / AD)
+
+Authentication is delegated to the client's **Microsoft Entra ID / Active Directory**. The
+application holds no passwords. Authorization is **role-based**, with roles derived from AD security
+group membership — the standard enterprise pattern.
+
+### 7.1 AD group → application role mapping
+
+| AD security group | App role | Permissions |
+|-------------------|----------|-------------|
+| `Migration-Admins` | `admin` | All sessions, user/audit oversight, config, PHI-mode toggle |
+| `Migration-Users` | `analyst` | Own sessions only, upload/generate, download own outputs |
+| `Migration-Auditors` | `auditor` | Read-only audit logs & telemetry, no data access |
+
+### 7.2 Authentication flow (OIDC Authorization Code + PKCE)
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant U as User
-    participant FE as Frontend
-    participant BE as Backend
-    participant AI as AI Service
-    participant OAI as OpenAI API
-    participant DB as PostgreSQL
+    participant UI as Web UI
+    participant IdP as Entra ID
+    participant GW as Backend API
 
-    Note over U,DB: FILE UPLOAD
-    U->>FE: Select/drag files
-    FE->>BE: POST /api/files/{sessionId}/upload (multipart)
-    BE->>BE: Parse via Multer (XLSX→CSV)
-    BE->>DB: INSERT UploadedFile (content as TEXT)
-    BE-->>FE: Return file IDs
-    FE-->>U: Upload confirmed
-
-    Note over U,DB: SEND MESSAGE
-    U->>FE: Type message + send
-    FE->>BE: POST /api/chat/{sessionId}/messages
-    BE->>DB: INSERT Message (role=user)
-    BE->>AI: POST /ai/chat {session_id, message, files, history}
-    AI->>OAI: Agent run (system prompt + tools + conversation)
-    
-    loop Real-time Progress
-        AI-->>BE: HTTP POST /api/logs/{sid}
-        BE-->>FE: Socket.IO emit('log')
-        FE-->>U: Live progress (thinking, generating...)
-    end
-
-    OAI-->>AI: LLM response
-    AI->>AI: generate_output() → save SQL to disk
-    AI-->>BE: {response, new_outputs[]}
-    BE->>DB: INSERT Message (role=assistant) + GeneratedOutput
-    BE-->>FE: JSON response
-    FE-->>U: Render markdown + download links
-
-    Note over U,DB: DOWNLOAD OUTPUT
-    U->>FE: Click download
-    FE->>BE: GET /api/files/output/{id}/download
-    BE->>DB: SELECT content FROM GeneratedOutput
-    BE-->>FE: File stream
-    FE-->>U: .sql file saved
+    U->>UI: Access app
+    UI->>IdP: Redirect (OIDC auth code + PKCE)
+    IdP->>U: MFA + Conditional Access (device/location)
+    IdP-->>UI: Auth code
+    UI->>IdP: Exchange code → ID + access token (JWT)
+    Note over IdP: Token carries AD group claims → roles
+    UI->>GW: API call + Bearer JWT
+    GW->>GW: Validate signature (JWKS), audience, expiry
+    GW->>GW: Map group claim → RBAC role; enforce scope
+    GW-->>UI: Authorized response
 ```
 
-### 3.3 Speech-to-Text Flow
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant FE as Frontend
-    participant BE as Backend
-    participant AI as AI Service
-    participant OAI as OpenAI API
-
-    U->>FE: Click mic, speak
-    FE->>FE: MediaRecorder captures WebM blob
-    FE->>BE: POST /api/stt (multipart audio)
-    BE->>AI: POST /ai/stt (proxy FormData)
-    AI->>OAI: Whisper API (gpt-4o-transcribe)
-    OAI-->>AI: Transcribed text
-    AI-->>BE: {text: "..."}
-    BE-->>FE: Transcription
-    FE-->>U: Text populated in input box
-```
-
-### 3.4 Real-Time Log Streaming
-
-```mermaid
-sequenceDiagram
-    participant AI as AI Service
-    participant BE as Backend
-    participant FE as Frontend (useRealtimeLogs)
-
-    AI->>BE: HTTP POST /api/logs/{sessionId}<br/>{step, message, type, data}
-    BE->>FE: Socket.IO emit('log') to room session:{sid}
-    FE->>FE: Render log (info=blue, success=green, error=red, thinking=pulse)
-
-    Note over AI,FE: Repeats for each agent step:<br/>thinking → reading files → generating SQL → validating
-```
+**Controls:** RS256 JWT with JWKS rotation; short-lived access tokens + refresh; MFA and
+Conditional Access enforced at the IdP; least-privilege scopes; every authz decision audited.
 
 ---
 
-## 4. Software & Technology Stack
+## 8. Data Protection & Security Controls
 
-### 4.1 Frontend
+### 8.1 Controls by layer
 
-| Software | Version | Purpose |
-|----------|---------|---------|
-| React | 18.2 | UI framework |
-| Vite | 5.x | Build tool and dev server |
-| TypeScript | 5.3 | Type-safe JavaScript |
-| TailwindCSS | 3.4 | Utility-first CSS |
-| Socket.IO Client | 4.8 | WebSocket for real-time logs |
-| Axios | 1.6.5 | HTTP client |
-| react-markdown | 9.0 | Markdown rendering in chat |
-| react-syntax-highlighter | 15.5 | SQL/code syntax highlighting |
-| lucide-react | 0.312 | Icon library |
-| Nginx | alpine | Production static server |
+| Layer | Control |
+|-------|---------|
+| **Edge** | CloudFront + AWS WAF (OWASP rule set, rate limiting, IP/geo allowlist, DDoS) |
+| **Transport** | TLS 1.2+ everywhere (ACM); HSTS; mTLS service-to-service in VPC |
+| **AuthN/AuthZ** | Entra ID SSO + MFA; JWT verification; AD-group RBAC; row-level session scoping |
+| **API access** | All endpoints require valid JWT; per-role scopes; per-user + per-IP rate limits; CORS locked to client origin |
+| **Application** | `zod` input validation; output encoding (XSS); Prisma parameterised queries (SQLi) |
+| **Guardrails** | PII/DLP, prompt-injection, malware, redaction (see §9) |
+| **Data at rest** | RDS + S3 + Redis encrypted with **AWS KMS (AES-256)**; TDE; encrypted backups/snapshots |
+| **Secrets** | AWS Secrets Manager + KMS; auto-rotation; IAM least-privilege; no secrets in env/images |
+| **Network** | Private subnets for compute/data; no public DB; egress allowlist (Azure OpenAI only); VPC flow logs |
+| **Data at rest — LLM** | Azure OpenAI retention **disabled**, no training on data, in-region processing, Private Endpoint |
 
-### 4.2 Backend
+### 8.2 Data at rest summary
 
-| Software | Version | Purpose |
-|----------|---------|---------|
-| Node.js | 20 LTS | JavaScript runtime |
-| Express | 4.18 | HTTP framework |
-| TypeScript | 5.3 | Type safety |
-| Prisma | 5.9 | ORM and migrations |
-| Socket.IO | 4.8 | WebSocket server |
-| Multer | 1.4 | File upload handling |
-| XLSX | 0.18 | Excel file parsing |
-| UUID | 9.0 | ID generation |
-| Axios | 1.6 | HTTP client (to AI service) |
-| cors | 2.8 | CORS middleware |
-
-### 4.3 AI Service
-
-| Software | Version | Purpose |
-|----------|---------|---------|
-| Python | 3.12 | Runtime |
-| FastAPI | 0.109 | Async web framework |
-| Uvicorn | 0.27 | ASGI server |
-| OpenAI Agents SDK | 0.0.7 | Agent orchestration with tool use |
-| Pandas | 2.1.4 | CSV/data parsing |
-| HTTPX | 0.27 | Async HTTP client |
-| Pydantic | 2.10 | Data validation |
-
-### 4.4 Database and Infrastructure
-
-| Software | Purpose |
-|----------|---------|
-| PostgreSQL 15+ | Relational database |
-| Docker | Container runtime (multi-stage builds) |
-| Kubernetes (K3s) | Container orchestration |
-| Traefik | Ingress controller and reverse proxy |
-| cert-manager + Let's Encrypt | Automatic TLS certificates |
-
-### 4.5 External APIs
-
-| Service | Model | Purpose |
-|---------|-------|---------|
-| OpenAI API | `gpt-5.2-2025-12-11` | Main LLM for SQL generation |
-| OpenAI API | `gpt-4o-transcribe` | Speech-to-text |
-| AWS SES | `us-east-1` | Email (configured, unused) |
+| Store | Data | Encryption | Retention |
+|-------|------|-----------|-----------|
+| RDS PostgreSQL | Sessions, messages, file text, outputs | KMS AES-256 + TDE | Config-led (§9.3) |
+| Amazon S3 | Uploaded files, generated outputs | KMS AES-256, versioned | Config-led + lifecycle |
+| ElastiCache Redis | Session/rate/guardrail state | In-transit + at-rest TLS/KMS | TTL (ephemeral) |
+| OTel/SIEM | Audit telemetry (PII-scrubbed) | Per client SIEM policy | Config-led (audit) |
 
 ---
 
-## 5. Data Flow
+## 9. AI Governance & Guardrails
 
-### 5.1 Write, Process, Read Paths
+Guardrails run **inbound** (before model submission) and **outbound** (before returning results),
+enforced in the API gateway/AI service — never optional, never client-side only.
+
+### 9.1 Guardrail pipeline
 
 ```mermaid
 graph LR
-    subgraph Write["Write Path (User → System)"]
-        M1["Chat message"] -->|"INSERT"| DB1["Message table"]
-        M2["File upload"] -->|"INSERT"| DB2["UploadedFile table"]
-        M3["Audio recording"] -->|"Whisper API"| M1
-    end
-
-    subgraph Process["Processing Path"]
-        BE["Backend collects<br/>message + files + history"] --> AI["AI Service<br/>hydrates agent tools"]
-        AI --> OAI["OpenAI gpt-5.2<br/>runs agent with<br/>4 tools"]
-        OAI --> AI
-    end
-
-    subgraph Read["Read Path (System → User)"]
-        R1["Message table"] --> C1["Chat bubble<br/>(markdown)"]
-        R2["GeneratedOutput"] --> C2["Download link<br/>(.sql)"]
-        R3["Socket.IO logs"] --> C3["Live progress panel"]
-    end
-
-    style Write fill:#dbeafe,stroke:#3b82f6
-    style Process fill:#fef3c7,stroke:#f59e0b
-    style Read fill:#d1fae5,stroke:#10b981
+    IN["User input + files"] --> V1["Input validation<br/>& sanitisation (zod)"]
+    V1 --> V2["File scan<br/>MIME + magic-byte + ClamAV"]
+    V2 --> V3["PII / DLP detection<br/>(Presidio: NHI, names,<br/>DOB, IRD, contact)"]
+    V3 --> V4["Prompt-injection<br/>detection"]
+    V4 --> V5["Restricted-pattern<br/>& content filter"]
+    V5 --> V6["Sensitive-data redaction<br/>BEFORE model submission"]
+    V6 --> M["Azure OpenAI"]
+    M --> O1["Output content filter<br/>(PII/secret leak check)"]
+    O1 --> OUT["Response to user"]
+    V2 -. block .-> BLK["Reject + audit"]
+    V3 -. block/redact .-> BLK
+    V4 -. block .-> BLK
+    style BLK fill:#fee2e2,stroke:#ef4444
+    style V6 fill:#d1fae5,stroke:#10b981
 ```
+
+### 9.2 Data-protection guardrails & AI-safety controls
+
+| Control | Implementation |
+|---------|----------------|
+| **PII detection** | Presidio + NZ recognisers (NHI, IRD, DOB, name, address, phone, email) on all input/output |
+| **DLP checks** | Policy engine blocks/redacts classified data; Mode A blocks health PII outright |
+| **Input validation & sanitisation** | `zod` schemas, length/encoding checks, HTML/script stripping |
+| **Prompt-injection detection** | Classifier + heuristic rules; system-prompt isolation; tool-call allowlist |
+| **Malware / content scanning** | ClamAV on every uploaded file before persistence |
+| **Restricted prompt patterns** | Deny-list of unsafe/non-intended requests; scope-limited system prompt |
+| **Content filtering** | Azure OpenAI content filters + local filters on input and output |
+| **Sensitive-data redaction** | Redaction applied **before** any content leaves the app to the model |
+
+### 9.3 Governance: action tracking & retention
+
+Every user action — **query, response, file upload, download, generation, block decision** — is
+recorded as structured audit telemetry (who, what, when, decision, data class; **payload bodies
+excluded/scrubbed**).
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| `AUDIT_RETENTION_DAYS` | `90` | Config-led; can be lowered (technical-user tool) or raised for audit needs |
+| `CHAT_RETENTION_DAYS` | `30` | Session/message retention; auto-purge job |
+| `FILE_RETENTION_DAYS` | `30` | Uploaded files + outputs; S3 lifecycle |
+| `PHI_MODE` | `false` | Enables health-data handling with stricter audit |
+
+Rights to access/correct/erase per Privacy Act 2020 (IPP 6/7) and HIPC 2020 are supported via
+admin/auditor tooling.
 
 ---
 
-## 6. Data at Rest / Storage
+## 10. Observability & Telemetry (OpenTelemetry)
 
-### 6.1 PostgreSQL Database
+All services emit **standardized OpenTelemetry (OTEL)** signals — traces, metrics, logs — over OTLP
+to a Collector, which exports to the **client's monitoring platform** (CloudWatch, Splunk, Azure
+Sentinel, Datadog). This ensures interoperability and governance of tool usage.
 
-| Table | Stores | Retention | Size |
-|-------|--------|-----------|------|
-| `Session` | Session metadata (id, name, timestamps) | Permanent | ~200 bytes/row |
-| `Message` | Chat messages (user + assistant) | Cascade-deleted with session | 1-50 KB/row |
-| `UploadedFile` | Full file content as TEXT | Cascade-deleted with session | 10 KB - 10 MB/row |
-| `GeneratedOutput` | Generated SQL + metadata | Cascade-deleted with session | 5-100 KB/row |
+| Signal | Emitted | Purpose |
+|--------|---------|---------|
+| **Traces** | End-to-end span per request across UI→GW→AI→LLM | Latency, bottlenecks, request correlation |
+| **Metrics** | Requests, error rate, LLM tokens/latency/cost, guardrail blocks, active users | Usage governance, capacity, cost |
+| **Logs** | Structured JSON, correlation IDs, **PII-scrubbed** | Audit, troubleshooting |
+| **AI-governance events** | Query/response/upload/download/block with actor + data class | Tool-usage oversight, compliance reporting |
 
-**Constraints**: `UploadedFile` unique on `(sessionId, category)`, `GeneratedOutput` unique on `(sessionId, filename)`. All tables indexed on `sessionId`.
-
-### 6.2 Other Storage
-
-| Store | Location | Details |
-|-------|----------|---------|
-| PersistentVolume | `/data/outputs/{session_id}/{ts}/{file}` | 10Gi PVC, redundant copy of GeneratedOutput |
-| In-Memory Cache | AI Service process | `session_storage` + `session_agents` — TTL 1hr, max 50 sessions |
-
-### 6.3 Data Lifecycle
-
-```mermaid
-graph LR
-    A["Create Session"] --> B["Upload Files"]
-    B --> C["Chat Messages"]
-    C --> D["Generated SQL"]
-    
-    A --> T1["Session table"]
-    B --> T2["UploadedFile table"]
-    C --> T3["Message table"]
-    D --> T4["GeneratedOutput table"]
-    D --> T5["/data/outputs/ (PV)"]
-
-    DEL["Delete Session"] -->|"CASCADE"| T1
-    T1 -.->|cascade| T2
-    T1 -.->|cascade| T3
-    T1 -.->|cascade| T4
-
-    style DEL fill:#fecaca,stroke:#ef4444
-```
+Semantic conventions (`gen_ai.*`) capture model, token counts and safety decisions so the client
+can monitor AI usage in their existing dashboards without bespoke integration.
 
 ---
 
-## 7. Hosting & Infrastructure
-
-### 7.1 Production Environment
-
-| Component | Details |
-|-----------|---------|
-| **Server** | Single-node K3s cluster (Linux/Ubuntu) |
-| **Domain** | `migration.callsphere.tech` |
-| **TLS** | Let's Encrypt via cert-manager (auto-renewal) |
-| **Ingress** | Traefik (path-based routing) |
-| **Storage** | local-path provisioner, 10Gi PVC |
-| **Database** | External PostgreSQL at `72.62.162.83:5432` |
-
-### 7.2 Kubernetes Resources
-
-| Resource | Configuration |
-|----------|--------------|
-| **Namespace** | `migration-agent` |
-| **Deployments** | frontend (1 replica, :5173), backend (1 replica, :3001), ai-service (1 replica, :8084) |
-| **Services** | 3x ClusterIP |
-| **Ingress** | `/api/*` and `/socket.io/*` → backend, `/*` → frontend |
-| **PVC** | `outputs-pvc` 10Gi (local-path) |
-| **ConfigMap** | `migration-agent-config` (OPENAI_MODEL, OUTPUT_DIR, AI_SERVICE_URL, CORS_ORIGIN) |
-| **Secret** | `migration-agent-secret` (OPENAI_API_KEY, DATABASE_URL) |
-
-### 7.3 Network Topology
+## 11. Deployment View — AWS Infrastructure Security
 
 ```mermaid
 graph TB
-    Internet["Internet"] -->|"HTTPS 443"| Traefik["Traefik Ingress<br/>TLS Termination"]
-    
-    subgraph K3s["K3s Cluster"]
-        Traefik --> FE["Frontend<br/>Nginx"]
-        Traefik --> BE["Backend<br/>Express + Socket.IO"]
-        BE --> AI["AI Service<br/>FastAPI + Uvicorn"]
+    R53["Route 53"] --> CF["CloudFront + AWS WAF"]
+    CF --> ALB["ALB (TLS via ACM)<br/>public subnet only"]
+
+    subgraph VPC["AWS VPC (private) — health-approved region"]
+        subgraph Pub["Public subnets"]
+            ALB
+            NAT["NAT + Egress firewall<br/>(allowlist: Azure OpenAI)"]
+        end
+        subgraph Priv["Private subnets (no internet)"]
+            EKS["EKS: frontend / backend / ai-service<br/>IRSA least-privilege"]
+            RDS["RDS PostgreSQL (Multi-AZ, KMS)"]
+            S3EP["S3 via VPC endpoint (KMS)"]
+            Redis["ElastiCache Redis (KMS)"]
+        end
+        ALB --> EKS
+        EKS --> RDS
+        EKS --> S3EP
+        EKS --> Redis
+        EKS --> NAT
     end
 
-    BE -->|"TCP 5432"| PG["PostgreSQL<br/>(External)"]
-    AI -->|"HTTPS 443"| OAI["OpenAI API"]
-
-    style K3s fill:#f0f4ff,stroke:#3b82f6
-```
-
----
-
-## 8. Security
-
-### 8.1 Current Security Posture
-
-| Layer | Status | Details |
-|-------|--------|---------|
-| Authentication | **None** | No login or API keys |
-| Authorization | **None** | Any user can access any session |
-| Transport Encryption | **Yes** | TLS via Let's Encrypt |
-| CORS | **Configured** | Restricted to production domain |
-| Secrets Management | **Partial** | K8s Secrets in prod; `.env` in dev |
-| SQL Injection | **Protected** | Prisma uses parameterized queries |
-| XSS | **Mitigated** | React auto-escapes; markdown sanitized |
-| Rate Limiting | **None** | No throttling |
-| Data Encryption at Rest | **None** | Unencrypted PostgreSQL |
-
-### 8.2 Secrets Inventory
-
-| Secret | Dev | Prod | Risk |
-|--------|-----|------|------|
-| `OPENAI_API_KEY` | `.env` file | K8s Secret | HIGH |
-| `DATABASE_URL` | `.env` file | K8s Secret | HIGH |
-| `AWS_ACCESS_KEY_ID` | `.env` file | K8s Secret | MEDIUM (unused) |
-| `AWS_SECRET_ACCESS_KEY` | `.env` file | K8s Secret | MEDIUM (unused) |
-
-### 8.3 Recommendations
-
-1. Add JWT authentication on all endpoints
-2. Tie sessions to authenticated users (session isolation)
-3. Add rate limiting (10 req/min per IP)
-4. Validate file MIME types, not just extensions
-5. Enable audit logging for all file access
-6. Encrypt data at rest (PostgreSQL TDE or encrypted volumes)
-7. Rotate API keys on a schedule
-8. Remove unused AWS credentials
-
----
-
-## 9. AI Agent Design
-
-### 9.1 Agent Architecture
-
-The agent is built on the **OpenAI Agents SDK** (`openai-agents >= 0.0.7`). A single `Agent` instance is created per session, cached in memory, and reused across messages.
-
-```mermaid
-graph TB
-    subgraph AgentSDK["OpenAI Agents SDK"]
-        subgraph AgentInstance["Agent: MigrationAgent"]
-            SP["System Prompt<br/>(~2,500 word instruction set)<br/>Role: dbt migration specialist"]
-            MS["ModelSettings<br/>model: gpt-5.2<br/>reasoning.effort: low<br/>max_tokens: 16,000<br/>extra_body: {background: true}"]
-        end
-
-        subgraph Tools["4 Function Tools (per-session closure)"]
-            T1["read_file(file_name, content)<br/>→ stores in session_storage.files"]
-            T2["generate_output(file_name, content)<br/>→ writes to /data/outputs + session_storage.outputs"]
-            T3["list_files()<br/>→ returns input + output file inventory"]
-            T4["get_file_content(file_name)<br/>→ retrieves from files or outputs dict"]
-        end
-
-        Runner["Runner.run_streamed(agent, messages)<br/>Consumes stream events to completion<br/>Returns result.final_output (string)"]
-    end
-
-    SP --> Tools
-    Tools --> Runner
-    Runner -->|"final_output"| Response["ChatResponse<br/>{response, generated_files[]}"]
-
-    style AgentSDK fill:#ede9fe,stroke:#8b5cf6
-    style Tools fill:#fef3c7,stroke:#f59e0b
-```
-
-**Agent instantiation** (`get_or_create_agent()` in `migration.py`):
-```python
-Agent(
-    name="MigrationAgent",
-    instructions=INSTRUCTIONS,       # ~2,500 word system prompt
-    model=settings.OPENAI_MODEL,     # "gpt-5.2" from env/config
-    tools=tools,                     # 4 function_tool closures
-    model_settings=ModelSettings(
-        reasoning=Reasoning(effort="low"),  # lightweight reasoning for speed
-        max_tokens=16000,
-        extra_body={"background": True},    # background processing mode
-    )
-)
-```
-
-### 9.2 Session Management
-
-Three in-memory dictionaries manage session state in the AI service:
-
-| Dictionary | Key | Value | Purpose |
-|-----------|-----|-------|---------|
-| `session_storage` | session_id | `{"files": {}, "outputs": {}, "output_folder": None}` | File content for agent tools |
-| `session_agents` | session_id | `Agent` instance | Cached agent with bound tools |
-| `session_last_access` | session_id | `float` (timestamp) | TTL tracking |
-
-**Eviction** (`_evict_stale_sessions()`, called on every storage access):
-1. Delete sessions idle > `SESSION_TTL_SECONDS` (3600s / 1 hour)
-2. If count > `SESSION_MAX_COUNT` (50), evict oldest by access time
-
-**Rehydration**: When backend sends `request.files` dict, the AI service repopulates `session_storage["files"]` from the request payload (files originally persisted in PostgreSQL by the backend).
-
-```mermaid
-stateDiagram-v2
-    [*] --> New: First message for session_id
-    New --> Active: Agent created + tools bound
-
-    state New {
-        [*] --> EvictCheck: _evict_stale_sessions()
-        EvictCheck --> CreateStorage: Init {files:{}, outputs:{}, output_folder:None}
-        CreateStorage --> CreateAgent: Agent() with 4 tool closures
-        CreateAgent --> CacheAgent: Store in session_agents dict
-    }
-
-    Active --> Active: Subsequent messages (reuse cached agent)
-    Active --> Evicted: Idle > 1 hour (or >50 sessions)
-    Evicted --> Active: New request triggers rehydration from DB
-    Active --> Reset: POST /ai/reset/{session_id}
-    Reset --> [*]: Delete from all 3 dicts
-```
-
-### 9.3 Tool Implementations
-
-Each tool is a `@function_tool`-decorated closure that captures the session's storage reference:
-
-**`read_file(file_name: str, content: str) -> str`**
-- Stores `content` in `storage["files"][file_name]`
-- Returns: `"File '{file_name}' loaded ({len(content)} characters)."`
-- Called by agent when it processes uploaded file content from the user message
-
-**`generate_output(file_name: str, content: str) -> str`**
-- Creates output folder if needed: `/data/outputs/{session_id}/{YYYY-MM-DD_HH-MM-SS}/`
-- Writes file to disk: `Path(output_folder/file_name).write_text(content)`
-- Stores in `storage["outputs"][file_name]`
-- Returns: `"File saved to: {saved_path}"`
-
-**`list_files() -> str`**
-- Returns formatted string: `"Input files: a.csv, b.sql\nOutput files: model.sql\nOutput folder: /path"`
-
-**`get_file_content(file_name: str) -> str`**
-- Searches `storage["files"]` first, then `storage["outputs"]`
-- Returns file content or `"File '{file_name}' not found."`
-
-### 9.4 Chat Request Processing (POST /ai/chat)
-
-The complete flow from request to response:
-
-```mermaid
-sequenceDiagram
-    participant BE as Backend
-    participant EP as POST /ai/chat
-    participant SS as Session Storage
-    participant AG as Cached Agent
-    participant RN as Runner.run_streamed()
-    participant OAI as OpenAI API
-    participant RL as RealtimeLogger
-    participant DSK as /data/outputs (disk)
-
-    BE->>EP: {session_id, message, files?, history?}
-    EP->>SS: get_session_storage(session_id)<br/>triggers _evict_stale_sessions()
-    EP->>RL: Create RealtimeLogger(session_id)
-
-    alt request.files exists AND storage.files is empty
-        EP->>SS: Hydrate: storage.files = request.files<br/>(pod restart recovery)
-    end
-
-    Note over EP: Build user message string:<br/>"[Uploaded files: a.csv, b.sql]\n[a.csv]:\n{content}\n..."
-
-    Note over EP: Build messages list:<br/>1. Append each history entry as {role, content}<br/>2. Append current message as {role: "user"}
-
-    EP->>SS: Snapshot existing output keys<br/>(to detect only NEW outputs)
-
-    EP->>RL: await logger.ai_thinking("Processing your request...")
-    EP->>AG: get_or_create_agent(session_id)
-    EP->>RL: await logger.thinking("AI agent is analyzing...")
-    EP->>RN: Runner.run_streamed(agent, messages)
-    RN->>OAI: Agent execution with tools
-    
-    loop Agent tool calls
-        OAI-->>RN: Tool call (read_file / generate_output / etc.)
-        RN->>SS: Execute tool against session storage
-        opt generate_output called
-            RN->>DSK: Write .sql file to disk
-        end
-        RN-->>OAI: Tool result
-    end
-
-    OAI-->>RN: Final response text
-    RN-->>EP: result.final_output
-
-    EP->>RL: await logger.complete("Response ready")
-
-    Note over EP: Build generated_files[]:<br/>Only outputs NOT in snapshot (new this turn)<br/>Each: {name, path, content}
-
-    EP-->>BE: ChatResponse {response, generated_files[]}
-    EP->>RL: await logger.close()
-```
-
-**Request payload** (`ChatRequest`):
-```python
-{
-    "session_id": "uuid",
-    "message": "Add field X to the staging model",
-    "files": {"template.csv": "content...", "mapping.csv": "content..."},  # optional
-    "history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]  # optional
-}
-```
-
-**Response payload** (`ChatResponse`):
-```python
-{
-    "response": "Here is the updated model with field X added...",
-    "generated_files": [
-        {"name": "AMS_AI_DBT_STG_ADD_INFO_updated.sql", "path": "/data/outputs/.../file.sql", "content": "SELECT..."}
-    ]
-}
-```
-
-### 9.5 Message Construction
-
-The backend constructs the AI service request in `chat.ts`:
-
-1. Fetches session with uploaded files and last 20 messages (DESC order)
-2. Builds `files` dict: `{filename: content}` from all `UploadedFile` rows with non-empty content
-3. Reverses messages to chronological order, maps to `[{role, content}]`
-4. Sends to AI service with 600-second timeout (10 minutes)
-
-The AI service then augments the user message with file context:
-```
-[Uploaded files: template.csv, mapping.csv, reference_model.sql]
-[template.csv]:
-{full CSV content}
-[mapping.csv]:
-{full CSV content}
-{original user message}
-```
-
-### 9.6 System Prompt (Agent Instructions)
-
-The agent operates under a ~2,500 word instruction set with 4 sections:
-
-**Hard Rules** (never skip):
-1. Confirm base/dependency model before writing FROM clause — never guess `{{ ref('...') }}` targets
-2. Never drop a CTE between regenerations — compare against previous version
-3. Never truncate or omit fields — output all 50+ if needed, no `...` abbreviations
-4. Never assume or fabricate context — stop and ask clarifying questions
-
-**Workflow** (strict order):
-1. Analyze all uploaded files first using `get_file_content` tool
-2. Ask before assuming — flag TBD fields, datatype conflicts, ambiguous joins, unclear transforms
-3. Generate dbt model following code rules
-4. Run self-validation checklist
-
-**Code Generation Rules**:
-
-| Rule | Detail |
-|------|--------|
-| Source Selection | Always use `{{ ref('...') }}`, never default to base tables without explicit instruction |
-| CTEs | Every source table gets its own CTE; never drop CTEs between regenerations |
-| Field Propagation | Every mapped field must appear in final SELECT |
-| Null Handling | `IFNULL(field, default)` to replace nulls; `NULLIF` only to convert value TO null |
-| Datatype Alignment | Match template exactly; flag Boolean-vs-VARCHAR conflicts |
-| Defaults | Use template defaults; NOT NULL fields must never output NULL |
-| WHERE Clauses | Include filtering macros, filter to current/non-deleted rows |
-| CASE Expressions | Always include ELSE branch; handle NULLs explicitly |
-| Jinja Patterns | Match `{{ config() }}`, `{{ source() }}`, `{{ ref() }}` from existing models |
-| MINUS/EXCEPT | Ensure both sides produce same type and default to avoid false-positive diffs |
-
-**Self-Validation Checklist** (11 checks before output):
-1. Every mapping field present in final SELECT
-2. FROM/JOIN use ref models, not raw tables
-3. All referenced CTEs are defined
-4. Datatypes match template
-5. No `NULLIF` where `IFNULL` intended
-6. NOT NULL fields have defaults
-7. WHERE clauses present with correct source macros
-8. Row count sanity (filters implemented)
-9. CASE expressions have ELSE and handle NULLs
-10. No CTEs dropped from prior generation
-11. Defaults consistent for MINUS/EXCEPT comparisons
-
-### 9.7 Real-Time Logging
-
-The `RealtimeLogger` class sends HTTP POST requests to the backend during agent execution:
-
-```mermaid
-graph LR
-    AI["AI Service"] -->|"POST /api/logs/{sessionId}<br/>{step, message, type, data}"| BE["Backend :3001"]
-    BE -->|"Socket.IO emit('log')<br/>to room session:{sid}"| FE["Frontend"]
-    FE --> Hook["useRealtimeLogs() hook<br/>renders colored log entries"]
-
-    style AI fill:#ede9fe,stroke:#8b5cf6
-    style BE fill:#dbeafe,stroke:#3b82f6
-    style FE fill:#d1fae5,stroke:#10b981
-```
-
-| Log Method | Step | Type | When Called |
-|-----------|------|------|------------|
-| `logger.ai_thinking(msg)` | `ai_processing` | `progress` | Start of request processing |
-| `logger.thinking(msg)` | `thinking` | `thinking` | Agent begins analysis |
-| `logger.complete(msg)` | `complete` | `success` | Response ready |
-| `logger.error(msg)` | `error` | `error` | Exception during processing |
-
-Logger uses `httpx.AsyncClient(timeout=5.0)` and silently catches all exceptions — logging failures never break the main agent flow.
-
-### 9.8 Speech-to-Text
-
-The STT endpoint (`POST /ai/stt`) accepts audio uploads and returns transcribed text:
-
-1. Validates content type: `audio/*` or `application/octet-stream` (MediaRecorder default)
-2. Maps content type to extension: webm, ogg, wav, mp4, mp3 (defaults to webm)
-3. Calls `client.audio.transcriptions.create(model="gpt-4o-transcribe", file=(filename, audio_bytes))`
-4. Returns `{"text": transcript.text}`
-
-### 9.9 Backend-AI Service Integration
-
-The backend (`aiService.ts`) wraps the AI service call with:
-- **Timeout**: 600,000ms (10 minutes) for long SQL generation tasks
-- **Content-Type**: `application/json`
-- **Error handling**: Extracts error detail from AI service response, re-throws with context
-
-After receiving the AI response, the backend:
-1. Saves assistant message to `Message` table
-2. Upserts each generated file to `GeneratedOutput` table (compound unique on `sessionId_filename`)
-3. On first message, auto-names the session (first 50 chars of user message)
-
-### 9.10 Bug Fixes in Agent Code
-
-The codebase contains documented fixes for production issues:
-
-| Bug | Problem | Fix |
-|-----|---------|-----|
-| Bug 2 | Message truncation from string concatenation | Changed to structured message list with `{role, content}` objects |
-| Bug 3 | New agent created per message (lost context) | Cache agents in `session_agents` dict, reuse across messages |
-| Bug 4 | All outputs returned on every response (duplicates) | Snapshot output keys before processing, only return new outputs |
-| Bug 7 | Empty session after pod restart (lost files) | Hydrate `session_storage` from `request.files` when storage is empty |
-
----
-
-## 10. API Surface
-
-### 10.1 Backend REST API (Port 3001)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/sessions` | Create new session |
-| `GET` | `/api/sessions` | List sessions (paginated, cursor-based) |
-| `GET` | `/api/sessions/:id` | Get session with messages, files, outputs |
-| `PATCH` | `/api/sessions/:id` | Rename session |
-| `DELETE` | `/api/sessions/:id` | Delete session (cascade) |
-| `GET` | `/api/sessions/:id/outputs` | List generated outputs |
-| `POST` | `/api/chat/:sessionId/messages` | Send message (proxied to AI) |
-| `GET` | `/api/chat/:sessionId/messages` | Get message history |
-| `POST` | `/api/files/:sessionId/upload` | Upload files (max 10, multipart) |
-| `GET` | `/api/files/:sessionId` | List uploaded files |
-| `DELETE` | `/api/files/:fileId` | Delete file |
-| `GET` | `/api/files/uploaded/:fileId/content` | File content as JSON |
-| `GET` | `/api/files/uploaded/:fileId/download` | Download uploaded file |
-| `GET` | `/api/files/output/:outputId/download` | Download generated SQL |
-| `POST` | `/api/stt` | Transcribe audio (proxied to AI) |
-| `GET` | `/api/health` | Health check |
-| `POST` | `/api/logs/:sessionId` | Receive logs from AI service |
-
-### 10.2 AI Service API (Port 8084)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/ai/chat` | Process message with agent |
-| `GET` | `/ai/health` | Health check (model info) |
-| `POST` | `/ai/reset/:sessionId` | Clear in-memory state |
-| `GET` | `/ai/status/:sessionId` | Session file inventory |
-| `POST` | `/ai/stt` | Transcribe audio (Whisper) |
-
-### 10.3 WebSocket Events (Socket.IO)
-
-| Event | Direction | Payload |
-|-------|-----------|---------|
-| `join-session` | Client to Server | `{ sessionId }` |
-| `leave-session` | Client to Server | `{ sessionId }` |
-| `log` | Server to Client | `{ timestamp, step, message, type, data }` |
-
----
-
-## 11. Monitoring & Observability
-
-| Capability | Status | Details |
-|-----------|--------|---------|
-| Health checks | **Yes** | `/api/health` and `/ai/health` |
-| K8s probes | **Yes** | Liveness and readiness configured |
-| Application logs | **Basic** | Console logs with prefixes (`[REQ]`, `[CHAT]`, `[UPLOAD]`) |
-| Real-time logs | **Yes** | Agent progress streamed via Socket.IO |
-| Metrics | **None** | No Prometheus/Grafana |
-| Distributed tracing | **None** | No request correlation |
-| Error tracking | **None** | No Sentry |
-| Alerting | **None** | No PagerDuty/OpsGenie |
-
----
-
-## 12. Known Limitations
-
-| Limitation | Impact | Mitigation |
-|-----------|--------|------------|
-| Single replica per service | No HA, downtime on restart | Scale replicas |
-| In-memory agent cache | Lost on pod restart | Rehydrated from DB |
-| No authentication | Public access | Add auth before rollout |
-| 50 concurrent session limit | AI service cap | Scale horizontally or add Redis |
-| 10-minute request timeout | Long generations may fail | Stream partial results |
-| Single-node K3s | SPOF | Move to managed K8s |
-| Single PostgreSQL instance | SPOF for data | Move to managed DB |
-| No backups configured | Data loss risk | Set up pg_dump or WAL |
-
----
-
-## 13. Scalable Architecture Plan
-
-### 13.1 Target Architecture
-
-```mermaid
-graph TB
-    User["Users"] -->|HTTPS| CF["CloudFront CDN + AWS WAF"]
-    CF -->|"Static assets"| S3["Amazon S3<br/>File Storage"]
-    CF -->|"API requests"| ALB["AWS ALB<br/>Application Load Balancer"]
-
-    subgraph VPC["AWS VPC (10.0.0.0/16)"]
-        subgraph EKS["Amazon EKS Cluster"]
-            subgraph FE_HPA["Frontend — HPA: 2-10 replicas"]
-                FE1["Frontend Pod"]
-                FE2["Frontend Pod"]
-                FEn["Frontend Pod"]
-            end
-            subgraph BE_HPA["Backend — HPA: 2-20 replicas"]
-                BE1["Backend Pod"]
-                BE2["Backend Pod"]
-                BEn["Backend Pod"]
-            end
-            subgraph AI_HPA["AI Service — HPA: 2-10 replicas"]
-                AI1["AI Service Pod"]
-                AI2["AI Service Pod"]
-                AIn["AI Service Pod"]
-            end
-        end
-
-        ALB --> FE_HPA
-        ALB --> BE_HPA
-        BE_HPA --> AI_HPA
-
-        subgraph Data["Data Layer (Private Subnets)"]
-            RDS["Amazon RDS PostgreSQL<br/>Multi-AZ + Read Replicas"]
-            Redis["ElastiCache Redis<br/>Cluster Mode"]
-            SQS["Amazon SQS<br/>Message Queue"]
-        end
-
-        BE_HPA --> RDS
-        BE_HPA --> Redis
-        BE_HPA --> SQS
-        AI_HPA --> SQS
-        AI_HPA --> Redis
-        AI_HPA --> RDS
-    end
-
-    AI_HPA -->|HTTPS| OpenAI["OpenAI API"]
-    
-    Cognito["Amazon Cognito<br/>Auth + JWT"] --> ALB
-    SM["AWS Secrets Manager"] --> EKS
-    CW["CloudWatch / Datadog<br/>Metrics + Logs + Alerts"] --> EKS
-    ACM["AWS Certificate Manager"] --> ALB
+    SM["Secrets Manager + KMS"] -. IAM .-> EKS
+    CT["CloudTrail + GuardDuty + Config"] -. audit .-> VPC
+    NAT --> AOAI["Azure OpenAI (in-region, Private Endpoint)"]
 
     style VPC fill:#f0f4ff,stroke:#3b82f6
-    style EKS fill:#e0e7ff,stroke:#6366f1
-    style Data fill:#fef3c7,stroke:#f59e0b
+    style Priv fill:#e0e7ff,stroke:#6366f1
+    style AOAI fill:#d1fae5,stroke:#10b981
 ```
 
-### 13.2 Component Upgrade Map
+| Concern | Control |
+|---------|---------|
+| Compute isolation | EKS in private subnets; no public IPs; security groups least-privilege |
+| Identity to AWS | IAM Roles for Service Accounts (IRSA); no static keys in pods |
+| Secured API access | ALB + JWT auth + WAF; private service-to-service only |
+| Data at rest | KMS on RDS, S3, Redis, EBS, snapshots |
+| Egress control | NAT + firewall allowlisting Azure OpenAI endpoint only; VPC flow logs |
+| Threat detection | GuardDuty, AWS Config, CloudTrail → SIEM |
+| Residency | Health-approved AWS region; data does not leave region except redacted LLM egress |
 
-| Current | Scalable | Why |
-|---------|----------|-----|
-| K3s (single node) | **Amazon EKS** (multi-AZ) | HA, auto-scaling, managed control plane |
-| Traefik | **AWS ALB** | Layer 7 routing, WAF, health checks |
-| External PostgreSQL | **Amazon RDS** (Multi-AZ, read replicas) | Automated backups, failover |
-| In-memory cache | **ElastiCache Redis** | Shared state across pods |
-| Files in DB TEXT | **Amazon S3** + CloudFront | Unlimited storage, fast downloads |
-| `.env` files | **AWS Secrets Manager** | Rotation, IAM access, audit |
-| No auth | **Amazon Cognito** | JWT, SSO, user management |
-| No CDN | **CloudFront** | Edge caching, DDoS protection |
-| No WAF | **AWS WAF** | Injection/XSS protection, rate limiting |
-| Console logs | **CloudWatch / Datadog** | Centralized observability |
-| No queue | **Amazon SQS** | Decouple AI processing, backpressure |
-| Single replicas | **HPA** | Auto-scale on CPU/memory/queue depth |
-| No backups | **RDS auto-backups + S3 versioning** | Point-in-time recovery |
+---
 
-### 13.3 Security Layers (Scalable)
+## 12. Low-Level Design (LLD)
+
+### 12.1 Component responsibilities
 
 ```mermaid
 graph TB
-    subgraph L1["Layer 1: Edge"]
-        WAF["CloudFront + AWS WAF<br/>DDoS protection, rate limiting,<br/>SQL injection/XSS rules"]
+    subgraph BE["Backend / API Gateway"]
+        AuthMW["Auth middleware<br/>JWT verify + RBAC"]
+        RL["Rate limiter (Redis)"]
+        GRP["Guardrail orchestrator"]
+        Repo["Prisma repository<br/>row-level session scoping"]
+        Emit["OTEL exporter"]
     end
-    subgraph L2["Layer 2: Authentication"]
-        Auth["Amazon Cognito<br/>JWT tokens, OAuth 2.0, MFA, SSO"]
+    subgraph AIS["AI Service"]
+        Sess["Session/agent manager"]
+        Tools["Function tools<br/>(read/generate/list/get)"]
+        Client["Azure OpenAI client<br/>(retention off)"]
+        OutF["Output content filter"]
     end
-    subgraph L3["Layer 3: Authorization"]
-        RBAC["RBAC Middleware<br/>User owns sessions, org admin oversight,<br/>row-level security in PostgreSQL"]
-    end
-    subgraph L4["Layer 4: Secrets"]
-        Secrets["AWS Secrets Manager<br/>Auto-rotation, IAM access, CloudTrail audit"]
-    end
-    subgraph L5["Layer 5: Network"]
-        Net["VPC + Security Groups<br/>Private subnets for EKS/RDS/Redis,<br/>public subnets for ALB only"]
-    end
-    subgraph L6["Layer 6: Data"]
-        Enc["Encryption Everywhere<br/>TLS in transit (ACM), AES-256 at rest,<br/>KMS-managed keys"]
-    end
-
-    L1 --> L2 --> L3 --> L4 --> L5 --> L6
-
-    style L1 fill:#fee2e2,stroke:#ef4444
-    style L2 fill:#fef3c7,stroke:#f59e0b
-    style L3 fill:#d1fae5,stroke:#10b981
-    style L4 fill:#dbeafe,stroke:#3b82f6
-    style L5 fill:#ede9fe,stroke:#8b5cf6
-    style L6 fill:#fce7f3,stroke:#ec4899
+    AuthMW --> RL --> GRP --> Repo
+    GRP --> Sess --> Tools --> Client --> OutF
+    AuthMW --> Emit
+    Sess --> Emit
+    style BE fill:#dbeafe,stroke:#3b82f6
+    style AIS fill:#ede9fe,stroke:#8b5cf6
 ```
 
-### 13.4 Observability Stack (Scalable)
+### 12.2 Data model (encrypted at rest)
 
-| Category | Metrics |
-|----------|---------|
-| **Metrics** | Request latency (p50/p95/p99), error rates, pod CPU/memory, DB connections, Redis hit/miss, OpenAI latency/tokens, SQS depth, active WebSockets |
-| **Logs** | Structured JSON, request ID correlation across services, 30-day retention, S3 archive |
-| **Traces** | End-to-end request tracing (AWS X-Ray / Datadog APM), service map, bottleneck ID |
-| **Alerts** | Error rate >5% (PagerDuty), p99 >30s (Slack), SQS >100 (auto-scale), DB >80% connections (warning) |
+| Table | Key fields | Scope / security |
+|-------|-----------|------------------|
+| `User` *(new)* | id, entra_oid, roles | Mirror of Entra identity; no password stored |
+| `Session` | id, ownerUserId, name, ts | **Row-level scoped to owner**; admin override audited |
+| `Message` | id, sessionId, role, content | Cascade-delete; retention job; encrypted |
+| `UploadedFile` | id, sessionId, filename, content, dataClass | Guardrail-verified; encrypted; S3-backed |
+| `GeneratedOutput` | id, sessionId, filename, content | Output-filtered; encrypted |
+| `AuditEvent` *(new)* | id, userId, action, decision, dataClass, ts | Append-only; PII-scrubbed; retention config-led |
 
-### 13.5 Cost Estimate (Scalable)
+### 12.3 Request handling (per API call)
 
-| Service | Configuration | Monthly Cost |
-|---------|--------------|-------------|
-| EKS | Control plane + 3x t3.large | ~$250 |
-| RDS PostgreSQL | db.r6g.large, Multi-AZ | ~$350 |
-| ElastiCache Redis | cache.r6g.large, 2 nodes | ~$300 |
-| ALB | 1 ALB + data processing | ~$50 |
-| CloudFront | 100GB transfer | ~$20 |
-| S3 | 100GB storage | ~$5 |
-| Secrets Manager + SQS + Cognito | Various | ~$10 |
-| CloudWatch | Logs + metrics | ~$50 |
-| **Infrastructure Total** | | **~$1,035/month** |
-| **OpenAI API** | Variable (token usage) | **$200-2,000/month** |
+1. **AuthN/AuthZ** — verify JWT (JWKS), map AD group → role, enforce scope + session ownership.
+2. **Rate limit** — per-user + per-IP token bucket (Redis).
+3. **Guardrails inbound** — validate, scan files, PII/DLP, prompt-injection, redact.
+4. **Persist** — encrypted write, row-level scoped to owner.
+5. **LLM** — redacted payload → in-region Azure OpenAI (retention off).
+6. **Guardrails outbound** — content filter on response/outputs.
+7. **Audit + telemetry** — emit OTEL span + `AuditEvent`.
 
 ---
 
-## 14. System Design Flowcharts — Scalable
+## 13. Compliance Control Matrix — How Each Concern Is Ensured
 
-### 14.1 Scalable Request Flow
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant CF as CloudFront + WAF
-    participant ALB as AWS ALB
-    participant Cog as Cognito
-    participant BE as Backend (EKS)
-    participant SQS as Amazon SQS
-    participant AI as AI Service (EKS)
-    participant Redis as ElastiCache
-    participant RDS as Amazon RDS
-    participant OAI as OpenAI API
-    participant S3 as Amazon S3
-
-    U->>CF: HTTPS request
-    CF->>CF: WAF rules (rate limit, injection check)
-    
-    alt Static asset
-        CF->>S3: Fetch from S3 (cached at edge)
-        S3-->>CF: Asset
-        CF-->>U: Cached response
-    else API request
-        CF->>ALB: Forward to ALB
-        ALB->>Cog: Validate JWT token
-        Cog-->>ALB: Token valid
-        ALB->>BE: Route to backend pod
-        BE->>RDS: Save user message
-        BE->>SQS: Enqueue AI job
-        BE-->>U: 202 Accepted (WebSocket stays open)
-        
-        AI->>SQS: Poll message
-        AI->>Redis: Load session state (cache hit)
-        AI->>OAI: Agent run (gpt-5.2 + tools)
-        
-        loop Progress
-            AI->>Redis: Publish log (Pub/Sub)
-            Redis->>BE: Subscribe
-            BE-->>U: Socket.IO log stream
-        end
-        
-        OAI-->>AI: Response
-        AI->>RDS: Save outputs
-        AI->>S3: Upload generated SQL
-        AI->>Redis: Update session state
-        BE-->>U: Final response via WebSocket
-    end
-```
-
-### 14.2 Multi-AZ Deployment
-
-```mermaid
-graph TB
-    R53["Route 53 DNS"] --> CF["CloudFront + WAF"]
-    CF --> ALB["ALB (TLS via ACM)"]
-
-    subgraph AZ1["Availability Zone 1a"]
-        F1["Frontend Pod"]
-        B1["Backend Pod"]
-        A1["AI Service Pod"]
-        RDS_P["RDS Primary"]
-        Red_P["Redis Primary"]
-    end
-
-    subgraph AZ2["Availability Zone 1b"]
-        F2["Frontend Pod"]
-        B2["Backend Pod"]
-        A2["AI Service Pod"]
-        RDS_S["RDS Standby<br/>(auto-failover)"]
-        Red_R["Redis Replica"]
-    end
-
-    subgraph AZ3["Availability Zone 1c"]
-        F3["Frontend Pod"]
-        B3["Backend Pod"]
-        A3["AI Service Pod"]
-        RDS_R["RDS Read Replica"]
-    end
-
-    ALB --> F1 & F2 & F3
-    ALB --> B1 & B2 & B3
-    B1 & B2 & B3 --> A1 & A2 & A3
-    
-    RDS_P -->|replication| RDS_S
-    RDS_P -->|replication| RDS_R
-    Red_P -->|replication| Red_R
-
-    SQS["SQS Queue + DLQ"] --> A1 & A2 & A3
-
-    style AZ1 fill:#dbeafe,stroke:#3b82f6
-    style AZ2 fill:#d1fae5,stroke:#10b981
-    style AZ3 fill:#fef3c7,stroke:#f59e0b
-```
-
-### 14.3 Auto-Scaling Strategy
-
-```mermaid
-graph LR
-    subgraph HPA["Horizontal Pod Autoscaler"]
-        FE["Frontend<br/>Min: 2 | Max: 10<br/>Scale: CPU > 70%"]
-        BE["Backend<br/>Min: 2 | Max: 20<br/>Scale: CPU > 60%<br/>or connections > 100"]
-        AI["AI Service<br/>Min: 2 | Max: 10<br/>Scale: SQS depth > 5<br/>or CPU > 50%"]
-    end
-
-    subgraph Karpenter["Node Auto-Scaling (Karpenter)"]
-        Nodes["Min: 3 | Max: 15 nodes<br/>Instance types: t3.large, m6i.xlarge<br/>Scale: pending pod requests"]
-    end
-
-    HPA --> Karpenter
-
-    style HPA fill:#ede9fe,stroke:#8b5cf6
-    style Karpenter fill:#fce7f3,stroke:#ec4899
-```
-
-### 14.4 CI/CD Pipeline
-
-```mermaid
-graph LR
-    Dev["Developer<br/>git push"] --> GH["GitHub<br/>Webhook"]
-    GH --> CI["CI/CD Pipeline"]
-    CI --> Test["Run Tests<br/>(unit + integration)"]
-    Test --> Build["Build Docker<br/>Images"]
-    Build --> ECR["Push to ECR"]
-    ECR --> Helm["Helm Upgrade<br/>(rolling deploy)"]
-    Helm --> EKS["EKS Cluster"]
-    EKS --> HC["Health Check"]
-    HC -->|Pass| Done["Deploy Complete"]
-    HC -->|Fail| RB["Auto Rollback"]
-
-    style CI fill:#dbeafe,stroke:#3b82f6
-    style Done fill:#d1fae5,stroke:#10b981
-    style RB fill:#fee2e2,stroke:#ef4444
-```
+| Client concern | How the app ensures it | Reference |
+|----------------|------------------------|-----------|
+| AD-group access control | Entra ID SSO; AD group → RBAC role mapping | §7 |
+| Secure data flow between components | DFD with trust boundaries, TLS/mTLS, redaction gates | §6 |
+| Data secured at rest | KMS AES-256 on RDS/S3/Redis; TDE; encrypted backups | §8.2 |
+| User authentication flow | OIDC Auth Code + PKCE, MFA, Conditional Access | §7.2 |
+| Request/response path (all actors) | End-to-end sequence UI→GW→AI→LLM→Data→Observability | §6.1 |
+| Data ingress/egress points | Enumerated per boundary; single controlled LLM egress | §6.2, §11 |
+| Trust boundaries | Five boundaries B1–B5 with per-boundary controls | §6.2 |
+| Security controls per layer | Layered control table | §8.1 |
+| Data formats ingested | Format table + validation/scan pipeline | §5 |
+| Observability for governance (OTEL) | OTLP traces/metrics/logs → client SIEM; `gen_ai.*` | §10 |
+| Track user queries/responses | `AuditEvent` per action; OTEL AI-governance events | §9.3, §10 |
+| Retention period (config-led, low) | `*_RETENTION_DAYS` env config; auto-purge | §9.3 |
+| Guardrails vs. unintended use / PII to LLM | Inbound/outbound guardrail pipeline; DLP block in Mode A | §9 |
+| PII detection | Presidio + NZ NHI/IRD recognisers | §9.2 |
+| DLP checks | Policy engine block/redact by data class | §9.2 |
+| Input validation & sanitisation | `zod` schemas, encoding checks | §9.2 |
+| Prompt-injection detection | Classifier + heuristics + tool allowlist | §9.2 |
+| Malware/content scanning of uploads | ClamAV + MIME/magic-byte on ingest | §5, §9.2 |
+| Restricted prompt patterns | Deny-list + scoped system prompt | §9.2 |
+| Content filtering | Azure OpenAI + local filters, input & output | §9.2 |
+| Redaction before model submission | Enforced pre-egress redaction step | §9.1 |
+| AWS deployment w/ infra security | Private VPC, EKS/IRSA, KMS, WAF, GuardDuty | §11 |
+| AuthN/AuthZ, secured API, data security | JWT + RBAC + WAF; encrypted stores; egress allowlist | §7, §8, §11 |
 
 ---
 
-## 15. Migration Roadmap: Current to Scalable
+## 14. Sources & Compliance References
 
-### Phase 1: Foundation (Weeks 1-2)
-- [ ] AWS account setup with IAM roles
-- [ ] VPC with public/private subnets across 3 AZs
-- [ ] Provision RDS PostgreSQL (Multi-AZ), migrate data
-- [ ] Provision ElastiCache Redis
-- [ ] Set up ECR for Docker images
+New Zealand health and privacy:
+- **Privacy Act 2020** — legislation.govt.nz — https://www.legislation.govt.nz/act/public/2020/0031/latest/LMS23223.html
+- **Information Privacy Principles (IPPs)** — Office of the Privacy Commissioner — https://www.privacy.org.nz/privacy-act-2020/privacy-principles/
+- **Health Information Privacy Code 2020** — Office of the Privacy Commissioner — https://www.privacy.org.nz/privacy-act-2020/codes-of-practice/hipc2020/
+- **HISO 10029:2022 Health Information Security Framework** — Te Whatu Ora / Ministry of Health — https://www.tewhatuora.govt.nz/publications/health-information-security-framework
+- **HISO 10064:2017 Health Information Governance Guidelines** — Ministry of Health — https://www.health.govt.nz/publication/hiso-100642017-health-information-governance-guidelines
+- **National Health Index (NHI)** — Te Whatu Ora — https://www.tewhatuora.govt.nz/our-health-system/digital-health/national-health-index
+- **New Zealand Information Security Manual (NZISM)** — GCSB — https://www.nzism.gcsb.govt.nz/
+- **Protective Security Requirements (PSR)** — https://www.protectivesecurity.govt.nz/
 
-### Phase 2: Compute and Networking (Weeks 3-4)
-- [ ] Create EKS cluster with managed node groups
-- [ ] ALB Ingress Controller setup
-- [ ] ACM certificates for TLS
-- [ ] Deploy all services to EKS with HPA
-- [ ] Route 53 DNS records
+Security & AI standards:
+- **ISO/IEC 27001:2022** — https://www.iso.org/standard/27001
+- **NIST AI Risk Management Framework (AI RMF 1.0)** — https://www.nist.gov/itl/ai-risk-management-framework
+- **OWASP Top 10 for LLM Applications** — https://owasp.org/www-project-top-10-for-large-language-model-applications/
+- **OWASP Top 10 (web)** — https://owasp.org/www-project-top-ten/
+- **OpenTelemetry specification** — https://opentelemetry.io/docs/specs/otel/
+- **OpenTelemetry GenAI semantic conventions** — https://opentelemetry.io/docs/specs/semconv/gen-ai/
 
-### Phase 3: Security and Auth (Weeks 5-6)
-- [ ] Amazon Cognito user pool
-- [ ] JWT authentication middleware
-- [ ] RBAC implementation
-- [ ] Migrate secrets to AWS Secrets Manager
-- [ ] Enable RDS encryption, configure WAF
-
-### Phase 4: Storage and Performance (Week 7)
-- [ ] Migrate files from DB TEXT to S3
-- [ ] CloudFront CDN for frontend + S3
-- [ ] Replace in-memory cache with Redis
-- [ ] SQS queue for AI job processing
-- [ ] Redis Pub/Sub for real-time logs
-
-### Phase 5: Observability and CI/CD (Week 8)
-- [ ] CloudWatch / Datadog metrics, logs, traces
-- [ ] Alerting (PagerDuty/Slack)
-- [ ] GitHub Actions CI/CD pipeline
-- [ ] Helm charts for deployments
-- [ ] Automated DB backups + S3 lifecycle
-
-### Phase 6: Testing and Launch (Weeks 9-10)
-- [ ] Load testing (k6 / Locust)
-- [ ] Chaos engineering (pod kills, DB failover)
-- [ ] Security audit (penetration testing)
-- [ ] Gradual traffic migration (blue-green / canary)
-- [ ] Decommission K3s single-node
-
-### Roadmap Timeline
-
-```mermaid
-gantt
-    title Migration Roadmap: Current to Scalable
-    dateFormat  YYYY-MM-DD
-    axisFormat  %b %d
-
-    section Phase 1: Foundation
-    AWS + VPC + RDS + Redis + ECR     :a1, 2026-04-21, 14d
-
-    section Phase 2: Compute
-    EKS + ALB + TLS + Deploy + DNS    :a2, after a1, 14d
-
-    section Phase 3: Security
-    Cognito + JWT + RBAC + WAF        :a3, after a2, 14d
-
-    section Phase 4: Performance
-    S3 + CDN + Redis + SQS            :a4, after a3, 7d
-
-    section Phase 5: Observability
-    Monitoring + CI/CD + Backups      :a5, after a4, 7d
-
-    section Phase 6: Launch
-    Load test + Chaos + Migrate       :a6, after a5, 14d
-```
+Provider & cross-map:
+- **Azure OpenAI — Data, privacy & security** — Microsoft Learn — https://learn.microsoft.com/azure/ai-services/openai/concepts/data-privacy
+- **Microsoft Entra ID documentation** — https://learn.microsoft.com/entra/identity/
+- **HIPAA Security Rule (cross-map reference)** — U.S. HHS — https://www.hhs.gov/hipaa/for-professionals/security/index.html
+- **Microsoft Presidio (PII detection/redaction)** — https://microsoft.github.io/presidio/
 
 ---
 
-*Document generated April 14, 2026.*
+*Circini Migration Agent — Secure Architecture v2.0. Prepared for New Zealand health-sector client review.*
