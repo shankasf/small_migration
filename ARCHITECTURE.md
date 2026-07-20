@@ -9,6 +9,9 @@ Agent inside a New Zealand health client's environment. It is designed to be com
 health information rules (Privacy Act 2020, Health Information Privacy Code 2020, HISO 10029:2022),
 cross-mapped to HIPAA-equivalent safeguards. See [§14 Sources & Compliance References](#14-sources--compliance-references).
 
+**Diagram key:** teal = compute/app · light teal = client zone · green = security control ·
+blue-grey = encrypted data store · amber = external egress · red = blocked/denied.
+
 ---
 
 ## Table of Contents
@@ -87,36 +90,47 @@ explicitly-enabled mode with stricter controls.
 
 ## 3. High-Level Design (HLD)
 
+Identity is delegated to the client's Entra ID/AD; all compute runs in a private AWS VPC; the only
+outbound path is a redaction-gated call to in-region Azure OpenAI; all telemetry flows to the SIEM.
+
 ```mermaid
-graph TB
-    User["Health-sector User<br/>(managed device)"] -->|"HTTPS + MFA"| Entra["Microsoft Entra ID<br/>OIDC/SAML SSO<br/>AD groups, MFA,<br/>Conditional Access"]
-    User -->|"HTTPS 443"| WAF["AWS WAF + CloudFront<br/>Rate limit, OWASP rules,<br/>geo/IP allowlist"]
+%%{init:{'theme':'base','themeVariables':{'fontFamily':'Helvetica,Arial,sans-serif','fontSize':'14px','primaryColor':'#DCEAE9','primaryBorderColor':'#0E6E6E','primaryTextColor':'#0F2B2A','lineColor':'#6E8C88','clusterBkg':'#EEF5F3','clusterBorder':'#B9D0CB'}}}%%
+flowchart TB
+  U["User<br/>managed device"]:::zone
+  Entra["Microsoft Entra ID<br/>OIDC · SAML · MFA<br/>AD groups"]:::app
+  WAF["AWS WAF · CloudFront<br/>rate limit · OWASP · geo allowlist"]:::ctrl
+  subgraph AWS["AWS VPC — private · health-approved region"]
+    ALB["Application Load Balancer<br/>TLS · JWT verify"]:::ctrl
+    FE["Frontend<br/>React / Nginx"]:::app
+    BE["API Gateway<br/>RBAC + Guardrail pipeline"]:::app
+    AI["AI Service<br/>FastAPI agent"]:::app
+    RDS[("RDS · S3 · Redis<br/>KMS AES-256")]:::data
+    OTEL["OTel Collector"]:::ctrl
+  end
+  SIEM["Client SIEM<br/>CloudWatch · Splunk · Sentinel"]:::ctrl
+  AOAI["Azure OpenAI · in-region<br/>retention OFF · no training<br/>Private Endpoint"]:::ext
 
-    subgraph AWS["AWS VPC — Private (ap-southeast-2, health-approved)"]
-        WAF --> ALB["Application Load Balancer<br/>TLS (ACM), JWT verify"]
-        ALB --> FE["Frontend<br/>React/Nginx"]
-        ALB --> BE["Backend / API Gateway<br/>Express + RBAC +<br/>Guardrail Pipeline"]
-        BE --> AI["AI Service<br/>FastAPI Agent"]
-        BE --> RDS[("RDS PostgreSQL<br/>KMS-encrypted, Multi-AZ")]
-        BE --> S3[("S3<br/>KMS-encrypted files/outputs")]
-        BE --> Redis[("ElastiCache Redis<br/>session/rate state")]
-        BE -->|OTLP| OTEL["OTel Collector"]
-        AI -->|OTLP| OTEL
-    end
+  U -->|"HTTPS + MFA"| Entra
+  U -->|"HTTPS 443"| WAF
+  Entra -.->|"token validation"| ALB
+  WAF --> ALB --> FE
+  ALB --> BE --> AI
+  BE --> RDS
+  BE -->|OTLP| OTEL
+  AI -->|OTLP| OTEL
+  OTEL --> SIEM
+  AI -->|"redacted payload only"| AOAI
 
-    Entra -. "token validation" .-> ALB
-    OTEL --> SIEM["Client SIEM / Monitoring<br/>(CloudWatch, Splunk, Sentinel)"]
-    AI -->|"egress-controlled HTTPS<br/>redacted payload only"| AOAI["Azure OpenAI (in-region)<br/>Retention OFF, no training,<br/>Private Endpoint"]
-
-    style AWS fill:#f0f4ff,stroke:#3b82f6
-    style AOAI fill:#d1fae5,stroke:#10b981
-    style Entra fill:#ede9fe,stroke:#8b5cf6
-    style SIEM fill:#fef3c7,stroke:#f59e0b
+  classDef zone fill:#DCEAE9,stroke:#0E6E6E,color:#0F2B2A;
+  classDef app fill:#0E6E6E,stroke:#0A5252,color:#F2FBFA;
+  classDef ctrl fill:#DAEEE1,stroke:#2E8B57,color:#14432B;
+  classDef data fill:#E3E7F1,stroke:#4B5A8A,color:#232B45;
+  classDef ext fill:#F4E4CB,stroke:#C77D2E,color:#5A3A12;
+  linkStyle default stroke:#6E8C88,stroke-width:1.5px;
 ```
 
-**Key properties:** identity is delegated to the client's Entra ID/AD; all compute runs in a private
-AWS VPC; the only outbound path is an egress-controlled, redaction-gated call to in-region Azure
-OpenAI; all data at rest is KMS-encrypted; all telemetry flows to the client's SIEM.
+**Key properties:** identity delegated to Entra ID/AD; compute in a private AWS VPC; a single
+redaction-gated egress to in-region Azure OpenAI; KMS encryption at rest; telemetry to the SIEM.
 
 ---
 
@@ -158,51 +172,52 @@ verification, malware scan (ClamAV) before persistence.
 
 ## 6. Data Flow Diagram (DFD) & Trust Boundaries
 
-### 6.1 End-to-end request/response path with security controls
+Five trust boundaries from identity to telemetry. Data is redacted before the LLM egress and
+encrypted before any store; a policy violation is blocked and audited rather than forwarded.
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant U as User (Managed Device)
-    participant UI as Web UI (React)
-    participant IdP as Entra ID / AD
-    participant GW as API Gateway (Backend + RBAC)
-    participant GR as Guardrail Pipeline
-    participant AI as AI Service
-    participant AO as Azure OpenAI (in-region)
-    participant DS as Data Sources (RDS / S3)
-    participant OB as Observability (OTEL → SIEM)
+%%{init:{'theme':'base','themeVariables':{'fontFamily':'Helvetica,Arial,sans-serif','fontSize':'13px','clusterBkg':'#EEF5F3','clusterBorder':'#B9D0CB','lineColor':'#6E8C88'}}}%%
+flowchart LR
+  U["User<br/>managed device"]:::zone
+  subgraph B1["Boundary 1 · Identity"]
+    IdP["Entra ID / AD<br/>OIDC · MFA"]:::app
+  end
+  subgraph B2["Boundary 2 · App Perimeter"]
+    direction TB
+    EDGE["WAF · ALB<br/>JWT · RBAC · rate limit"]:::ctrl
+    GR["Guardrail pipeline<br/>PII · DLP · injection · malware"]:::ctrl
+    BLK["Reject + audit"]:::block
+  end
+  subgraph B3["Boundary 3 · Data"]
+    DS[("RDS · S3 · Redis<br/>KMS AES-256")]:::data
+  end
+  subgraph B4["Boundary 4 · LLM Egress"]
+    AO["Azure OpenAI<br/>in-region · no retention"]:::ext
+  end
+  subgraph B5["Boundary 5 · Telemetry"]
+    OB["OTel Collector to SIEM<br/>PII-scrubbed"]:::ctrl
+  end
+  U -->|"HTTPS + MFA"| IdP
+  IdP -->|"signed JWT"| EDGE
+  EDGE --> GR
+  GR -.->|"violation"| BLK
+  GR -->|"encrypted write"| DS
+  GR -->|"redacted only"| AO
+  AO -->|"dbt / SQL"| GR
+  GR -->|"filtered response"| U
+  EDGE -.->|"audit span"| OB
+  AO -.->|"tokens · latency"| OB
 
-    Note over U,IdP: TRUST BOUNDARY 1 — Identity
-    U->>IdP: SSO login (OIDC + MFA)
-    IdP-->>UI: Signed JWT (roles from AD groups)
-    U->>UI: Upload files + prompt
-    UI->>GW: HTTPS request + Bearer JWT
-
-    Note over GW: TRUST BOUNDARY 2 — App perimeter
-    GW->>GW: Verify JWT, RBAC check, rate limit
-    GW->>GR: Input + files
-    GR->>GR: MIME/magic-byte + malware scan
-    GR->>GR: PII/DLP detect, prompt-injection detect
-    GR->>GR: Sanitise + redact sensitive data
-    alt Policy violation (blocked PII / injection / malware)
-        GR-->>UI: 422 Blocked + reason (audited)
-    else Clean
-        GR->>DS: Persist (KMS-encrypted, row-level scoped)
-        GW->>AI: Redacted payload
-        Note over AI,AO: TRUST BOUNDARY 3 — External LLM egress
-        AI->>AO: HTTPS (redacted only, retention OFF)
-        AO-->>AI: Generated dbt/SQL
-        AI->>GR: Output content filter (PII/secrets)
-        AI-->>GW: Response + outputs
-        GW->>DS: Save outputs (encrypted)
-        GW-->>UI: Response + download links
-    end
-    GW->>OB: Emit OTEL span (user, action, decision)
-    AI->>OB: Emit OTEL span (model, tokens, latency)
+  classDef zone fill:#DCEAE9,stroke:#0E6E6E,color:#0F2B2A;
+  classDef app fill:#0E6E6E,stroke:#0A5252,color:#F2FBFA;
+  classDef ctrl fill:#DAEEE1,stroke:#2E8B57,color:#14432B;
+  classDef data fill:#E3E7F1,stroke:#4B5A8A,color:#232B45;
+  classDef ext fill:#F4E4CB,stroke:#C77D2E,color:#5A3A12;
+  classDef block fill:#F6DBD8,stroke:#C0392B,color:#5A1A14;
+  linkStyle default stroke:#6E8C88,stroke-width:1.5px;
 ```
 
-### 6.2 Trust boundaries, ingress & egress
+### 6.1 Trust boundaries, ingress & egress
 
 | Boundary | Ingress point | Egress point | Controls at boundary |
 |----------|--------------|--------------|----------------------|
@@ -231,23 +246,23 @@ group membership — the standard enterprise pattern.
 ### 7.2 Authentication flow (OIDC Authorization Code + PKCE)
 
 ```mermaid
+%%{init:{'theme':'base','themeVariables':{'fontFamily':'Helvetica,Arial,sans-serif','fontSize':'14px','actorBkg':'#0E6E6E','actorBorder':'#0A5252','actorTextColor':'#F2FBFA','signalColor':'#4E6D68','signalTextColor':'#1B2E2C','noteBkgColor':'#F4E4CB','noteBorderColor':'#C77D2E','noteTextColor':'#5A3A12','sequenceNumberColor':'#F2FBFA'}}}%%
 sequenceDiagram
-    autonumber
-    participant U as User
-    participant UI as Web UI
-    participant IdP as Entra ID
-    participant GW as Backend API
-
-    U->>UI: Access app
-    UI->>IdP: Redirect (OIDC auth code + PKCE)
-    IdP->>U: MFA + Conditional Access (device/location)
-    IdP-->>UI: Auth code
-    UI->>IdP: Exchange code → ID + access token (JWT)
-    Note over IdP: Token carries AD group claims → roles
-    UI->>GW: API call + Bearer JWT
-    GW->>GW: Validate signature (JWKS), audience, expiry
-    GW->>GW: Map group claim → RBAC role; enforce scope
-    GW-->>UI: Authorized response
+  autonumber
+  participant U as User
+  participant UI as Web UI
+  participant IdP as Entra ID / AD
+  participant GW as Backend API
+  U->>UI: Access application
+  UI->>IdP: Redirect — OIDC auth code + PKCE
+  IdP->>U: MFA + Conditional Access (device / location)
+  IdP-->>UI: Authorization code
+  UI->>IdP: Exchange code for ID + access token (JWT)
+  Note over IdP: Token carries AD group claims → roles
+  UI->>GW: API call + Bearer JWT
+  GW->>GW: Verify signature (JWKS), audience, expiry
+  GW->>GW: Map group claim to role · enforce scope
+  GW-->>UI: Authorized response
 ```
 
 **Controls:** RS256 JWT with JWKS rotation; short-lived access tokens + refresh; MFA and
@@ -291,21 +306,30 @@ enforced in the API gateway/AI service — never optional, never client-side onl
 ### 9.1 Guardrail pipeline
 
 ```mermaid
-graph LR
-    IN["User input + files"] --> V1["Input validation<br/>& sanitisation (zod)"]
-    V1 --> V2["File scan<br/>MIME + magic-byte + ClamAV"]
-    V2 --> V3["PII / DLP detection<br/>(Presidio: NHI, names,<br/>DOB, IRD, contact)"]
-    V3 --> V4["Prompt-injection<br/>detection"]
-    V4 --> V5["Restricted-pattern<br/>& content filter"]
-    V5 --> V6["Sensitive-data redaction<br/>BEFORE model submission"]
-    V6 --> M["Azure OpenAI"]
-    M --> O1["Output content filter<br/>(PII/secret leak check)"]
-    O1 --> OUT["Response to user"]
-    V2 -. block .-> BLK["Reject + audit"]
-    V3 -. block/redact .-> BLK
-    V4 -. block .-> BLK
-    style BLK fill:#fee2e2,stroke:#ef4444
-    style V6 fill:#d1fae5,stroke:#10b981
+%%{init:{'theme':'base','themeVariables':{'fontFamily':'Helvetica,Arial,sans-serif','fontSize':'13px','lineColor':'#6E8C88'}}}%%
+flowchart LR
+  IN["User input<br/>+ files"]:::zone
+  V1["Input validation<br/>and sanitisation"]:::ctrl
+  V2["File scan<br/>MIME · magic-byte · ClamAV"]:::ctrl
+  V3["PII / DLP detection<br/>NHI · IRD · DOB · name"]:::ctrl
+  V4["Prompt-injection<br/>detection"]:::ctrl
+  V5["Restricted-pattern<br/>+ content filter"]:::ctrl
+  V6["Redaction<br/>before model submission"]:::app
+  M["Azure OpenAI"]:::ext
+  O1["Output content filter<br/>PII / secret leak check"]:::ctrl
+  OUT["Response to user"]:::zone
+  BLK["Reject + audit"]:::block
+  IN --> V1 --> V2 --> V3 --> V4 --> V5 --> V6 --> M --> O1 --> OUT
+  V2 -.-> BLK
+  V3 -.-> BLK
+  V4 -.-> BLK
+
+  classDef zone fill:#DCEAE9,stroke:#0E6E6E,color:#0F2B2A;
+  classDef app fill:#0E6E6E,stroke:#0A5252,color:#F2FBFA;
+  classDef ctrl fill:#DAEEE1,stroke:#2E8B57,color:#14432B;
+  classDef ext fill:#F4E4CB,stroke:#C77D2E,color:#5A3A12;
+  classDef block fill:#F6DBD8,stroke:#C0392B,color:#5A1A14;
+  linkStyle default stroke:#6E8C88,stroke-width:1.5px;
 ```
 
 ### 9.2 Data-protection guardrails & AI-safety controls
@@ -359,36 +383,37 @@ can monitor AI usage in their existing dashboards without bespoke integration.
 
 ## 11. Deployment View — AWS Infrastructure Security
 
+Compute and data sit in private subnets with no public IPs. Egress is firewalled to the Azure
+OpenAI endpoint alone; secrets, identity, and threat detection are managed AWS-native.
+
 ```mermaid
-graph TB
-    R53["Route 53"] --> CF["CloudFront + AWS WAF"]
-    CF --> ALB["ALB (TLS via ACM)<br/>public subnet only"]
-
-    subgraph VPC["AWS VPC (private) — health-approved region"]
-        subgraph Pub["Public subnets"]
-            ALB
-            NAT["NAT + Egress firewall<br/>(allowlist: Azure OpenAI)"]
-        end
-        subgraph Priv["Private subnets (no internet)"]
-            EKS["EKS: frontend / backend / ai-service<br/>IRSA least-privilege"]
-            RDS["RDS PostgreSQL (Multi-AZ, KMS)"]
-            S3EP["S3 via VPC endpoint (KMS)"]
-            Redis["ElastiCache Redis (KMS)"]
-        end
-        ALB --> EKS
-        EKS --> RDS
-        EKS --> S3EP
-        EKS --> Redis
-        EKS --> NAT
+%%{init:{'theme':'base','themeVariables':{'fontFamily':'Helvetica,Arial,sans-serif','fontSize':'13px','clusterBkg':'#EEF5F3','clusterBorder':'#B9D0CB','lineColor':'#6E8C88'}}}%%
+flowchart TB
+  R53["Route 53"]:::ctrl --> CF["CloudFront + AWS WAF"]:::ctrl
+  CF --> ALB["ALB · TLS (ACM)<br/>public subnet"]:::ctrl
+  subgraph VPC["AWS VPC — private · health-approved region"]
+    subgraph PRIV["Private subnets — no internet"]
+      EKS["EKS · frontend / backend / ai-service<br/>IRSA least-privilege"]:::app
+      RDS["RDS PostgreSQL<br/>Multi-AZ · KMS"]:::data
+      S3["S3 via VPC endpoint · KMS"]:::data
+      REDIS["ElastiCache Redis · KMS"]:::data
     end
+    NAT["NAT + egress firewall<br/>allowlist: Azure OpenAI only"]:::ctrl
+    ALB --> EKS
+    EKS --> RDS
+    EKS --> S3
+    EKS --> REDIS
+    EKS --> NAT
+  end
+  SM["Secrets Manager + KMS"]:::ctrl -.->|IAM| EKS
+  CT["CloudTrail · GuardDuty · Config"]:::ctrl -.->|audit| VPC
+  NAT --> AOAI["Azure OpenAI<br/>in-region · Private Endpoint"]:::ext
 
-    SM["Secrets Manager + KMS"] -. IAM .-> EKS
-    CT["CloudTrail + GuardDuty + Config"] -. audit .-> VPC
-    NAT --> AOAI["Azure OpenAI (in-region, Private Endpoint)"]
-
-    style VPC fill:#f0f4ff,stroke:#3b82f6
-    style Priv fill:#e0e7ff,stroke:#6366f1
-    style AOAI fill:#d1fae5,stroke:#10b981
+  classDef app fill:#0E6E6E,stroke:#0A5252,color:#F2FBFA;
+  classDef ctrl fill:#DAEEE1,stroke:#2E8B57,color:#14432B;
+  classDef data fill:#E3E7F1,stroke:#4B5A8A,color:#232B45;
+  classDef ext fill:#F4E4CB,stroke:#C77D2E,color:#5A3A12;
+  linkStyle default stroke:#6E8C88,stroke-width:1.5px;
 ```
 
 | Concern | Control |
@@ -405,29 +430,33 @@ graph TB
 
 ## 12. Low-Level Design (LLD)
 
-### 12.1 Component responsibilities
+### 12.1 Request lifecycle (per API call)
+
+Every API call runs the same ordered pipeline — authenticate, authorise, rate-limit, guardrail,
+persist encrypted, call the model on a redacted payload, filter output, then audit.
 
 ```mermaid
-graph TB
-    subgraph BE["Backend / API Gateway"]
-        AuthMW["Auth middleware<br/>JWT verify + RBAC"]
-        RL["Rate limiter (Redis)"]
-        GRP["Guardrail orchestrator"]
-        Repo["Prisma repository<br/>row-level session scoping"]
-        Emit["OTEL exporter"]
-    end
-    subgraph AIS["AI Service"]
-        Sess["Session/agent manager"]
-        Tools["Function tools<br/>(read/generate/list/get)"]
-        Client["Azure OpenAI client<br/>(retention off)"]
-        OutF["Output content filter"]
-    end
-    AuthMW --> RL --> GRP --> Repo
-    GRP --> Sess --> Tools --> Client --> OutF
-    AuthMW --> Emit
-    Sess --> Emit
-    style BE fill:#dbeafe,stroke:#3b82f6
-    style AIS fill:#ede9fe,stroke:#8b5cf6
+%%{init:{'theme':'base','themeVariables':{'fontFamily':'Helvetica,Arial,sans-serif','fontSize':'14px','actorBkg':'#0E6E6E','actorBorder':'#0A5252','actorTextColor':'#F2FBFA','signalColor':'#4E6D68','signalTextColor':'#1B2E2C','noteBkgColor':'#DAEEE1','noteBorderColor':'#2E8B57','noteTextColor':'#14432B','sequenceNumberColor':'#F2FBFA'}}}%%
+sequenceDiagram
+  autonumber
+  participant GW as API Gateway
+  participant GR as Guardrails
+  participant DS as RDS / S3
+  participant AI as AI Service
+  participant AO as Azure OpenAI
+  participant OB as OTel / Audit
+  GW->>GW: Verify JWT · map AD group to role · scope
+  GW->>GW: Rate limit (Redis token bucket)
+  GW->>GR: Inbound — validate · scan · PII/DLP · redact
+  Note over GR: Violation blocked (422) and audited
+  GR->>DS: Persist (KMS-encrypted, owner-scoped)
+  GR->>AI: Redacted payload
+  AI->>AO: HTTPS — retention OFF
+  AO-->>AI: Generated dbt / SQL
+  AI->>GR: Outbound content filter
+  GR->>DS: Save outputs (encrypted)
+  GR-->>GW: Response + download links
+  GW->>OB: Emit OTEL span + AuditEvent
 ```
 
 ### 12.2 Data model (encrypted at rest)
@@ -441,7 +470,7 @@ graph TB
 | `GeneratedOutput` | id, sessionId, filename, content | Output-filtered; encrypted |
 | `AuditEvent` *(new)* | id, userId, action, decision, dataClass, ts | Append-only; PII-scrubbed; retention config-led |
 
-### 12.3 Request handling (per API call)
+### 12.3 Request handling steps
 
 1. **AuthN/AuthZ** — verify JWT (JWKS), map AD group → role, enforce scope + session ownership.
 2. **Rate limit** — per-user + per-IP token bucket (Redis).
@@ -461,9 +490,9 @@ graph TB
 | Secure data flow between components | DFD with trust boundaries, TLS/mTLS, redaction gates | §6 |
 | Data secured at rest | KMS AES-256 on RDS/S3/Redis; TDE; encrypted backups | §8.2 |
 | User authentication flow | OIDC Auth Code + PKCE, MFA, Conditional Access | §7.2 |
-| Request/response path (all actors) | End-to-end sequence UI→GW→AI→LLM→Data→Observability | §6.1 |
-| Data ingress/egress points | Enumerated per boundary; single controlled LLM egress | §6.2, §11 |
-| Trust boundaries | Five boundaries B1–B5 with per-boundary controls | §6.2 |
+| Request/response path (all actors) | End-to-end lifecycle GW→GR→AI→LLM→Data→Observability | §12.1 |
+| Data ingress/egress points | Enumerated per boundary; single controlled LLM egress | §6.1, §11 |
+| Trust boundaries | Five boundaries B1–B5 with per-boundary controls | §6 |
 | Security controls per layer | Layered control table | §8.1 |
 | Data formats ingested | Format table + validation/scan pipeline | §5 |
 | Observability for governance (OTEL) | OTLP traces/metrics/logs → client SIEM; `gen_ai.*` | §10 |

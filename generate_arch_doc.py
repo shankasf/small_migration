@@ -13,12 +13,18 @@ Uses python-docx to produce a well-formatted Word document with:
   - Page numbers in the footer
 """
 
+import glob
+import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from docx import Document
 from docx.shared import Pt, Inches, Cm, RGBColor
+from docx.shared import Emu
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.section import WD_ORIENT
@@ -43,6 +49,73 @@ COLOR_CODE_BG = "D9D9D9"  # light gray
 COLOR_TABLE_HEADER_BG = "2F5496"  # dark blue
 COLOR_TABLE_HEADER_FG = RGBColor(0xFF, 0xFF, 0xFF)
 COLOR_BLOCKQUOTE = RGBColor(0x55, 0x55, 0x55)
+
+# ---------------------------------------------------------------------------
+# Mermaid rendering (diagrams -> PNG embedded in the document)
+# ---------------------------------------------------------------------------
+_MERMAID_DIR = tempfile.mkdtemp(prefix="mermaid_")
+_MERMAID_INDEX = [0]
+
+
+def _find_chrome():
+    """Locate a Chromium/Chrome executable for mermaid-cli (puppeteer)."""
+    for name in ("chromium", "chromium-browser", "google-chrome",
+                 "google-chrome-stable", "chrome"):
+        p = shutil.which(name)
+        if p:
+            return p
+    for pat in (
+        os.path.expanduser("~/.cache/puppeteer/chrome/*/chrome-linux*/chrome"),
+        os.path.expanduser("~/.cache/puppeteer/chrome-headless-shell/*/*/chrome-headless-shell"),
+    ):
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[-1]
+    return None
+
+
+def _find_mmdc():
+    local = Path(__file__).parent / "node_modules" / ".bin" / "mmdc"
+    if local.exists():
+        return str(local)
+    return shutil.which("mmdc")
+
+
+_MMDC = _find_mmdc()
+_CHROME = _find_chrome()
+_PUPPETEER_CFG = None
+if _CHROME:
+    _PUPPETEER_CFG = os.path.join(_MERMAID_DIR, "puppeteer.json")
+    Path(_PUPPETEER_CFG).write_text(
+        json.dumps({"executablePath": _CHROME,
+                    "args": ["--no-sandbox", "--disable-gpu"]})
+    )
+
+
+def render_mermaid_png(code: str):
+    """Render a mermaid diagram to a PNG. Returns the file path, or None on failure."""
+    if not _MMDC or not _CHROME:
+        return None
+    _MERMAID_INDEX[0] += 1
+    idx = _MERMAID_INDEX[0]
+    mmd = os.path.join(_MERMAID_DIR, f"diagram_{idx}.mmd")
+    png = os.path.join(_MERMAID_DIR, f"diagram_{idx}.png")
+    Path(mmd).write_text(code, encoding="utf-8")
+    cmd = [_MMDC, "-i", mmd, "-o", png, "-b", "white", "-s", "3"]
+    if _PUPPETEER_CFG:
+        cmd += ["-p", _PUPPETEER_CFG]
+    env = dict(os.environ, PUPPETEER_CACHE_DIR=os.path.expanduser("~/.cache/puppeteer"))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! mermaid render error (diagram {idx}): {exc}")
+        return None
+    if r.returncode != 0 or not os.path.exists(png):
+        print(f"  ! mermaid render failed (diagram {idx}): {r.stderr.strip()[:200]}")
+        return None
+    print(f"  + rendered diagram {idx}")
+    return png
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -327,8 +400,8 @@ def create_title_page(doc: Document):
 
     # Version info
     info_items = [
-        ("Version", "1.0"),
-        ("Date", "April 14, 2026"),
+        ("Version", "2.0"),
+        ("Date", "July 20, 2026"),
         ("Domain", "https://migration.callsphere.tech"),
         ("Repository", "https://github.com/shankasf/E-Commerce-Voice-Agent.git"),
     ]
@@ -464,6 +537,26 @@ def render_blocks(doc: Document, blocks: list):
 
         elif btype == 'code':
             code_text = block['text']
+
+            # Mermaid diagrams: render to an embedded image instead of source text.
+            if block.get('lang') == 'mermaid':
+                png = render_mermaid_png(code_text)
+                if png:
+                    # Fit the image to the usable page width (page - margins).
+                    sec = doc.sections[0]
+                    usable = sec.page_width - sec.left_margin - sec.right_margin
+                    pic_p = doc.add_paragraph()
+                    pic_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    pic_p.space_before = Pt(6)
+                    pic_p.space_after = Pt(10)
+                    run = pic_p.add_run()
+                    try:
+                        run.add_picture(png, width=Emu(int(usable)))
+                    except Exception:  # noqa: BLE001
+                        run.add_picture(png)
+                    continue
+                # else: fall through to monospace source rendering
+
             # Render the whole code block as a single paragraph with monospace font
             # and gray background
             p = doc.add_paragraph()
@@ -599,7 +692,7 @@ def main():
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.space_before = Pt(24)
-    run = p.add_run("Document generated on April 14, 2026. For questions, contact the engineering team.")
+    run = p.add_run("Document generated on July 20, 2026. For questions, contact the engineering team.")
     run.font.name = FONT_BODY
     run.font.size = Pt(9)
     run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
