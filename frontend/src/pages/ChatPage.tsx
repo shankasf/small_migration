@@ -2,8 +2,8 @@ import { memo } from 'react';
 import { Session, Message, UploadedFile, GeneratedOutput } from '../types';
 import ChatArea from '../components/ChatArea';
 import ChatInput from '../components/ChatInput';
-import { User, Sparkles } from 'lucide-react';
 import { LogEntry } from '../hooks/useRealtimeLogs';
+import { CirciniMark } from '../components/Brand';
 
 interface ChatPageProps {
   session: Session | null;
@@ -20,6 +20,20 @@ interface ChatPageProps {
   realtimeLogs?: LogEntry[];
   onViewFile?: (fileId: string) => void;
   onDownloadFile?: (fileId: string) => void;
+}
+
+function WelcomeHero({ subtitle }: { subtitle: string }) {
+  return (
+    <div className="flex flex-col items-center text-center animate-fade-up">
+      <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-hairline bg-elevated text-brass shadow-console">
+        <CirciniMark size={30} />
+      </div>
+      <h2 className="font-display text-2xl font-700 tracking-tight text-ink mb-2 text-balance">
+        What&rsquo;s on your mind today?
+      </h2>
+      <p className="text-sm text-muted mb-8 max-w-sm">{subtitle}</p>
+    </div>
+  );
 }
 
 const ChatPage = memo(function ChatPage({
@@ -41,38 +55,12 @@ const ChatPage = memo(function ChatPage({
   // Welcome screen when no session
   if (!session) {
     return (
-      <div className="flex-1 flex flex-col h-screen bg-white">
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
-          <div className="w-7" />
-          <div className="flex items-center gap-1.5">
-            <Sparkles className="w-4 h-4 text-blue-600" />
-            <h1 className="text-sm font-medium text-gray-800">Circini Migration Agent</h1>
-          </div>
-          <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center">
-            <User className="w-3.5 h-3.5 text-gray-500" />
-          </div>
-        </header>
-
-        {/* Center content */}
-        <div className="flex-1 flex flex-col items-center justify-center px-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mb-4 shadow-lg">
-            <Sparkles className="w-6 h-6 text-white" />
-          </div>
-          <h2 className="text-xl font-medium text-gray-800 mb-1">
-            What's on your mind today?
-          </h2>
-          <p className="text-xs text-gray-400 mb-6">
-            Upload migration files or ask questions about your data migration
-          </p>
-
-          {/* Input */}
+      <div className="relative flex-1 flex flex-col min-h-0 bg-obsidian">
+        <div className="console-grid pointer-events-none absolute inset-0 opacity-60" />
+        <div className="relative flex-1 flex flex-col items-center justify-center px-4">
+          <WelcomeHero subtitle="Upload migration files or ask questions about your data migration" />
           <div className="w-full max-w-xl">
-            <ChatInput
-              onSend={onSend}
-              disabled={false}
-              placeholder="Ask anything..."
-            />
+            <ChatInput onSend={onSend} disabled={false} placeholder="Ask anything..." />
           </div>
         </div>
       </div>
@@ -80,38 +68,26 @@ const ChatPage = memo(function ChatPage({
   }
 
   return (
-    <div className="flex-1 flex flex-col h-screen bg-white">
+    <div className="flex-1 flex flex-col min-h-0 bg-obsidian">
       {/* Minimal header */}
-      <header className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
-        <div className="w-7" />
+      <header className="flex items-center justify-center px-4 py-2 border-b border-hairline bg-panel/60">
         <div className="flex flex-col items-center">
-          <div className="flex items-center gap-1.5">
-            <Sparkles className="w-4 h-4 text-blue-600" />
-            <h1 className="text-sm font-medium text-gray-800">Circini Migration Agent</h1>
-          </div>
+          <span className="eyebrow">{session.name && !session.name.startsWith('[Attached') ? 'Session' : 'Session'}</span>
           {uploadedFiles.length > 0 && (
-            <span className="text-[10px] text-green-600 mt-0.5">
+            <span className="text-[10px] font-mono text-success mt-0.5">
               {uploadedFiles.length} file{uploadedFiles.length > 1 ? 's' : ''} loaded
             </span>
           )}
-        </div>
-        <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center">
-          <User className="w-3.5 h-3.5 text-gray-500" />
         </div>
       </header>
 
       {/* Chat area or welcome message */}
       {messages.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center px-4">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mb-3 shadow-md">
-            <Sparkles className="w-5 h-5 text-white" />
+        <div className="relative flex-1 flex flex-col items-center justify-center px-4">
+          <div className="console-grid pointer-events-none absolute inset-0 opacity-60" />
+          <div className="relative">
+            <WelcomeHero subtitle="Start by uploading files or asking a question" />
           </div>
-          <h2 className="text-lg font-medium text-gray-700 mb-1">
-            What's on your mind today?
-          </h2>
-          <p className="text-xs text-gray-400">
-            Start by uploading files or asking a question
-          </p>
         </div>
       ) : (
         <ChatArea
@@ -128,15 +104,17 @@ const ChatPage = memo(function ChatPage({
 
       {/* Upload status banner */}
       {uploadStatus && (
-        <div className={`px-4 py-2 text-center text-sm font-medium ${
-          uploadStatus.includes('success') || uploadStatus.includes('Success')
-            ? 'bg-green-50 text-green-700 border-t border-green-100'
-            : uploadStatus.includes('error') || uploadStatus.includes('Error') || uploadStatus.includes('fail')
-            ? 'bg-red-50 text-red-700 border-t border-red-100'
-            : 'bg-blue-50 text-blue-700 border-t border-blue-100'
-        }`}>
+        <div
+          className={`px-4 py-2 text-center text-sm font-medium border-t ${
+            uploadStatus.includes('success') || uploadStatus.includes('Success') || uploadStatus.includes('Uploaded')
+              ? 'bg-success/10 text-success border-success/20'
+              : uploadStatus.includes('error') || uploadStatus.includes('Error') || uploadStatus.includes('fail')
+                ? 'bg-danger/10 text-danger border-danger/20'
+                : 'bg-signal/10 text-signal border-signal/20'
+          }`}
+        >
           {uploadStatus.includes('Uploading') && (
-            <span className="inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mr-2 align-middle" />
+            <span className="inline-block w-4 h-4 border-2 border-signal border-t-transparent rounded-full animate-spin mr-2 align-middle" />
           )}
           {uploadStatus}
         </div>
@@ -144,7 +122,7 @@ const ChatPage = memo(function ChatPage({
 
       {/* Error banner */}
       {errorMessage && (
-        <div className="px-4 py-2 text-center text-sm font-medium bg-red-50 text-red-700 border-t border-red-100">
+        <div className="px-4 py-2 text-center text-sm font-medium bg-danger/10 text-danger border-t border-danger/20">
           {errorMessage}
         </div>
       )}
@@ -153,7 +131,7 @@ const ChatPage = memo(function ChatPage({
       <ChatInput
         onSend={onSend}
         disabled={isLoading || isUploading}
-        placeholder={isUploading ? "Please wait, uploading files..." : "Ask anything..."}
+        placeholder={isUploading ? 'Please wait, uploading files...' : 'Ask anything...'}
       />
     </div>
   );

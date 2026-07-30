@@ -43,24 +43,24 @@ export default function FilePreviewModal({ filename, content, onClose, onDownloa
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-obsidian/80 backdrop-blur-sm animate-fade-in"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white rounded-2xl shadow-2xl w-[90vw] max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+      <div className="panel-elevated animate-fade-up w-[90vw] max-w-4xl max-h-[85vh] flex flex-col overflow-hidden !rounded-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-200 bg-gray-50">
-          <h3 className="text-sm font-semibold text-gray-800 truncate">{filename}</h3>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-hairline bg-panel">
+          <h3 className="text-sm font-600 font-display text-ink truncate">{filename}</h3>
           <div className="flex items-center gap-1">
             <button
               onClick={onDownload}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted hover:text-success hover:bg-success/10 rounded-lg transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
               Download
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-colors"
+              className="p-1.5 rounded-lg text-muted hover:bg-elevated hover:text-ink transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -79,10 +79,11 @@ export default function FilePreviewModal({ filename, content, onClose, onDownloa
               fontSize: '13px',
               padding: '1rem',
               minHeight: '100%',
+              background: '#1e1e2e',
             }}
             codeTagProps={{
               style: {
-                fontFamily: "'JetBrains Mono', 'Fira Code', 'Monaco', monospace",
+                fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
               }
             }}
           >

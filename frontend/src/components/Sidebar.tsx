@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, memo } from 'react';
-import { Session } from '../types';
+import { Session, User } from '../types';
 import {
   Search,
   MessageSquare,
@@ -7,14 +7,22 @@ import {
   PanelLeftClose,
   PanelLeft,
   Edit3,
-  Sparkles,
   Clock,
   Paperclip,
+  Settings,
+  LogOut,
 } from 'lucide-react';
+import ThemeToggle from './ThemeToggle';
+
+function initials(name?: string | null, email?: string) {
+  const source = name?.trim() || email || '';
+  const parts = source.replace(/@.*$/, '').split(/[\s._-]+/).filter(Boolean);
+  return (parts.length >= 2 ? parts[0][0] + parts[1][0] : source.slice(0, 2)).toUpperCase() || '?';
+}
 
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 480;
-const SIDEBAR_DEFAULT_WIDTH = 224; // w-56
+const SIDEBAR_DEFAULT_WIDTH = 240;
 
 interface SidebarProps {
   sessions: Session[];
@@ -24,6 +32,9 @@ interface SidebarProps {
   onNewChat: () => void;
   onSelectSession: (session: Session) => void;
   onDeleteSession: (sessionId: string) => void;
+  user?: User;
+  onLogout?: () => void;
+  onOpenAdmin?: () => void;
 }
 
 const Sidebar = memo(function Sidebar({
@@ -34,6 +45,9 @@ const Sidebar = memo(function Sidebar({
   onNewChat,
   onSelectSession,
   onDeleteSession,
+  user,
+  onLogout,
+  onOpenAdmin,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [hoveredSession, setHoveredSession] = useState<string | null>(null);
@@ -101,47 +115,76 @@ const Sidebar = memo(function Sidebar({
 
   if (!isOpen) {
     return (
-      <div className="w-12 bg-gray-50 border-r border-gray-200 flex flex-col items-center py-3 gap-1">
+      <div className="w-12 bg-panel border-r border-hairline flex flex-col items-center py-3 gap-1">
         <button
           onClick={onToggle}
-          className="p-2 rounded-lg hover:bg-gray-200 transition-colors"
+          className="p-2 rounded-lg text-muted hover:bg-elevated hover:text-ink transition-colors"
           title="Open sidebar"
         >
-          <PanelLeft className="w-4 h-4 text-gray-500" />
+          <PanelLeft className="w-4 h-4" />
         </button>
         <button
           onClick={onNewChat}
-          className="p-2 rounded-lg hover:bg-gray-200 transition-colors"
+          className="p-2 rounded-lg text-muted hover:bg-elevated hover:text-ink transition-colors"
           title="New chat"
         >
-          <Edit3 className="w-4 h-4 text-gray-500" />
+          <Edit3 className="w-4 h-4" />
         </button>
+
+        {/* collapsed footer rail: theme + avatar + settings + logout */}
+        <div className="mt-auto flex flex-col items-center gap-2 pt-2 border-t border-hairline w-full">
+          <ThemeToggle variant="icon" />
+          {user && (
+            <span
+              title={`${user.name || user.email} · ${user.role}`}
+              className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-brass to-brass-dim font-mono text-xs font-600 text-obsidian"
+            >
+              {initials(user.name, user.email)}
+            </span>
+          )}
+          {onOpenAdmin && (
+            <button
+              onClick={onOpenAdmin}
+              title="Admin portal"
+              className="rounded-md p-1.5 text-faint transition-colors hover:bg-elevated hover:text-ink"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+          )}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              title="Log out"
+              className="rounded-md p-1.5 text-faint transition-colors hover:bg-danger/10 hover:text-danger"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="relative bg-gray-50 flex flex-col h-screen flex-shrink-0" style={{ width: sidebarWidth }}>
+    <div
+      className="relative bg-panel border-r border-hairline flex flex-col h-full min-h-0 flex-shrink-0 max-w-full"
+      style={{ width: sidebarWidth }}
+    >
       {/* Drag handle on right edge */}
       <div
         onMouseDown={handleMouseDown}
-        className="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-blue-400 active:bg-blue-500 transition-colors"
+        className="absolute top-0 right-0 w-1 h-full cursor-col-resize z-10 hover:bg-brass/50 active:bg-brass transition-colors"
       />
 
-      {/* Header with logo */}
-      <div className="p-3 flex items-center justify-between border-b border-gray-100">
-        <div className="flex items-center gap-1.5">
-          <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-            <Sparkles className="w-3.5 h-3.5 text-white" />
-          </div>
-          <span className="text-xs font-semibold text-gray-700">Circini Migration Agent</span>
-        </div>
+      {/* Header */}
+      <div className="p-3 flex items-center justify-between border-b border-hairline">
+        <span className="eyebrow">Sessions</span>
         <button
           onClick={onToggle}
-          className="p-1.5 rounded-lg hover:bg-gray-200 transition-colors"
+          className="p-1.5 rounded-lg text-muted hover:bg-elevated hover:text-ink transition-colors"
           title="Close sidebar"
         >
-          <PanelLeftClose className="w-4 h-4 text-gray-500" />
+          <PanelLeftClose className="w-4 h-4" />
         </button>
       </div>
 
@@ -149,9 +192,9 @@ const Sidebar = memo(function Sidebar({
       <div className="px-2 py-2">
         <button
           onClick={onNewChat}
-          className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+          className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-ink bg-elevated border border-hairline rounded-lg hover:bg-raised hover:border-hairline-strong transition-colors"
         >
-          <Edit3 className="w-3.5 h-3.5" />
+          <Edit3 className="w-3.5 h-3.5 text-brass" />
           New chat
         </button>
       </div>
@@ -159,91 +202,117 @@ const Sidebar = memo(function Sidebar({
       {/* Search */}
       <div className="px-2 pb-2">
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-faint" />
           <input
             type="text"
             placeholder="Search chats"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-2 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-gray-300 focus:border-transparent"
+            className="w-full pl-8 pr-2 py-1.5 bg-obsidian/60 border border-hairline rounded-lg text-xs text-ink placeholder:text-faint focus:outline-none focus:border-brass/60 transition-colors"
           />
         </div>
       </div>
 
-      {/* Chats label */}
-      <div className="px-3 py-1.5">
-        <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider">Chats</span>
-      </div>
-
       {/* Sessions List */}
-      <div className="flex-1 overflow-y-auto px-2">
+      <div className="flex-1 overflow-y-auto px-2 pt-1">
         {filteredSessions.length === 0 ? (
-          <div className="text-center py-6 text-gray-400 text-xs">
+          <div className="text-center py-6 text-faint text-xs">
             {searchQuery ? 'No chats found' : 'No chats yet'}
           </div>
         ) : (
           <div className="space-y-0.5">
             {filteredSessions.map(session => {
               const { hasAttachment, cleanName } = cleanSessionName(session.name || 'New Chat');
+              const isActive = activeSession?.id === session.id;
               return (
-              <div
-                key={session.id}
-                className={`group relative flex flex-col px-2.5 py-2 rounded-lg cursor-pointer transition-colors ${
-                  activeSession?.id === session.id
-                    ? 'bg-gray-200'
-                    : 'hover:bg-gray-100'
-                }`}
-                onClick={() => onSelectSession(session)}
-                onMouseEnter={() => setHoveredSession(session.id)}
-                onMouseLeave={() => setHoveredSession(null)}
-              >
-                <div className="flex items-start gap-2 overflow-hidden">
-                  {hasAttachment ? (
-                    <Paperclip className="w-3.5 h-3.5 flex-shrink-0 text-blue-400 mt-0.5" />
-                  ) : (
-                    <MessageSquare className="w-3.5 h-3.5 flex-shrink-0 text-gray-400 mt-0.5" />
-                  )}
-                  <span className="flex-1 text-xs text-gray-600 min-w-0" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
-                    {cleanName}
-                  </span>
-
-                  {/* Delete button */}
-                  {hoveredSession === session.id && (
-                    <button
-                      onClick={e => {
-                        e.stopPropagation();
-                        onDeleteSession(session.id);
-                      }}
-                      className="p-1 rounded hover:bg-gray-300 text-gray-400 hover:text-red-500 transition-colors"
-                      title="Delete chat"
+                <div
+                  key={session.id}
+                  className={`group relative flex flex-col px-2.5 py-2 rounded-lg cursor-pointer border transition-colors ${
+                    isActive
+                      ? 'bg-elevated border-hairline-strong'
+                      : 'border-transparent hover:bg-elevated/60'
+                  }`}
+                  onClick={() => onSelectSession(session)}
+                  onMouseEnter={() => setHoveredSession(session.id)}
+                  onMouseLeave={() => setHoveredSession(null)}
+                >
+                  <div className="flex items-start gap-2 overflow-hidden">
+                    {hasAttachment ? (
+                      <Paperclip className="w-3.5 h-3.5 flex-shrink-0 text-brass mt-0.5" />
+                    ) : (
+                      <MessageSquare className="w-3.5 h-3.5 flex-shrink-0 text-faint mt-0.5" />
+                    )}
+                    <span
+                      className={`flex-1 text-xs min-w-0 ${isActive ? 'text-ink' : 'text-muted'}`}
+                      style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}
                     >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
+                      {cleanName}
+                    </span>
 
-                {/* Date and time */}
-                <div className="flex items-center gap-1 mt-1 ml-5.5 pl-0.5">
-                  <Clock className="w-2.5 h-2.5 text-gray-400" />
-                  <span className="text-[10px] text-gray-400">
-                    {formatDateTime(session.updatedAt || session.createdAt)}
-                  </span>
+                    {/* Delete button */}
+                    {hoveredSession === session.id && (
+                      <button
+                        onClick={e => {
+                          e.stopPropagation();
+                          onDeleteSession(session.id);
+                        }}
+                        className="p-1 rounded text-faint hover:bg-raised hover:text-danger transition-colors"
+                        title="Delete chat"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Date and time */}
+                  <div className="flex items-center gap-1 mt-1 pl-5">
+                    <Clock className="w-2.5 h-2.5 text-faint" />
+                    <span className="text-[10px] font-mono text-faint">
+                      {formatDateTime(session.updatedAt || session.createdAt)}
+                    </span>
+                  </div>
                 </div>
-              </div>
               );
             })}
           </div>
         )}
       </div>
 
-      {/* Footer - User section */}
-      <div className="p-2 border-t border-gray-100">
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-100 cursor-pointer">
-          <div className="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center">
-            <span className="text-[10px] font-medium text-gray-600">U</span>
+      {/* Footer: theme + user + settings + logout */}
+      <div className="space-y-2 border-t border-hairline p-3">
+        <ThemeToggle variant="pill" />
+
+        {user && (
+          <div className="flex items-center gap-2 rounded-lg border border-hairline bg-panel px-2 py-1.5">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-brass to-brass-dim font-mono text-xs font-600 text-obsidian">
+              {initials(user.name, user.email)}
+            </span>
+            <div className="min-w-0 flex-1 leading-tight">
+              <div className="truncate text-[13px] font-500 text-ink">{user.name || user.email}</div>
+              <div className="font-mono text-[10px] uppercase tracking-wider text-faint">
+                {user.role}
+              </div>
+            </div>
+            {onOpenAdmin && (
+              <button
+                onClick={onOpenAdmin}
+                title="Admin portal"
+                className="rounded-md p-1.5 text-faint transition-colors hover:bg-elevated hover:text-ink"
+              >
+                <Settings className="h-4 w-4" />
+              </button>
+            )}
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                title="Log out"
+                className="rounded-md p-1.5 text-faint transition-colors hover:bg-danger/10 hover:text-danger"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            )}
           </div>
-          <span className="text-xs text-gray-600">User</span>
-        </div>
+        )}
       </div>
     </div>
   );

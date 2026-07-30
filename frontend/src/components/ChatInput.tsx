@@ -13,11 +13,10 @@ interface ChatInputProps {
 export default function ChatInput({
   onSend,
   disabled = false,
-  placeholder = "Ask anything",
+  placeholder = 'Ask anything',
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [isFocused, setIsFocused] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -161,7 +160,7 @@ export default function ChatInput({
   const canSend = (message.trim() || selectedFiles.length > 0) && !disabled;
 
   return (
-    <div className="bg-gradient-to-t from-gray-50 to-white px-4 py-3">
+    <div className="bg-obsidian px-4 py-3">
       <div className="max-w-3xl mx-auto">
         {/* Selected files */}
         {selectedFiles.length > 0 && (
@@ -169,48 +168,42 @@ export default function ChatInput({
             {selectedFiles.map((file, index) => (
               <span
                 key={`${file.name}-${file.size}-${index}`}
-                className="inline-flex items-center gap-2 px-3 py-2 bg-white text-gray-700 text-sm rounded-xl border border-gray-200 shadow-sm"
+                className="chip !text-ink"
               >
-                <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                <span className="w-2 h-2 rounded-full bg-brass"></span>
                 {file.name.length > 25 ? file.name.slice(0, 25) + '...' : file.name}
                 <button
                   onClick={() => removeFile(index)}
-                  className="p-0.5 hover:bg-gray-100 rounded-full transition-colors"
+                  className="p-0.5 hover:bg-raised rounded-full transition-colors"
                 >
-                  <X className="w-3.5 h-3.5 text-gray-400" />
+                  <X className="w-3.5 h-3.5 text-faint" />
                 </button>
               </span>
             ))}
-            <span className="text-xs text-gray-400 self-center">
+            <span className="text-xs font-mono text-faint self-center">
               {selectedFiles.length}/{MAX_FILES}
             </span>
           </div>
         )}
 
-        {/* Input container */}
+        {/* Input container — flat pill, focus shown via border (matches circini) */}
         <div
-          className={`
-            relative flex items-end rounded-2xl border-2 transition-all duration-200
-            ${disabled
-              ? 'bg-gray-100 border-gray-200 opacity-60'
-              : isFocused
-                ? 'bg-white border-gray-300 shadow-lg shadow-gray-200/50'
-                : 'bg-white border-gray-200 shadow-md shadow-gray-100/50 hover:border-gray-300 hover:shadow-lg'
-            }
-          `}
+          className={`flex items-end gap-1.5 rounded-[26px] border border-hairline bg-panel px-2 py-2 shadow-console transition-colors focus-within:border-brass/50 ${
+            disabled ? 'opacity-60' : ''
+          }`}
         >
           {/* Attach button */}
           <button
             onClick={() => !disabled && fileInputRef.current?.click()}
             disabled={disabled}
-            className={`p-2.5 rounded-lg m-1 transition-all duration-200 ${
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-hairline bg-elevated transition-colors ${
               disabled
-                ? 'text-gray-300 cursor-not-allowed'
-                : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100 active:scale-95'
+                ? 'text-faint cursor-not-allowed'
+                : 'text-ink hover:border-brass/50 hover:text-brass'
             }`}
             title={`Attach files (${selectedFiles.length}/${MAX_FILES})`}
           >
-            <Paperclip className="w-5 h-5" />
+            <Paperclip className="h-5 w-5" />
           </button>
           <input
             ref={fileInputRef}
@@ -228,62 +221,54 @@ export default function ChatInput({
             value={message}
             onChange={handleTextareaChange}
             onKeyDown={handleKeyDown}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
             placeholder={isTranscribing ? 'Transcribing...' : isRecording ? 'Listening...' : placeholder}
             disabled={disabled || isRecording}
             rows={1}
-            className="flex-1 bg-transparent border-none outline-none resize-none text-[15px] text-gray-800 placeholder-gray-400 py-2.5 pr-2 min-h-[44px] max-h-[200px] leading-6"
+            className="max-h-40 min-h-[40px] flex-1 resize-none self-center bg-transparent px-2 py-2 text-[15px] text-ink placeholder:text-faint focus:outline-none"
+            style={{ boxShadow: 'none' }}
           />
 
-          {/* Right side buttons */}
-          <div className="flex items-center gap-1 p-1">
-            {/* Mic button */}
-            <button
-              onClick={handleMicClick}
-              disabled={disabled || isTranscribing}
-              className={`p-2 rounded-lg transition-all duration-200 ${
-                isTranscribing
-                  ? 'text-gray-300 cursor-not-allowed'
-                  : isRecording
-                    ? 'bg-red-500 text-white shadow-md animate-pulse hover:bg-red-600 active:scale-95'
-                    : disabled
-                      ? 'text-gray-300 cursor-not-allowed'
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100 active:scale-95'
-              }`}
-              title={isRecording ? 'Stop recording' : 'Voice input'}
-            >
-              {isRecording ? (
-                <Square className="w-5 h-5" fill="currentColor" />
-              ) : (
-                <Mic className="w-5 h-5" />
-              )}
-            </button>
+          {/* Mic button */}
+          <button
+            onClick={handleMicClick}
+            disabled={disabled || isTranscribing}
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors ${
+              isTranscribing
+                ? 'bg-raised text-faint cursor-not-allowed'
+                : isRecording
+                  ? 'bg-danger text-white animate-pulse hover:bg-danger/80'
+                  : disabled
+                    ? 'bg-raised text-faint cursor-not-allowed'
+                    : 'bg-raised text-muted hover:text-ink'
+            }`}
+            title={isRecording ? 'Stop recording' : 'Voice input'}
+          >
+            {isRecording ? (
+              <Square className="h-4 w-4" fill="currentColor" />
+            ) : (
+              <Mic className="h-4 w-4" />
+            )}
+          </button>
 
-            {/* Send button */}
-            <button
-              onClick={handleSend}
-              disabled={!canSend}
-              className={`p-2 rounded-lg transition-all duration-200 ${
-                canSend
-                  ? 'bg-gradient-to-r from-gray-800 to-gray-900 text-white shadow-md hover:shadow-lg hover:from-gray-700 hover:to-gray-800 active:scale-95'
-                  : 'bg-gray-100 text-gray-300 cursor-not-allowed'
-              }`}
-              title="Send message"
-            >
-              <ArrowUp className="w-5 h-5" strokeWidth={2.5} />
-            </button>
-          </div>
+          {/* Send button */}
+          <button
+            onClick={handleSend}
+            disabled={!canSend}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brass text-obsidian transition-all hover:bg-brass-bright disabled:opacity-40"
+            title="Send message"
+          >
+            <ArrowUp className="h-5 w-5" strokeWidth={2.5} />
+          </button>
         </div>
 
         {/* Helper text */}
-        <p className="text-[11px] text-gray-400 text-center mt-3 tracking-wide">
+        <p className="text-[11px] text-faint text-center mt-3 tracking-wide">
           Circini migration agent can make mistakes, please verify responses manually. Powered by{' '}
           <a
             href="https://callsphere.ai/"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-blue-500 underline underline-offset-2 hover:text-blue-600 transition-colors"
+            className="text-brass-bright underline underline-offset-2 hover:text-brass transition-colors"
           >
             Callsphere LLC
           </a>

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, useMemo, memo } from 'react';
 import { Message, GeneratedOutput, UploadedFile } from '../types';
 import MessageBubble from './MessageBubble';
-import { Download, FileText, Sparkles } from 'lucide-react';
+import { Download, FileText } from 'lucide-react';
 import { LogEntry } from '../hooks/useRealtimeLogs';
+import { CirciniMark } from './Brand';
 
 interface ChatAreaProps {
   messages: Message[];
@@ -54,7 +55,7 @@ const ChatArea = memo(function ChatArea({
   }, [isLoading]);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-white">
+    <div className="flex-1 overflow-y-auto bg-obsidian">
       <div className="max-w-3xl mx-auto px-4 py-8">
         {messages.map(message => {
           const msgOutputs = messageOutputMap[message.id];
@@ -68,22 +69,22 @@ const ChatArea = memo(function ChatArea({
               />
               {/* Inline generated outputs for this message */}
               {msgOutputs && msgOutputs.length > 0 && onDownloadOutput && (
-                <div className="mb-8 ml-12 flex items-start gap-4">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-500 to-emerald-500 flex items-center justify-center flex-shrink-0">
-                    <FileText className="w-4 h-4 text-white" />
+                <div className="mb-8 ml-0 sm:ml-12 flex items-start gap-4">
+                  <div className="w-8 h-8 rounded-full border border-success/40 bg-success/10 flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-4 h-4 text-success" />
                   </div>
                   <div className="flex-1 pt-1">
-                    <p className="text-[15px] text-gray-800 mb-3">Generated files:</p>
+                    <p className="text-[15px] text-ink/90 mb-3">Generated files:</p>
                     <div className="flex flex-wrap gap-2">
                       {msgOutputs.map(output => (
                         <button
                           key={output.id}
                           onClick={() => onDownloadOutput(output)}
-                          className="inline-flex items-center gap-2 px-4 py-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg text-sm text-gray-700 transition-colors"
+                          className="inline-flex items-center gap-2 px-4 py-2 bg-elevated hover:bg-raised border border-hairline hover:border-hairline-strong rounded-lg text-sm text-ink transition-colors"
                         >
-                          <FileText className="w-4 h-4 text-gray-500" />
+                          <FileText className="w-4 h-4 text-brass" />
                           {output.filename}
-                          <Download className="w-4 h-4 text-gray-400" />
+                          <Download className="w-4 h-4 text-faint" />
                         </button>
                       ))}
                     </div>
@@ -97,16 +98,16 @@ const ChatArea = memo(function ChatArea({
         {/* Thinking/Loading indicator */}
         {isLoading && (
           <div className="mb-8 flex items-start gap-4">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center flex-shrink-0">
-              <Sparkles className="w-4 h-4 text-white" />
+            <div className="w-8 h-8 rounded-full border border-hairline bg-elevated flex items-center justify-center flex-shrink-0 text-brass">
+              <CirciniMark size={18} />
             </div>
             <div className="flex-1 pt-1">
-              <div className="flex items-center gap-2 text-gray-600">
+              <div className="flex items-center gap-2 text-muted">
                 <span className="text-[15px]">{displayedThinking || 'Thinking...'}</span>
                 <span className="flex gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-brass animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-brass animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-brass animate-bounce" style={{ animationDelay: '300ms' }} />
                 </span>
               </div>
             </div>

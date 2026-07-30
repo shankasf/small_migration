@@ -1,9 +1,10 @@
 import { Message, UploadedFile } from '../types';
-import { Sparkles, Copy, Check, Terminal, Download, Eye, FileSpreadsheet, FileCode, FileText, File } from 'lucide-react';
+import { Copy, Check, Terminal, Download, Eye, FileSpreadsheet, FileCode, FileText, File } from 'lucide-react';
 import { useState, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { CirciniMark } from './Brand';
 
 interface MessageBubbleProps {
   message: Message;
@@ -96,31 +97,31 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
 
     return (
       <div className="flex justify-end mb-6">
-        <div className="max-w-[70%]">
+        <div className="max-w-[85%] sm:max-w-[70%]">
           {/* File attachment cards */}
           {hasFileCards && (
             <div className="mb-2 space-y-1.5">
               {matchedFiles.map(file => (
                 <div
                   key={file.id}
-                  className="flex items-center gap-3 px-4 py-2.5 bg-white border border-gray-200 rounded-xl shadow-sm"
+                  className="flex items-center gap-3 px-4 py-2.5 bg-panel border border-hairline rounded-xl"
                 >
-                  <div className="text-gray-500">
+                  <div className="text-brass">
                     {getFileIcon(file.filename)}
                   </div>
-                  <span className="flex-1 text-sm text-gray-700 truncate min-w-0">
+                  <span className="flex-1 text-sm text-ink truncate min-w-0">
                     {file.filename}
                   </span>
                   <button
                     onClick={() => onViewFile!(file.id)}
-                    className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-blue-600 transition-colors"
+                    className="p-1.5 rounded-lg text-faint hover:bg-elevated hover:text-signal transition-colors"
                     title="View file"
                   >
                     <Eye className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => onDownloadFile!(file.id)}
-                    className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-green-600 transition-colors"
+                    className="p-1.5 rounded-lg text-faint hover:bg-elevated hover:text-success transition-colors"
                     title="Download file"
                   >
                     <Download className="w-4 h-4" />
@@ -132,7 +133,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
 
           {/* Show remaining message text (or full content if no file cards) */}
           {(hasFileCards ? restContent : message.content) && (
-            <div className="bg-gray-100 rounded-3xl px-5 py-3 text-[15px] text-gray-900">
+            <div className="bg-elevated border border-hairline rounded-3xl px-5 py-3 text-[15px] text-ink">
               <p className="whitespace-pre-wrap">
                 {hasFileCards ? restContent : message.content}
               </p>
@@ -146,18 +147,18 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
   // Reset block index counter for each render
   blockIndexRef.current = 0;
 
-  // Assistant message - ChatGPT style full width
+  // Assistant message - full width on the console canvas
   return (
     <div className="mb-8">
       <div className="flex items-start gap-4">
         {/* Avatar */}
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center flex-shrink-0">
-          <Sparkles className="w-4 h-4 text-white" />
+        <div className="w-8 h-8 rounded-full border border-hairline bg-elevated flex items-center justify-center flex-shrink-0 text-brass">
+          <CirciniMark size={18} />
         </div>
 
         {/* Content */}
         <div className="flex-1 min-w-0 pt-1">
-          <div className="prose prose-gray max-w-none">
+          <div className="prose-console max-w-none">
             <ReactMarkdown
               components={{
                 code({ node, className, children, ...props }) {
@@ -169,31 +170,31 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
 
                   if (isInline) {
                     return (
-                      <code className="bg-gray-100 text-gray-800 px-1.5 py-0.5 rounded text-[13px] font-mono" {...props}>
+                      <code {...props}>
                         {children}
                       </code>
                     );
                   }
 
-                  // Bug 8 fix: Each code block gets its own index for copy state
+                  // Each code block gets its own index for copy state
                   const blockIndex = blockIndexRef.current++;
                   const isCopied = copiedBlocks.has(blockIndex);
 
                   return (
-                    <div className="my-4 rounded-xl overflow-hidden bg-[#1e1e2e] border border-gray-800">
-                      <div className="flex items-center justify-between px-4 py-2 bg-[#252535] border-b border-gray-800">
-                        <div className="flex items-center gap-2 text-xs text-gray-400">
-                          <Terminal className="w-3.5 h-3.5" />
-                          <span className="font-medium">{langLabel}</span>
+                    <div className="my-4 rounded-xl overflow-hidden bg-[#1e1e2e] border border-hairline">
+                      <div className="flex items-center justify-between px-4 py-2 bg-raised border-b border-hairline">
+                        <div className="flex items-center gap-2 text-xs text-muted">
+                          <Terminal className="w-3.5 h-3.5 text-brass" />
+                          <span className="font-mono font-medium">{langLabel}</span>
                         </div>
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => copyToClipboard(codeString, blockIndex)}
-                            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted hover:text-ink hover:bg-elevated rounded transition-colors"
                           >
                             {isCopied ? (
                               <>
-                                <Check className="w-3.5 h-3.5" />
+                                <Check className="w-3.5 h-3.5 text-success" />
                                 <span>Copied!</span>
                               </>
                             ) : (
@@ -205,7 +206,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
                           </button>
                           <button
                             onClick={() => downloadAsFile(codeString, language)}
-                            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted hover:text-ink hover:bg-elevated rounded transition-colors"
                             title="Download as file"
                           >
                             <Download className="w-3.5 h-3.5" />
@@ -226,7 +227,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
                         }}
                         codeTagProps={{
                           style: {
-                            fontFamily: "'JetBrains Mono', 'Fira Code', 'Monaco', monospace",
+                            fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
                           }
                         }}
                       >
@@ -235,76 +236,6 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
                     </div>
                   );
                 },
-                p: ({ children }) => (
-                  <p className="text-[15px] leading-7 text-gray-800 mb-4 last:mb-0">{children}</p>
-                ),
-                ul: ({ children }) => (
-                  <ul className="my-4 space-y-2 list-none">{children}</ul>
-                ),
-                ol: ({ children }) => (
-                  <ol className="my-4 space-y-2 list-none counter-reset-item">{children}</ol>
-                ),
-                li: ({ children }) => (
-                  <li className="flex items-start gap-3 text-[15px] leading-7 text-gray-800">
-                    <span className="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-gray-400 mt-3" />
-                    <span className="flex-1">{children}</span>
-                  </li>
-                ),
-                h1: ({ children }) => (
-                  <h1 className="text-xl font-semibold text-gray-900 mt-6 mb-4">{children}</h1>
-                ),
-                h2: ({ children }) => (
-                  <h2 className="text-lg font-semibold text-gray-900 mt-5 mb-3">{children}</h2>
-                ),
-                h3: ({ children }) => (
-                  <h3 className="text-base font-semibold text-gray-900 mt-4 mb-2">{children}</h3>
-                ),
-                strong: ({ children }) => (
-                  <strong className="font-semibold text-gray-900">{children}</strong>
-                ),
-                em: ({ children }) => (
-                  <em className="italic text-gray-700">{children}</em>
-                ),
-                a: ({ href, children }) => (
-                  <a
-                    href={href}
-                    className="text-blue-600 hover:text-blue-700 underline underline-offset-2"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {children}
-                  </a>
-                ),
-                blockquote: ({ children }) => (
-                  <blockquote className="my-4 pl-4 border-l-2 border-gray-300 text-gray-600 italic">
-                    {children}
-                  </blockquote>
-                ),
-                hr: () => <hr className="my-6 border-gray-200" />,
-                table({ children }) {
-                  return (
-                    <div className="my-4 overflow-x-auto rounded-lg border border-gray-200">
-                      <table className="min-w-full divide-y divide-gray-200">{children}</table>
-                    </div>
-                  );
-                },
-                thead: ({ children }) => (
-                  <thead className="bg-gray-50">{children}</thead>
-                ),
-                tbody: ({ children }) => (
-                  <tbody className="divide-y divide-gray-200 bg-white">{children}</tbody>
-                ),
-                tr: ({ children }) => <tr>{children}</tr>,
-                th: ({ children }) => (
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                    {children}
-                  </th>
-                ),
-                td: ({ children }) => (
-                  <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
-                    {children}
-                  </td>
-                ),
               }}
             >
               {message.content}

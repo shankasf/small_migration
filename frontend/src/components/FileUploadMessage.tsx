@@ -6,12 +6,12 @@ interface FileUploadMessageProps {
 }
 
 const categoryLabels: Record<string, { label: string; color: string }> = {
-  template: { label: 'Template', color: 'bg-blue-100 text-blue-700 border-blue-200' },
-  mapping: { label: 'Mapping Doc', color: 'bg-green-100 text-green-700 border-green-200' },
-  dbt_add_info: { label: 'ADD_INFO Model', color: 'bg-purple-100 text-purple-700 border-purple-200' },
-  dbt_stg_add_info: { label: 'STG Model', color: 'bg-orange-100 text-orange-700 border-orange-200' },
-  sql_file: { label: 'SQL File', color: 'bg-yellow-100 text-yellow-700 border-yellow-200' },
-  other: { label: 'Document', color: 'bg-gray-100 text-gray-700 border-gray-200' },
+  template: { label: 'Template', color: '!border-signal/40 !text-signal' },
+  mapping: { label: 'Mapping Doc', color: '!border-success/40 !text-success' },
+  dbt_add_info: { label: 'ADD_INFO Model', color: '!border-brass/40 !text-brass-bright' },
+  dbt_stg_add_info: { label: 'STG Model', color: '!border-warn/40 !text-warn' },
+  sql_file: { label: 'SQL File', color: '!border-warn/40 !text-warn' },
+  other: { label: 'Document', color: '' },
 };
 
 function getFileIcon(filename: string) {
@@ -34,19 +34,17 @@ export default function FileUploadMessage({ files }: FileUploadMessageProps) {
   return (
     <div className="flex items-start gap-3">
       {/* User avatar */}
-      <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-gray-700 to-gray-900 flex items-center justify-center flex-shrink-0 shadow-md">
-        <FileText className="w-4 h-4 text-white" />
+      <div className="w-8 h-8 rounded-xl border border-hairline bg-elevated flex items-center justify-center flex-shrink-0 text-brass">
+        <FileText className="w-4 h-4" />
       </div>
 
       <div className="flex-1 max-w-[85%]">
-        <div className="text-[11px] font-semibold mb-1.5 tracking-wide text-gray-400">
-          Files Uploaded
-        </div>
+        <div className="eyebrow mb-1.5">Files Uploaded</div>
 
-        <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl rounded-tl-md border border-gray-200 p-4 shadow-sm">
+        <div className="panel p-4">
           <div className="flex items-center gap-2 mb-3">
-            <CheckCircle2 className="w-4 h-4 text-green-500" />
-            <span className="text-sm font-medium text-gray-700">
+            <CheckCircle2 className="w-4 h-4 text-success" />
+            <span className="text-sm font-medium text-ink">
               {files.length} file{files.length > 1 ? 's' : ''} uploaded successfully
             </span>
           </div>
@@ -57,17 +55,17 @@ export default function FileUploadMessage({ files }: FileUploadMessageProps) {
               return (
                 <div
                   key={file.id}
-                  className="flex items-center gap-3 p-2.5 bg-white rounded-lg border border-gray-100 hover:border-gray-200 transition-colors"
+                  className="flex items-center gap-3 p-2.5 bg-elevated rounded-lg border border-hairline hover:border-hairline-strong transition-colors"
                 >
-                  <div className="text-gray-500">
+                  <div className="text-brass">
                     {getFileIcon(file.filename)}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-800 truncate">
+                    <div className="text-sm font-medium text-ink truncate">
                       {file.filename}
                     </div>
                   </div>
-                  <span className={`px-2 py-0.5 text-[10px] font-semibold rounded-full border ${catInfo.color}`}>
+                  <span className={`chip !py-0.5 ${catInfo.color}`}>
                     {catInfo.label}
                   </span>
                 </div>
@@ -75,14 +73,14 @@ export default function FileUploadMessage({ files }: FileUploadMessageProps) {
             })}
           </div>
 
-          <div className="mt-3 pt-3 border-t border-gray-100">
-            <p className="text-xs text-gray-500">
+          <div className="mt-3 pt-3 border-t border-hairline">
+            <p className="text-xs text-muted">
               Files are ready for analysis. Ask me to analyze them or generate migration scripts.
             </p>
           </div>
         </div>
 
-        <div className="text-[10px] text-gray-400 mt-1.5">
+        <div className="text-[10px] font-mono text-faint mt-1.5">
           {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </div>
       </div>

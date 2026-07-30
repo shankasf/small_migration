@@ -22,7 +22,7 @@ export default function FileUpload({ onUpload }: FileUploadProps) {
     <>
       <button
         onClick={() => fileInputRef.current?.click()}
-        className="p-2 rounded-full hover:bg-gray-200 transition-colors text-gray-500 hover:text-gray-700"
+        className="p-2 rounded-full text-muted hover:bg-elevated hover:text-ink transition-colors"
         title="Attach files"
       >
         <Plus className="w-5 h-5" />

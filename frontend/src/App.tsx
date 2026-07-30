@@ -1,9 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
+import { LogOut, Menu, MessageSquare } from 'lucide-react';
+import { Wordmark } from './components/Brand';
+import ThemeToggle from './components/ThemeToggle';
 import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
+import LoginPage from './pages/LoginPage';
+import AdminPage from './pages/AdminPage';
 import FilePreviewModal from './components/FilePreviewModal';
-import { Session, Message, UploadedFile, GeneratedOutput } from './types';
+import { Session, Message, UploadedFile, GeneratedOutput, User } from './types';
 import * as api from './services/api';
+import { getToken, getStoredUser, fetchMe, logout } from './services/auth';
 import { useRealtimeLogs } from './hooks/useRealtimeLogs';
 
 // Associate generated outputs with the assistant message that produced them
@@ -39,6 +45,9 @@ function buildMessageOutputMap(
 }
 
 function App() {
+  const [user, setUser] = useState<User | null>(getStoredUser());
+  const [authChecked, setAuthChecked] = useState(!getToken());
+  const [view, setView] = useState<'chat' | 'admin'>('chat');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -49,16 +58,28 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<{ filename: string; content: string } | null>(null);
 
   // Real-time logs from WebSocket (path: /api/socket.io)
   const { logs: realtimeLogs, clearLogs } = useRealtimeLogs(activeSession?.id || null);
 
-  // Load sessions on mount
+  // Validate the stored token on mount (401s are handled by the interceptor)
   useEffect(() => {
-    loadSessions();
+    if (!getToken()) return;
+    fetchMe()
+      .then(me => setUser(me))
+      .catch(() => setUser(null))
+      .finally(() => setAuthChecked(true));
   }, []);
+
+  // Load sessions once authenticated (auditors have no chat access)
+  useEffect(() => {
+    if (user && user.role !== 'auditor') {
+      loadSessions();
+    }
+  }, [user]);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -128,9 +149,10 @@ function App() {
     console.log(`[SEND] handleSend called: message="${message.slice(0, 50)}...", files=${files?.length || 0}`);
 
     // Determine which session to use
-    let session: Session | null = null;
     // Use functional getter for activeSession to avoid stale closure
-    setActiveSession(prev => { session = prev; return prev; });
+    const holder: { current: Session | null } = { current: null };
+    setActiveSession(prev => { holder.current = prev; return prev; });
+    let session: Session | null = holder.current;
 
     console.log(`[SEND] Active session: ${session?.id || 'none'}`);
 
@@ -256,8 +278,7 @@ function App() {
     } catch (error) {
       console.error('Failed to send message:', error);
       setMessages(prev => prev.filter(m => m.id !== userMessage.id));
-      const errMsg = error instanceof Error ? error.message : 'Something went wrong';
-      setErrorMessage(`Failed to get a response: ${errMsg}`);
+      setErrorMessage(`Failed to get a response: ${api.apiErrorMessage(error)}`);
       setTimeout(() => setErrorMessage(null), 8000);
     } finally {
       setIsLoading(false);
@@ -311,33 +332,114 @@ function App() {
     setSidebarOpen(prev => !prev);
   }, []);
 
+  // ---- Auth gate ----
+  if (!user) {
+    return authChecked
+      ? <LoginPage onLogin={u => { setUser(u); setView(u.role === 'auditor' ? 'admin' : 'chat'); }} />
+      : <div className="min-h-screen bg-obsidian" />;
+  }
+
+  const isAdmin = user.role === 'admin';
+  const isAuditor = user.role === 'auditor';
+  const activeView = isAuditor ? 'admin' : view;
+
   return (
-    <div className="flex h-screen bg-white">
-      <Sidebar
-        sessions={sessions}
-        activeSession={activeSession}
-        isOpen={sidebarOpen}
-        onToggle={toggleSidebar}
-        onNewChat={createNewSession}
-        onSelectSession={selectSession}
-        onDeleteSession={deleteSession}
-      />
-      <ChatPage
-        session={activeSession}
-        messages={messages}
-        uploadedFiles={uploadedFiles}
-        messageOutputMap={messageOutputMap}
-        isLoading={isLoading}
-        isUploading={isUploading}
-        uploadStatus={uploadStatus}
-        errorMessage={errorMessage}
-        onSend={handleSend}
-        onDownloadOutput={downloadOutput}
-        onNewChat={createNewSession}
-        realtimeLogs={realtimeLogs}
-        onViewFile={handleViewFile}
-        onDownloadFile={handleDownloadFile}
-      />
+    <div className="flex flex-col h-screen bg-obsidian">
+      {/* Top bar: identity; user controls live in the sidebar footer (chat view) */}
+      <header className="flex items-center justify-between px-4 h-14 border-b border-hairline bg-panel shrink-0">
+        <div className="flex items-center gap-2">
+          {activeView === 'chat' && (
+            <button
+              onClick={() => setMobileNavOpen(true)}
+              className="md:hidden -ml-1.5 rounded-md p-1.5 text-muted transition-colors hover:bg-elevated hover:text-ink"
+              title="Open menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          )}
+          <Wordmark />
+        </div>
+        {activeView === 'admin' && (
+          <div className="flex items-center gap-2.5">
+            {!isAuditor && (
+              <button
+                onClick={() => setView('chat')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-hairline text-xs font-medium text-muted transition-colors hover:bg-elevated hover:text-ink"
+              >
+                <MessageSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Back to chat</span><span className="sm:hidden">Chat</span>
+              </button>
+            )}
+            <span className="chip !py-0.5 uppercase tracking-wide !border-brass/40 !text-brass-bright hidden sm:inline-flex">{user.role}</span>
+            <ThemeToggle />
+            <button onClick={logout} title="Sign out" className="rounded-md p-1.5 text-faint transition-colors hover:bg-danger/10 hover:text-danger">
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+      </header>
+
+      <div className="flex flex-1 min-h-0">
+        {activeView === 'admin' ? (
+          <AdminPage currentUser={user} />
+        ) : (
+          <>
+            {/* Desktop sidebar (inline) */}
+            <div className="hidden md:flex min-h-0">
+              <Sidebar
+                sessions={sessions}
+                activeSession={activeSession}
+                isOpen={sidebarOpen}
+                onToggle={toggleSidebar}
+                onNewChat={createNewSession}
+                onSelectSession={selectSession}
+                onDeleteSession={deleteSession}
+                user={user}
+                onLogout={logout}
+                onOpenAdmin={isAdmin ? () => setView('admin') : undefined}
+              />
+            </div>
+            {/* Mobile sidebar (slide-in drawer) */}
+            {mobileNavOpen && (
+              <div className="md:hidden fixed inset-0 z-40">
+                <div
+                  className="absolute inset-0 bg-obsidian/70 backdrop-blur-sm animate-fade-in"
+                  onClick={() => setMobileNavOpen(false)}
+                />
+                <div className="absolute inset-y-0 left-0 flex max-w-[85vw] animate-fade-in">
+                  <Sidebar
+                    sessions={sessions}
+                    activeSession={activeSession}
+                    isOpen
+                    onToggle={() => setMobileNavOpen(false)}
+                    onNewChat={() => { createNewSession(); setMobileNavOpen(false); }}
+                    onSelectSession={s => { selectSession(s); setMobileNavOpen(false); }}
+                    onDeleteSession={deleteSession}
+                    user={user}
+                    onLogout={logout}
+                    onOpenAdmin={isAdmin ? () => { setView('admin'); setMobileNavOpen(false); } : undefined}
+                  />
+                </div>
+              </div>
+            )}
+            <ChatPage
+              session={activeSession}
+              messages={messages}
+              uploadedFiles={uploadedFiles}
+              messageOutputMap={messageOutputMap}
+              isLoading={isLoading}
+              isUploading={isUploading}
+              uploadStatus={uploadStatus}
+              errorMessage={errorMessage}
+              onSend={handleSend}
+              onDownloadOutput={downloadOutput}
+              onNewChat={createNewSession}
+              realtimeLogs={realtimeLogs}
+              onViewFile={handleViewFile}
+              onDownloadFile={handleDownloadFile}
+            />
+          </>
+        )}
+      </div>
 
       {/* File preview modal */}
       {previewFile && (

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { getToken } from '../services/auth';
 
 export interface LogEntry {
   timestamp: string;
@@ -36,6 +37,7 @@ export function useRealtimeLogs(sessionId: string | null) {
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
+      auth: { token: getToken() },
     });
 
     socketRef.current = socket;

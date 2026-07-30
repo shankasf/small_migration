@@ -2,402 +2,327 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  box-sizing: border-box;
+@layer base {
+  /* Dark theme (default) — the native obsidian console. Values are `R G B`
+     channel triplets consumed as rgb(var(--token) / <alpha>). */
+  :root,
+  :root.dark {
+    color-scheme: dark;
+    --c-obsidian: 10 12 16;
+    --c-panel: 16 19 25;
+    --c-elevated: 22 26 34;
+    --c-raised: 28 33 43;
+    --c-hairline: 34 40 52;
+    --c-hairline-strong: 44 52 68;
+    --c-ink: 234 237 243;
+    --c-muted: 124 135 155;
+    --c-faint: 82 92 110;
+    --c-brass: 199 165 89;
+    --c-brass-bright: 223 192 121;
+    --c-brass-dim: 142 117 57;
+    --c-signal: 45 212 191;
+    --c-signal-dim: 27 127 115;
+    --c-danger: 239 108 87;
+    --c-success: 95 185 128;
+    --c-warn: 224 169 75;
+  }
+
+  /* Light theme — near-black ink on white; brass deepened for contrast. */
+  :root.light {
+    color-scheme: light;
+    --c-obsidian: 255 255 255;
+    --c-panel: 248 249 251;
+    --c-elevated: 240 242 246;
+    --c-raised: 232 235 240;
+    --c-hairline: 223 227 233;
+    --c-hairline-strong: 202 208 217;
+    --c-ink: 23 27 33;
+    --c-muted: 88 97 112;
+    --c-faint: 128 137 150;
+    --c-brass: 155 122 50;
+    --c-brass-bright: 124 96 30;
+    --c-brass-dim: 184 148 78;
+    --c-signal: 14 147 132;
+    --c-signal-dim: 11 117 102;
+    --c-danger: 202 66 48;
+    --c-success: 46 138 84;
+    --c-warn: 176 122 22;
+  }
+
+  * {
+    border-color: rgb(var(--c-hairline));
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-obsidian text-ink font-sans antialiased;
+    margin: 0;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The instrument backdrop: a faint hairline reticle grid */
+  .console-grid {
+    background-image:
+      linear-gradient(to right, rgba(199, 165, 89, 0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(199, 165, 89, 0.035) 1px, transparent 1px);
+    background-size: 96px 96px;
+    background-position: center;
+  }
+  /* Softer, neutral grid in light mode so the surface stays clean. */
+  :root.light .console-grid {
+    background-image:
+      linear-gradient(to right, rgba(23, 27, 33, 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(23, 27, 33, 0.03) 1px, transparent 1px);
+  }
+
+  /* The console shadow is tuned for the dark theme (deep black drop + white
+     inset highlight). On white surfaces it reads as heavy 3D — swap it for a
+     flat, subtle elevation in light mode. */
+  :root.light .shadow-console {
+    --tw-shadow: 0 1px 2px rgba(23, 27, 33, 0.04), 0 6px 20px -12px rgba(23, 27, 33, 0.18);
+    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000),
+      var(--tw-shadow);
+  }
+  :root.light .shadow-glow {
+    --tw-shadow: 0 0 0 1px rgba(155, 122, 50, 0.3);
+    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000),
+      var(--tw-shadow);
+  }
+
+  ::selection {
+    background: rgb(var(--c-brass) / 0.28);
+    color: rgb(var(--c-ink));
+  }
+
+  /* Focus ring — precise, brass */
+  :focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px rgb(var(--c-obsidian)),
+      0 0 0 3.5px rgb(var(--c-brass) / 0.7);
+    border-radius: 6px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--c-hairline-strong));
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-faint));
+    background-clip: content-box;
+  }
 }
 
-body {
-  margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background: #f8fafc;
+@layer components {
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.22em] text-faint;
+  }
+
+  .panel {
+    @apply rounded-2xl border border-hairline bg-panel;
+  }
+
+  .panel-elevated {
+    @apply rounded-2xl border border-hairline bg-elevated shadow-console;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 h-10 text-sm font-medium
+      transition-all duration-150 select-none disabled:opacity-45 disabled:cursor-not-allowed
+      whitespace-nowrap;
+  }
+  .btn-brass {
+    @apply btn text-obsidian;
+    background: linear-gradient(180deg, #dcbd76 0%, #c7a559 100%);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 6px 16px -8px rgba(199, 165, 89, 0.6);
+  }
+  .btn-brass:hover:not(:disabled) {
+    background: linear-gradient(180deg, #e6ca85 0%, #d0af64 100%);
+  }
+  .btn-ghost {
+    @apply btn border border-hairline bg-transparent text-ink hover:bg-elevated hover:border-hairline-strong;
+  }
+  .btn-subtle {
+    @apply btn bg-elevated text-ink hover:bg-raised border border-hairline;
+  }
+  .btn-danger {
+    @apply btn border border-danger/40 bg-danger/10 text-danger hover:bg-danger/20;
+  }
+  .btn-sm {
+    @apply h-8 px-3 text-[13px] rounded-md;
+  }
+
+  .field {
+    @apply w-full rounded-lg border border-hairline bg-obsidian/60 px-3.5 h-10 text-sm text-ink
+      placeholder:text-faint transition-colors focus:border-brass/60;
+  }
+  textarea.field {
+    @apply h-auto py-2.5 leading-relaxed resize-y;
+  }
+  select.field {
+    @apply appearance-none pr-9;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-hairline bg-elevated
+      px-2.5 py-1 text-[11px] font-medium text-muted;
+  }
+
+  .card-hover {
+    @apply transition-all duration-200 hover:border-hairline-strong hover:-translate-y-0.5;
+  }
+
+  .divider {
+    @apply h-px w-full bg-hairline;
+  }
+
+  .tick-row {
+    background-image: repeating-linear-gradient(
+      90deg,
+      rgba(124, 135, 155, 0.25) 0 1px,
+      transparent 1px 9px
+    );
+  }
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+/* ── Markdown surface ──────────────────────────────────────────────────────
+   The typographic canvas for assistant answers (borderless, ChatGPT-style).
+   Everything resolves through the theme tokens so it flips cleanly between
+   light (near-black ink on white) and dark. */
+.prose-console {
+  @apply text-[15px] text-ink/90;
+  line-height: 1.72;
 }
-
-::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
+.prose-console > :first-child {
+  margin-top: 0;
 }
-
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-/* ============================================
-   MARKDOWN CONTENT STYLES
-   ============================================ */
-
-.markdown-content {
-  line-height: 1.7;
-  color: #374151;
-}
-
-/* Headings */
-.markdown-content .heading-1 {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: #111827;
-  margin: 1.25rem 0 0.75rem 0;
-  padding-bottom: 0.5rem;
-  border-bottom: 2px solid #e5e7eb;
-}
-
-.markdown-content .heading-2 {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #1f2937;
-  margin: 1rem 0 0.5rem 0;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.markdown-content .heading-2::before {
-  content: '';
-  width: 4px;
-  height: 1.1rem;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  border-radius: 2px;
-}
-
-.markdown-content .heading-3 {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: #374151;
-  margin: 0.75rem 0 0.375rem 0;
-}
-
-/* Paragraphs */
-.markdown-content p {
-  margin-bottom: 0.75rem;
-}
-
-.markdown-content p:last-child {
+.prose-console > :last-child {
   margin-bottom: 0;
 }
 
-/* Lists */
-.markdown-content .styled-list {
-  margin: 0.75rem 0;
-  padding-left: 0;
-  list-style: none;
+.prose-console h1 {
+  @apply font-display text-[1.6rem] font-700 text-ink mt-8 mb-4 tracking-tight;
+  line-height: 1.25;
+}
+.prose-console h2 {
+  @apply font-display text-[1.3rem] font-700 text-ink mt-7 mb-3 tracking-tight;
+  line-height: 1.3;
+}
+.prose-console h3 {
+  @apply font-display text-[1.08rem] font-600 text-ink mt-6 mb-2 tracking-tight;
+}
+.prose-console h4 {
+  @apply font-display text-[0.95rem] font-600 text-ink mt-5 mb-2;
+}
+.prose-console h1 + *,
+.prose-console h2 + *,
+.prose-console h3 + *,
+.prose-console h4 + * {
+  margin-top: 0;
 }
 
-.markdown-content .styled-list li {
-  position: relative;
-  padding-left: 1.5rem;
-  margin-bottom: 0.5rem;
+.prose-console p {
+  @apply my-4;
+}
+.prose-console ul {
+  @apply my-4 list-disc pl-5 space-y-2;
+}
+.prose-console ol {
+  @apply my-4 list-decimal pl-5 space-y-2;
+}
+.prose-console li {
+  @apply pl-1;
+}
+.prose-console li::marker {
+  @apply text-brass;
+}
+.prose-console li > ul,
+.prose-console li > ol {
+  @apply my-2;
+}
+
+.prose-console a {
+  @apply text-brass-bright font-500 no-underline transition-colors hover:underline underline-offset-2;
+}
+.prose-console strong {
+  @apply text-ink font-700;
+}
+.prose-console em {
+  @apply italic;
+}
+
+/* Inline code — subtle tinted chip, mono, scales with surrounding text. */
+.prose-console code {
+  @apply font-mono text-[0.86em] rounded-md bg-brass/[0.12] px-1.5 py-0.5 text-brass-bright;
+}
+/* Fenced code — rounded panel with its own surface, horizontal scroll, mono. */
+.prose-console pre {
+  @apply my-5 overflow-x-auto rounded-xl border border-hairline bg-raised p-4 text-[13.5px];
   line-height: 1.6;
 }
-
-.markdown-content .styled-list li::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0.55rem;
-  width: 6px;
-  height: 6px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  border-radius: 50%;
+.prose-console pre code {
+  @apply border-0 bg-transparent p-0 text-[13.5px] text-ink/90;
 }
 
-.markdown-content .styled-list.ordered {
-  counter-reset: list-counter;
+.prose-console blockquote {
+  @apply my-5 rounded-r-lg border-l-[3px] border-brass/60 bg-brass/[0.05] py-1 pl-4 pr-3 text-muted;
+}
+.prose-console blockquote p {
+  @apply my-2;
 }
 
-.markdown-content .styled-list.ordered li {
-  counter-increment: list-counter;
+/* Tables — header row + hairline borders + subtle zebra striping. */
+.prose-console table {
+  @apply my-5 block w-full max-w-full overflow-x-auto border-collapse text-[0.92em];
+}
+.prose-console th,
+.prose-console td {
+  @apply border border-hairline px-3 py-2 text-left align-top;
+}
+.prose-console th {
+  @apply bg-elevated font-600 text-ink;
+}
+.prose-console tbody tr:nth-child(even) {
+  background: rgb(var(--c-ink) / 0.03);
 }
 
-.markdown-content .styled-list.ordered li::before {
-  content: counter(list-counter);
-  width: auto;
-  height: auto;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  font-weight: 700;
-  font-size: 0.85rem;
-  top: 0;
-  border-radius: 0;
+.prose-console hr {
+  @apply my-8 border-0 border-t border-hairline;
+}
+.prose-console img {
+  @apply my-4 max-w-full rounded-lg;
 }
 
-/* Inline Code */
-.markdown-content .inline-code {
-  background: linear-gradient(135deg, #f1f5f9, #e2e8f0);
-  color: #7c3aed;
-  padding: 0.15rem 0.4rem;
-  border-radius: 0.375rem;
-  font-size: 0.8rem;
-  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
-  font-weight: 500;
-  border: 1px solid #e2e8f0;
-}
-
-/* Code Block Wrapper */
-.markdown-content .code-block-wrapper {
-  margin: 1rem 0;
-  border-radius: 0.75rem;
-  overflow: hidden;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-}
-
-.markdown-content .code-block-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 1rem;
-  background: #282a36;
-  border-bottom: 1px solid #44475a;
-}
-
-.markdown-content .code-lang-badge {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: #bd93f9;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.markdown-content .copy-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.25rem 0.625rem;
-  font-size: 0.7rem;
-  font-weight: 500;
-  color: #f8f8f2;
-  background: #44475a;
-  border: none;
-  border-radius: 0.375rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  opacity: 0;
-}
-
-.markdown-content .code-block-wrapper:hover .copy-btn {
-  opacity: 1;
-}
-
-.markdown-content .copy-btn:hover {
-  background: #6272a4;
-}
-
-/* Links */
-.markdown-content .styled-link {
-  color: #6366f1;
-  text-decoration: none;
-  font-weight: 500;
-  border-bottom: 1px solid transparent;
-  transition: all 0.2s ease;
-}
-
-.markdown-content .styled-link:hover {
-  color: #4f46e5;
-  border-bottom-color: #4f46e5;
-}
-
-/* Blockquote */
-.markdown-content .styled-blockquote {
-  margin: 1rem 0;
-  padding: 1rem 1.25rem;
-  background: linear-gradient(135deg, #faf5ff, #f3e8ff);
-  border-left: 4px solid #8b5cf6;
-  border-radius: 0 0.5rem 0.5rem 0;
-  font-style: italic;
-  color: #6b21a8;
-}
-
-.markdown-content .styled-blockquote p {
-  margin: 0;
-}
-
-/* Horizontal Rule */
-.markdown-content .styled-hr {
-  margin: 1.5rem 0;
-  border: none;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, #e5e7eb, transparent);
-}
-
-/* Tables */
-.markdown-content .table-wrapper {
-  margin: 1rem 0;
-  overflow-x: auto;
-  border-radius: 0.75rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.markdown-content .styled-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-  background: white;
-}
-
-.markdown-content .table-head {
-  background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-}
-
-.markdown-content .table-header {
-  padding: 0.75rem 1rem;
-  text-align: left;
-  font-weight: 600;
-  color: #374151;
-  border-bottom: 2px solid #e5e7eb;
-  white-space: nowrap;
-}
-
-.markdown-content .table-body .table-row:nth-child(even) {
-  background: #f9fafb;
-}
-
-.markdown-content .table-body .table-row:hover {
-  background: #f3f4f6;
-}
-
-.markdown-content .table-cell {
-  padding: 0.625rem 1rem;
-  border-bottom: 1px solid #e5e7eb;
-  color: #4b5563;
-}
-
-/* ============================================
-   ANIMATIONS
-   ============================================ */
-
-/* Thinking dots animation */
-@keyframes thinking {
-  0%, 100% {
-    opacity: 0.3;
-    transform: scale(0.8);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
   }
-  50% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-.thinking-dot {
-  animation: thinking 1.4s ease-in-out infinite;
-}
-
-.thinking-dot:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.thinking-dot:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-/* Pulse animation for loading */
-@keyframes pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
-}
-
-.loading-dot {
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.loading-dot:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.loading-dot:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-/* Fade in animation for messages */
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.message-enter {
-  animation: fadeInUp 0.3s ease-out;
-}
-
-/* Activity line animation - single line that flashes and replaces */
-@keyframes fadeSlide {
-  0% {
-    opacity: 0;
-    transform: translateY(-8px);
-  }
-  15% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  85% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-}
-
-.animate-fade-slide {
-  animation: fadeSlide 2s ease-in-out;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-fade-in {
-  animation: fadeIn 0.3s ease-out forwards;
-}
-
-.activity-line {
-  height: 24px;
-  display: flex;
-  align-items: center;
-}
-
-.activity-text {
-  white-space: nowrap;
-}
-
-/* ============================================
-   UTILITY STYLES
-   ============================================ */
-
-/* Hide textarea focus outline for cleaner look */
-textarea:focus {
-  outline: none;
-}
-
-/* Selection color */
-::selection {
-  background: #c7d2fe;
-  color: #3730a3;
 }
