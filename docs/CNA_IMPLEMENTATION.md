@@ -1,9 +1,22 @@
 # CnA Readiness Implementation
 
+**CnA — Certification and Accreditation**: the formal security assurance process
+a system passes before it may handle real data in production. *Certification* is
+the technical assessment that the required controls exist and work;
+*accreditation* is the accountable authority accepting the residual risk and
+authorising the system to operate. In the NZ health context this is assessed
+against the NZISM.
+
 Date: 22 July 2026. Implements the five work items agreed for the CnA process
 (RBAC, config-gated HNZ models, OTEL telemetry, security scans, AI guardrails)
 plus the admin portal (user management, token caps, usage/cost analytics,
 security event visibility).
+
+> [!NOTE]
+> This document records the 22 July implementation intent. For the **verified
+> current status** of each item against the running system, see the
+> *CnA readiness* section of the top-level [README](../README.md) — several
+> items are built but not yet proven in the live deployment.
 
 ## 1. RBAC & user activity management
 

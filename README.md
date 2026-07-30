@@ -191,6 +191,17 @@ known-credential account.
 
 ## CnA readiness
 
+**CnA — Certification and Accreditation**: the formal security assurance process
+a system passes before it may handle real data in production. *Certification* is
+the technical assessment that the required controls exist and work;
+*accreditation* is the accountable authority accepting the residual risk and
+authorising the system to operate. In the NZ health context this is assessed
+against the NZISM.
+
+The five work items below map onto the control areas an assessor examines:
+access control, data sovereignty, auditability and monitoring, vulnerability
+management, and AI-specific safety controls.
+
 Status of the five agreed work items, **verified against the running system on
 30 July 2026** — not against the design intent. Where something is built but
 unproven, it says so.
