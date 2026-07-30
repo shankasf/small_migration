@@ -33,6 +33,32 @@ roleRef:
   name: admin
   apiGroup: rbac.authorization.k8s.io
 ---
+# The built-in 'admin' role covers core resources but knows nothing about
+# custom resources, so the Traefik Middleware needs an explicit grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployer-traefik
+  namespace: $NS
+rules:
+  - apiGroups: ["traefik.io", "traefik.containo.us"]
+    resources: ["middlewares", "ingressroutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployer-traefik
+  namespace: $NS
+subjects:
+  - kind: ServiceAccount
+    name: deployer
+    namespace: $NS
+roleRef:
+  kind: Role
+  name: deployer-traefik
+  apiGroup: rbac.authorization.k8s.io
+---
 # Long-lived token for the runner's kubeconfig.
 apiVersion: v1
 kind: Secret

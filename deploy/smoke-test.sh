@@ -53,7 +53,10 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "http://${BASE#https
 case "$code" in 30[0-9]) ok "http redirects to https ($code)";; *) bad "http redirects to https" "got $code";; esac
 
 echo "== container hardening =="
-if command -v kubectl >/dev/null 2>&1 && kubectl get ns "$NS" >/dev/null 2>&1; then
+# Probe with a namespaced read: the CD ServiceAccount is scoped to this
+# namespace and cannot 'get namespaces', so gating on that would silently skip
+# every assertion below.
+if command -v kubectl >/dev/null 2>&1 && kubectl get deploy -n "$NS" >/dev/null 2>&1; then
   # No source is mounted from the host — the image is the only code source.
   hp=$(kubectl get deploy -n "$NS" -o jsonpath='{range .items[*]}{.spec.template.spec.volumes[*].hostPath.path}{"\n"}{end}' 2>/dev/null | tr -d '\n')
   [ -z "$hp" ] && ok "no hostPath mounts in any deployment" || bad "no hostPath mounts" "found: $hp"

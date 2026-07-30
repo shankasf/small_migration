@@ -73,7 +73,7 @@ jobs:
         service: [ai-service, backend, frontend]
     steps:
       - name: Trivy scan ${{ matrix.service }}
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ needs.build.outputs.image_tag }}
           severity: CRITICAL
@@ -86,8 +86,14 @@ jobs:
   deploy:
     name: Deploy to production
     needs: [build, scan-images]
-    # Always runs, so a rollback via workflow_dispatch skips build and scan.
-    if: ${{ always() && (needs.build.result == 'success' || inputs.image_tag != '') }}
+    # A failed image scan must block the deploy. always() is needed so a
+    # rollback via workflow_dispatch can skip build and scan entirely, but the
+    # build/scan results are then checked explicitly rather than ignored.
+    if: >-
+      ${{ always() && (
+        inputs.image_tag != '' ||
+        (needs.build.result == 'success' && needs.scan-images.result == 'success')
+      ) }}
     runs-on: [self-hosted, k3s]
     environment: production
     steps:
