@@ -3,6 +3,7 @@ Circini Migration Agent - FastAPI Routes
 """
 
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -108,8 +109,32 @@ def get_session_storage(session_id: str) -> Dict[str, Any]:
         }
     return session_storage[session_id]
 
+# Path-component allowlists. `filename` is chosen by the LLM and `session_id`
+# arrives in the request body, so neither may be joined onto a path unchecked:
+# a traversal ("../") or absolute ("/app/...") value would escape OUTPUT_DIR —
+# and pathlib drops the base entirely when the joined part is absolute.
+_SAFE_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _safe_join(base: Path, name: str) -> Path:
+    """Join `name` onto `base`, refusing anything that escapes `base`."""
+    if not _SAFE_FILENAME.match(name) or ".." in name:
+        raise ValueError(
+            f"Invalid file name '{name}'. Use only letters, digits, dot, dash "
+            "and underscore — no directory separators or parent references."
+        )
+    base_resolved = base.resolve()
+    target = (base_resolved / name).resolve()
+    if target.parent != base_resolved:
+        raise ValueError(f"Invalid file name '{name}': path escapes the output folder.")
+    return target
+
+
 def get_session_output_folder(session_id: str) -> Path:
     """Get output folder for session"""
+    if not _SAFE_SESSION_ID.match(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session id")
     storage = get_session_storage(session_id)
     if storage["output_folder"] is None:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -121,7 +146,7 @@ def get_session_output_folder(session_id: str) -> Path:
 def save_output_file(session_id: str, filename: str, content: str) -> str:
     """Save file to session's output folder"""
     folder = get_session_output_folder(session_id)
-    filepath = folder / filename
+    filepath = _safe_join(folder, filename)
     filepath.write_text(content)
     return str(filepath)
 
@@ -153,7 +178,12 @@ def create_tools(session_id: str):
             file_name: Name for the output file.
             content: The content to write to the file.
         """
-        saved_path = save_output_file(session_id, file_name, content)
+        try:
+            saved_path = save_output_file(session_id, file_name, content)
+        except ValueError as exc:
+            # Surface the rejection to the agent so it can retry with a plain
+            # file name rather than failing the whole turn.
+            return f"Could not save file: {exc}"
         storage["outputs"][file_name] = content
         return f"File saved to: {saved_path}"
 

@@ -80,6 +80,10 @@ spec:
               mountPath: /data/outputs
             - name: ai-service-code
               mountPath: /app
+              # The pod never writes its own source (outputs go to /data/outputs).
+              # Read-only keeps a file-write bug from reaching the host source
+              # tree, which uvicorn --reload would then execute.
+              readOnly: true
           resources:
             requests:
               memory: "512Mi"
