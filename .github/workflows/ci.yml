@@ -12,7 +12,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow differs when this is called by deploy.yml, so the standalone
+  # CI run and the deploy-invoked one land in separate groups. Sharing a group
+  # made them cancel each other, which intermittently killed deploys.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
