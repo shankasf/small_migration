@@ -7,14 +7,72 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id                String        @id @default(uuid())
+  email             String        @unique
+  name              String?
+  passwordHash      String?
+  entraOid          String?       @unique
+  role              String        @default("analyst") // admin | analyst | auditor
+  status            String        @default("active") // active | restricted | disabled
+  dailyTokenLimit   Int?
+  monthlyTokenLimit Int?
+  lastLoginAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  sessions          Session[]
+  auditEvents       AuditEvent[]
+  usageRecords      UsageRecord[]
+}
+
+model AuditEvent {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String // e.g. auth.login, session.create, chat.message, file.upload, guardrail.block
+  resource  String? // session/file/user id the action touched
+  decision  String   @default("allow") // allow | deny | blocked
+  dataClass String? // metadata | health-pii
+  severity  String   @default("info") // info | warning | critical
+  detail    String?  @db.Text // PII-scrubbed JSON detail
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action])
+  @@index([decision])
+  @@index([createdAt])
+}
+
+model UsageRecord {
+  id           String   @id @default(uuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sessionId    String?
+  provider     String   @default("openai") // openai | azure
+  model        String
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  totalTokens  Int      @default(0)
+  costUsd      Float    @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
 model Session {
-  id        String            @id @default(uuid())
-  name      String            @default("New Chat")
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-  messages  Message[]
-  files     UploadedFile[]
-  outputs   GeneratedOutput[]
+  id          String            @id @default(uuid())
+  name        String            @default("New Chat")
+  ownerUserId String?
+  owner       User?             @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  messages    Message[]
+  files       UploadedFile[]
+  outputs     GeneratedOutput[]
+
+  @@index([ownerUserId])
 }
 
 model Message {
