@@ -1,23 +1,32 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { AuthedRequest, canAccessSession, requireRole, requireWriteAccess } from '../middleware/auth.js';
+import { recordAudit } from '../services/audit.js';
 
 const router = Router();
 
 // Get prisma from app locals
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
 
-// Create new session
-router.post('/', async (req: Request, res: Response) => {
+// Create new session (owned by the caller)
+router.post('/', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const { name } = req.body;
 
     const session = await prisma.session.create({
       data: {
-        name: name || 'New Chat'
+        name: name || 'New Chat',
+        ownerUserId: req.user!.id
       }
     });
 
+    recordAudit(prisma, {
+      userId: req.user!.id,
+      action: 'session.create',
+      resource: session.id,
+      ip: req.ip
+    });
     res.status(201).json(session);
   } catch (error) {
     console.error('Error creating session:', error);
@@ -25,14 +34,17 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
-// List sessions with cursor-based pagination
-router.get('/', async (req: Request, res: Response) => {
+// List sessions with cursor-based pagination.
+// Admins see all sessions; analysts see only their own (row-level scoping).
+router.get('/', requireRole('admin', 'analyst'), async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
     const cursor = req.query.cursor as string | undefined;
+    const user = req.user!;
 
     const sessions = await prisma.session.findMany({
+      ...(user.role === 'admin' ? {} : { where: { ownerUserId: user.id } }),
       ...(cursor ? {
         skip: 1,
         cursor: { id: cursor },
@@ -62,7 +74,7 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // Get single session with messages
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
@@ -87,6 +99,17 @@ router.get('/:id', async (req: Request, res: Response) => {
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
+    if (!canAccessSession(req.user!, session)) {
+      recordAudit(prisma, {
+        userId: req.user!.id,
+        action: 'session.access',
+        resource: id,
+        decision: 'deny',
+        severity: 'warning',
+        ip: req.ip
+      });
+      return res.status(403).json({ error: 'You do not have access to this session' });
+    }
 
     res.json(session);
   } catch (error) {
@@ -96,17 +119,30 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // Update session name
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
     const { name } = req.body;
+
+    const existing = await prisma.session.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (!canAccessSession(req.user!, existing)) {
+      recordAudit(prisma, {
+        userId: req.user!.id, action: 'session.update', resource: id,
+        decision: 'deny', severity: 'warning', ip: req.ip
+      });
+      return res.status(403).json({ error: 'You do not have access to this session' });
+    }
 
     const session = await prisma.session.update({
       where: { id },
       data: { name }
     });
 
+    recordAudit(prisma, { userId: req.user!.id, action: 'session.update', resource: id, ip: req.ip });
     res.json(session);
   } catch (error) {
     console.error('Error updating session:', error);
@@ -115,15 +151,28 @@ router.patch('/:id', async (req: Request, res: Response) => {
 });
 
 // Delete session
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
+
+    const existing = await prisma.session.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (!canAccessSession(req.user!, existing)) {
+      recordAudit(prisma, {
+        userId: req.user!.id, action: 'session.delete', resource: id,
+        decision: 'deny', severity: 'warning', ip: req.ip
+      });
+      return res.status(403).json({ error: 'You do not have access to this session' });
+    }
 
     await prisma.session.delete({
       where: { id }
     });
 
+    recordAudit(prisma, { userId: req.user!.id, action: 'session.delete', resource: id, ip: req.ip });
     res.status(204).send();
   } catch (error) {
     console.error('Error deleting session:', error);
@@ -132,10 +181,18 @@ router.delete('/:id', async (req: Request, res: Response) => {
 });
 
 // Get session outputs
-router.get('/:id/outputs', async (req: Request, res: Response) => {
+router.get('/:id/outputs', async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
+
+    const session = await prisma.session.findUnique({ where: { id } });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (!canAccessSession(req.user!, session)) {
+      return res.status(403).json({ error: 'You do not have access to this session' });
+    }
 
     const outputs = await prisma.generatedOutput.findMany({
       where: { sessionId: id },

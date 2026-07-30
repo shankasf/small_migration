@@ -1,17 +1,21 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { sendToAIService } from '../services/aiService.js';
+import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
+import { recordAudit } from '../services/audit.js';
+import { checkTokenCaps, recordUsage } from '../services/usage.js';
 
 const router = Router();
 
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
 
 // Send message to session
-router.post('/:sessionId/messages', async (req: Request, res: Response) => {
+router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const { sessionId } = req.params;
     const { message } = req.body;
+    const user = req.user!;
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
@@ -34,6 +38,24 @@ router.post('/:sessionId/messages', async (req: Request, res: Response) => {
 
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
+    }
+    if (!canAccessSession(user, session)) {
+      recordAudit(prisma, {
+        userId: user.id, action: 'chat.message', resource: sessionId,
+        decision: 'deny', severity: 'warning', ip: req.ip
+      });
+      return res.status(403).json({ error: 'You do not have access to this session' });
+    }
+
+    // Enforce per-user token caps set by an admin
+    const caps = await checkTokenCaps(prisma, user);
+    if (!caps.allowed) {
+      recordAudit(prisma, {
+        userId: user.id, action: 'chat.message', resource: sessionId,
+        decision: 'deny', severity: 'warning',
+        detail: JSON.stringify({ reason: caps.reason }), ip: req.ip
+      });
+      return res.status(429).json({ error: caps.reason });
     }
 
     // Save user message
@@ -75,6 +97,36 @@ router.post('/:sessionId/messages', async (req: Request, res: Response) => {
       message,
       files,
       history
+    });
+
+    // Record token usage + cost for this user (metering for admin analytics/caps)
+    if (aiResponse.usage && (aiResponse.usage.input_tokens || aiResponse.usage.output_tokens)) {
+      recordUsage(prisma, {
+        userId: user.id,
+        sessionId,
+        provider: aiResponse.usage.provider || 'openai',
+        model: aiResponse.usage.model || 'unknown',
+        inputTokens: aiResponse.usage.input_tokens || 0,
+        outputTokens: aiResponse.usage.output_tokens || 0,
+      }).catch(err => console.error('[USAGE] Failed to record usage:', err?.message || err));
+    }
+
+    // Audit the interaction, carrying the guardrail decision from the AI service
+    const guardrail = aiResponse.guardrail;
+    recordAudit(prisma, {
+      userId: user.id,
+      action: guardrail?.decision === 'blocked' ? 'guardrail.block' : 'chat.message',
+      resource: sessionId,
+      decision: guardrail?.decision === 'blocked' ? 'blocked' : 'allow',
+      dataClass: guardrail?.data_class || 'metadata',
+      severity: guardrail?.decision === 'blocked' ? 'critical'
+        : guardrail?.decision === 'redacted' ? 'warning' : 'info',
+      detail: guardrail ? JSON.stringify({
+        decision: guardrail.decision,
+        reasons: guardrail.reasons,
+        findings: guardrail.findings
+      }) : null,
+      ip: req.ip
     });
 
     // Save assistant message
@@ -134,7 +186,8 @@ router.post('/:sessionId/messages', async (req: Request, res: Response) => {
         name: sessionName || session.name,
         updatedAt: new Date().toISOString(),
       },
-      status: aiResponse.status
+      status: aiResponse.status,
+      guardrail: aiResponse.guardrail
     });
   } catch (error) {
     console.error('Error processing message:', error);
@@ -143,10 +196,18 @@ router.post('/:sessionId/messages', async (req: Request, res: Response) => {
 });
 
 // Get messages for a session
-router.get('/:sessionId/messages', async (req: Request, res: Response) => {
+router.get('/:sessionId/messages', async (req: AuthedRequest, res: Response) => {
   try {
     const prisma = getPrisma(req);
     const { sessionId } = req.params;
+
+    const session = await prisma.session.findUnique({ where: { id: sessionId } });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (!canAccessSession(req.user!, session)) {
+      return res.status(403).json({ error: 'You do not have access to this session' });
+    }
 
     const messages = await prisma.message.findMany({
       where: { sessionId },

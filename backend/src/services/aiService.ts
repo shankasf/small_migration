@@ -25,6 +25,19 @@ interface ChatResponse {
     stg_generated: boolean;
     report_generated: boolean;
   };
+  usage?: {
+    provider?: string;
+    model?: string;
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
+  guardrail?: {
+    decision: 'allow' | 'redacted' | 'blocked';
+    reasons?: string[];
+    findings?: Array<{ type: string; count: number }>;
+    data_class?: string;
+  };
 }
 
 export async function sendToAIService(request: ChatRequest): Promise<ChatResponse> {
@@ -34,7 +47,8 @@ export async function sendToAIService(request: ChatRequest): Promise<ChatRespons
       request,
       {
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(process.env.INTERNAL_API_KEY ? { 'x-internal-key': process.env.INTERNAL_API_KEY } : {})
         },
         timeout: 600000 // 10 minute timeout for AI processing (reasoning models with large files)
       }

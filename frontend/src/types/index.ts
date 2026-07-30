@@ -54,4 +54,77 @@ export interface ChatResponse {
   savedOutputs?: GeneratedOutput[];
   updatedSession?: { id: string; name: string; updatedAt: string };
   status?: MigrationStatus;
+  guardrail?: GuardrailInfo;
+}
+
+export interface GuardrailInfo {
+  decision: 'allow' | 'redacted' | 'blocked';
+  reasons?: string[];
+  findings?: Array<{ type: string; count: number }>;
+  data_class?: string;
+}
+
+export type Role = 'admin' | 'analyst' | 'auditor';
+export type UserStatus = 'active' | 'restricted' | 'disabled';
+
+export interface User {
+  id: string;
+  email: string;
+  name: string | null;
+  role: Role;
+  status: UserStatus;
+  dailyTokenLimit: number | null;
+  monthlyTokenLimit: number | null;
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+
+export interface AdminUser extends User {
+  usage: {
+    totalTokens: number;
+    totalCostUsd: number;
+    requests: number;
+    monthTokens: number;
+    monthCostUsd: number;
+    sessions: number;
+  };
+}
+
+export interface UsageSummary {
+  windowDays: number;
+  totals: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    costUsd: number;
+    requests: number;
+  };
+  byModel: Array<{
+    model: string;
+    provider: string;
+    totalTokens: number;
+    costUsd: number;
+    requests: number;
+  }>;
+  daily: Array<{ date: string; tokens: number; costUsd: number; requests: number }>;
+}
+
+export interface AuditEvent {
+  id: string;
+  userId: string | null;
+  user?: { email: string; name?: string | null } | null;
+  action: string;
+  resource: string | null;
+  decision: 'allow' | 'deny' | 'blocked';
+  dataClass: string | null;
+  severity: 'info' | 'warning' | 'critical';
+  detail: string | null;
+  ip: string | null;
+  createdAt: string;
+}
+
+export interface SecuritySummary {
+  windowDays: number;
+  counts: Array<{ action: string; decision: string; count: number }>;
+  recent: AuditEvent[];
 }

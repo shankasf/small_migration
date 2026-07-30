@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput } from '../types';
+import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary } from '../types';
+import { getToken, clearAuth } from './auth';
 
 const API_BASE = '/api';
 
@@ -7,6 +8,28 @@ const api = axios.create({
   baseURL: API_BASE,
   timeout: 600000, // 10 minutes for AI processing (reasoning models with large files)
 });
+
+// Attach the session JWT to every request
+api.interceptors.request.use(config => {
+  const token = getToken();
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Expired/invalid token -> back to login
+api.interceptors.response.use(
+  response => response,
+  error => {
+    if (error?.response?.status === 401) {
+      clearAuth();
+      window.location.reload();
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Sessions
 export async function getSessions(cursor?: string, limit = 50): Promise<{ sessions: Session[]; nextCursor: string | null }> {
@@ -119,4 +142,65 @@ export async function transcribeAudio(audioBlob: Blob): Promise<{ text: string }
 export async function healthCheck(): Promise<{ status: string }> {
   const response = await api.get('/health');
   return response.data;
+}
+
+// ---------- Admin portal ----------
+
+export async function adminGetUsers(): Promise<AdminUser[]> {
+  const response = await api.get('/admin/users');
+  return response.data;
+}
+
+export async function adminCreateUser(data: {
+  email: string;
+  name?: string;
+  role?: string;
+  password: string;
+  dailyTokenLimit?: number | null;
+  monthlyTokenLimit?: number | null;
+}): Promise<AdminUser> {
+  const response = await api.post('/admin/users', data);
+  return response.data;
+}
+
+export async function adminUpdateUser(
+  id: string,
+  data: Partial<{
+    role: string;
+    status: string;
+    name: string;
+    password: string;
+    dailyTokenLimit: number | null;
+    monthlyTokenLimit: number | null;
+  }>
+): Promise<AdminUser> {
+  const response = await api.patch(`/admin/users/${id}`, data);
+  return response.data;
+}
+
+export async function adminGetUsageSummary(days = 30): Promise<UsageSummary> {
+  const response = await api.get('/admin/usage/summary', { params: { days } });
+  return response.data;
+}
+
+export async function adminGetAudit(filters: {
+  userId?: string;
+  action?: string;
+  decision?: string;
+  severity?: string;
+  limit?: number;
+} = {}): Promise<AuditEvent[]> {
+  const response = await api.get('/admin/audit', { params: filters });
+  return response.data;
+}
+
+export async function adminGetSecuritySummary(days = 30): Promise<SecuritySummary> {
+  const response = await api.get('/admin/security/summary', { params: { days } });
+  return response.data;
+}
+
+/** Extract the server-provided error message from an axios error, if any. */
+export function apiErrorMessage(error: unknown, fallback = 'Something went wrong'): string {
+  const err = error as { response?: { data?: { error?: string } }; message?: string };
+  return err?.response?.data?.error || err?.message || fallback;
 }
