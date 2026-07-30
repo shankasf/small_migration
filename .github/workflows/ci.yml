@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # Called by deploy.yml so nothing ships without these checks passing.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: services/backend/package-lock.json
+      - run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build
+
+  frontend:
+    name: Frontend — typecheck and lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: services/frontend/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+
+  ai-service:
+    name: AI service — security and behaviour tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/ai-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/ai-service/requirements.txt
+      - run: pip install -r requirements.txt pytest
+      - name: Security regression tests
+        run: python -m pytest tests/ -v
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      # Gate: CRITICAL fails the build.
+      #
+      # Highs are reported but do not block, because the current highs have no
+      # available fix (xlsx/SheetJS prototype pollution) or are pinned
+      # transitively by @opentelemetry packages. Gating on high today would
+      # mean a permanently red pipeline, which trains people to ignore it.
+      # The accepted findings and their remediation plan are recorded in the
+      # CnA readiness section of the README; revisit when xlsx is replaced.
+      - name: npm audit — backend (critical blocks)
+        working-directory: services/backend
+        run: npm audit --audit-level=critical
+      - name: npm audit — frontend (critical blocks)
+        working-directory: services/frontend
+        run: npm audit --audit-level=critical
+
+      - name: Report high-severity findings (non-blocking)
+        run: |
+          for svc in backend frontend; do
+            echo "### $svc" >> "$GITHUB_STEP_SUMMARY"
+            (cd "services/$svc" && npm audit --audit-level=high 2>&1 | tail -25) >> "$GITHUB_STEP_SUMMARY" || true
+          done
+
+      - name: pip-audit — ai-service
+        run: |
+          pip install pip-audit
+          pip-audit -r services/ai-service/requirements.txt
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  manifest-check:
+    name: Kubernetes manifest policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # These encode deployment invariants that a manifest edit must not undo.
+      - name: No hostPath mounts
+        run: |
+          if grep -n 'hostPath' deploy/kubernetes/*.yaml; then
+            echo "::error::hostPath mounts reintroduce host filesystem exposure — not permitted"
+            exit 1
+          fi
+          echo "OK: no hostPath mounts"
+
+      - name: No :latest image tags
+        run: |
+          if grep -nE 'image:.*:latest' deploy/kubernetes/*.yaml; then
+            echo "::error::images must be pinned to an immutable tag, never :latest"
+            exit 1
+          fi
+          echo "OK: no :latest tags"
+
+      - name: No hardcoded secrets in manifests
+        run: |
+          if grep -nE '^\s*(value|password|token):\s*["'"'"']?(sk-|AKIA|postgres(ql)?://[^ ]*:[^ ]*@)' deploy/kubernetes/*.yaml; then
+            echo "::error::secret literal found in a manifest — use secretKeyRef"
+            exit 1
+          fi
+          echo "OK: no secret literals"
+
+      - name: No --reload in production Dockerfiles
+        run: |
+          if grep -n -- '--reload' services/*/Dockerfile; then
+            echo "::error::--reload in a production image lets running code change in place"
+            exit 1
+          fi
+          echo "OK: no --reload in production images"

@@ -156,17 +156,21 @@ def check_inbound(message: str, files: Optional[Dict[str, str]] = None) -> Guard
     files = {name: _sanitize(content) for name, content in files.items()}
     combined = message + "\n" + "\n".join(files.values())
 
-    # 1. Prompt-injection detection (message only — uploaded data files are
-    #    passed as data, but injection attempts in them are still flagged)
+    # 1. Prompt-injection detection across the message AND uploaded file
+    #    content. Scanning the message alone would miss the primary vector for
+    #    this product: instructions hidden inside a mapping or template
+    #    document, which the agent reads as part of normal operation.
     for pattern in INJECTION_PATTERNS:
-        if pattern.search(message):
+        if pattern.search(combined):
             result.decision = "blocked"
             result.reasons.append("prompt_injection")
+            result.findings["injection_in_file"] = 1 if not pattern.search(message) else 0
             break
 
-    # 2. Restricted / out-of-scope request patterns
+    # 2. Restricted / out-of-scope request patterns — same reasoning: a denied
+    #    instruction smuggled into an attachment must not bypass the check.
     for label, pattern in DENY_PATTERNS:
-        if pattern.search(message):
+        if pattern.search(combined):
             result.decision = "blocked"
             result.reasons.append(f"restricted_pattern:{label}")
 

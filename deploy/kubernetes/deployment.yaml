@@ -1,13 +1,15 @@
 ---
-# Namespace
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: migration-agent
-
-# NOTE: ConfigMap and Secret are managed by deploy.sh script
-# They are created from .env file - do not hardcode values here
-# Run: ./deploy.sh to create/update ConfigMap and Secret from .env
+# NOTE: the migration-agent Namespace is created once, out of band (see
+# deploy/kubernetes/bootstrap.sh). Keeping it out of this manifest lets the CD
+# ServiceAccount be scoped to the namespace instead of needing cluster-level
+# rights.
+#
+# ConfigMap and Secret are also managed out of band (see deploy.sh / README).
+# They are never hardcoded here.
+#
+# Images are immutable and tagged per commit. ${IMAGE_TAG} is substituted by
+# the CD workflow (envsubst) so the manifest and the running image can never
+# drift apart. Nothing is mounted from the host — the source lives in the image.
 
 ---
 # Outputs PVC
@@ -41,9 +43,11 @@ spec:
       labels:
         app: ai-service
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: ai-service
-          image: migration-agent-ai-service:latest
+          image: ghcr.io/shankasf/small_migration/ai-service:${IMAGE_TAG}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8084
@@ -70,7 +74,6 @@ spec:
                 secretKeyRef:
                   name: migration-agent-secret
                   key: INTERNAL_API_KEY
-            # Explicit so the hostPath-mounted .env (localhost dev value) never wins
             - name: BACKEND_URL
               value: "http://backend:3001"
             - name: OTEL_SERVICE_NAME
@@ -78,12 +81,6 @@ spec:
           volumeMounts:
             - name: outputs
               mountPath: /data/outputs
-            - name: ai-service-code
-              mountPath: /app
-              # The pod never writes its own source (outputs go to /data/outputs).
-              # Read-only keeps a file-write bug from reaching the host source
-              # tree, which uvicorn --reload would then execute.
-              readOnly: true
           resources:
             requests:
               memory: "512Mi"
@@ -107,10 +104,6 @@ spec:
         - name: outputs
           persistentVolumeClaim:
             claimName: outputs-pvc
-        - name: ai-service-code
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/ai-service
-            type: Directory
 
 ---
 # AI Service
@@ -127,7 +120,7 @@ spec:
       targetPort: 8084
 
 ---
-# Backend Deployment (Dev mode with hot reload)
+# Backend Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -143,9 +136,32 @@ spec:
       labels:
         app: backend
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      # Schema sync runs once, before the app starts, so replicas cannot race
+      # on it and a failed sync surfaces as a clear init failure rather than a
+      # crash-looping app container.
+      initContainers:
+        - name: prisma-db-push
+          image: ghcr.io/shankasf/small_migration/backend:${IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          command: ["npx", "prisma", "db", "push", "--skip-generate"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: DATABASE_URL
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
       containers:
         - name: backend
-          image: migration-agent-backend-dev:latest
+          image: ghcr.io/shankasf/small_migration/backend:${IMAGE_TAG}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3001
@@ -194,13 +210,6 @@ spec:
                   key: SEED_ADMIN_PASSWORD
             - name: OTEL_SERVICE_NAME
               value: "circini-backend"
-          volumeMounts:
-            - name: backend-src
-              mountPath: /app/src
-              readOnly: true
-            - name: backend-prisma
-              mountPath: /app/prisma
-              readOnly: true
           resources:
             requests:
               memory: "256Mi"
@@ -220,15 +229,6 @@ spec:
               port: 3001
             initialDelaySeconds: 5
             periodSeconds: 5
-      volumes:
-        - name: backend-src
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/backend/src
-            type: Directory
-        - name: backend-prisma
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/backend/prisma
-            type: Directory
 
 ---
 # Backend Service
@@ -245,7 +245,7 @@ spec:
       targetPort: 3001
 
 ---
-# Frontend Deployment (Dev mode with hot reload)
+# Frontend Deployment (nginx serving the built SPA)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -261,89 +261,33 @@ spec:
       labels:
         app: frontend
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: frontend
-          image: migration-agent-frontend-dev:latest
+          image: ghcr.io/shankasf/small_migration/frontend:${IMAGE_TAG}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5173
-          volumeMounts:
-            - name: frontend-src
-              mountPath: /app/src
-              readOnly: true
-            - name: frontend-public
-              mountPath: /app/public
-              readOnly: true
-            - name: frontend-index
-              mountPath: /app/index.html
-              readOnly: true
-            - name: frontend-vite-config
-              mountPath: /app/vite.config.ts
-              readOnly: true
-            - name: frontend-tsconfig
-              mountPath: /app/tsconfig.json
-              readOnly: true
-            - name: frontend-tsconfig-node
-              mountPath: /app/tsconfig.node.json
-              readOnly: true
-            - name: frontend-tailwind-config
-              mountPath: /app/tailwind.config.js
-              readOnly: true
-            - name: frontend-postcss-config
-              mountPath: /app/postcss.config.js
-              readOnly: true
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "100m"
+              memory: "64Mi"
+              cpu: "50m"
             limits:
-              memory: "512Mi"
+              memory: "256Mi"
               cpu: "500m"
           livenessProbe:
             httpGet:
               path: /
               port: 5173
-            initialDelaySeconds: 30
+            initialDelaySeconds: 10
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /
               port: 5173
-            initialDelaySeconds: 10
+            initialDelaySeconds: 3
             periodSeconds: 5
-      volumes:
-        - name: frontend-src
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/src
-            type: Directory
-        - name: frontend-public
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/public
-            type: Directory
-        - name: frontend-index
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/index.html
-            type: File
-        - name: frontend-vite-config
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/vite.config.ts
-            type: File
-        - name: frontend-tsconfig
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/tsconfig.json
-            type: File
-        - name: frontend-tsconfig-node
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/tsconfig.node.json
-            type: File
-        - name: frontend-tailwind-config
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/tailwind.config.js
-            type: File
-        - name: frontend-postcss-config
-          hostPath:
-            path: /home/ubuntu/apps/small_migration/services/frontend/postcss.config.js
-            type: File
 
 ---
 # Frontend Service
@@ -360,12 +304,7 @@ spec:
       targetPort: 5173
 
 ---
-# NOTE: the public ingress for this app is kubernetes/ingress-circini.yaml
-# (circini.callsphere.site). The old apex-domain ingress was removed —
-# callsphere.site must not be claimed by this namespace.
-
----
-# Traefik Middleware for API paths
+# Traefik middleware (unchanged; referenced by the ingress)
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -376,7 +315,7 @@ spec:
     prefixes: []
 
 ---
-# HorizontalPodAutoscaler for Backend (disabled for dev mode)
+# HorizontalPodAutoscaler for Backend
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

@@ -1,24 +1,52 @@
-FROM node:20-slim
+# Production image: builds TypeScript, then ships only runtime dependencies.
+# Source is baked in — nothing is mounted from the host at runtime.
+
+# ---- build stage -----------------------------------------------------------
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# Install OpenSSL and other dependencies for Prisma
-RUN apt-get update && apt-get install -y openssl libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl libssl3 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
-# Copy prisma schema and generate client
 COPY prisma ./prisma/
 RUN npx prisma generate
 
-# Copy source code
 COPY . .
-
-# Build TypeScript
 RUN npm run build
+
+# ---- runtime stage ---------------------------------------------------------
+FROM node:20-slim AS runtime
+
+WORKDIR /app
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl libssl3 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV NODE_ENV=production
+
+# Runtime dependencies only — no tsx, typescript or @types in the shipped image.
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+# The Prisma client is generated at build time into node_modules/.prisma;
+# carry it over rather than regenerating at runtime.
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
+
+# Uploads are held in memory and nothing is written to disk, so the backend
+# can drop to an unprivileged user.
+RUN useradd --system --uid 10001 --create-home appuser \
+ && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 3001
 
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npm run dev"]
+# Schema sync runs as an initContainer, not here — see deploy/kubernetes.
+CMD ["node", "dist/index.js"]

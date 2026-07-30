@@ -1,0 +1,164 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Existing image tag to roll back to (e.g. sha-abc1234). Leave blank to build from this commit.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+  # Nothing deploys unless the full CI suite passes first.
+  ci:
+    if: ${{ inputs.image_tag == '' }}
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build and push images
+    if: ${{ inputs.image_tag == '' }}
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+    strategy:
+      matrix:
+        service: [ai-service, backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        name: Derive immutable tag
+        run: echo "tag=sha-$(echo "${{ github.sha }}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          file: services/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  scan-images:
+    name: Scan images
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [ai-service, backend, frontend]
+    steps:
+      - name: Trivy scan ${{ matrix.service }}
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ needs.build.outputs.image_tag }}
+          severity: CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    name: Deploy to production
+    needs: [build, scan-images]
+    # Always runs, so a rollback via workflow_dispatch skips build and scan.
+    if: ${{ always() && (needs.build.result == 'success' || inputs.image_tag != '') }}
+    runs-on: [self-hosted, k3s]
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: resolve
+        env:
+          REQUESTED: ${{ inputs.image_tag }}
+          BUILT: ${{ needs.build.outputs.image_tag }}
+        run: |
+          TAG="${REQUESTED:-$BUILT}"
+          [ -n "$TAG" ] || { echo "::error::no image tag resolved"; exit 1; }
+          # The tag is substituted into a Kubernetes manifest, so constrain it
+          # to a safe character set rather than trusting the dispatch input.
+          case "$TAG" in
+            sha-[0-9a-f]*) ;;
+            *) echo "::error::refusing tag '$TAG' — expected sha-<hex>"; exit 1 ;;
+          esac
+          echo "$TAG" | grep -qE '^sha-[0-9a-f]{7,40}$' || {
+            echo "::error::tag failed validation"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying $TAG"
+
+      # The cluster pulls private images from GHCR. Rather than storing a
+      # long-lived PAT in the cluster, mint the pull secret from this job's
+      # ephemeral token on every deploy.
+      - name: Refresh GHCR pull secret
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          kubectl create secret docker-registry ghcr-pull \
+            --namespace=migration-agent \
+            --docker-server=ghcr.io \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="$GHCR_TOKEN" \
+            --dry-run=client -o yaml \
+            | kubectl apply --server-side --force-conflicts -f -
+
+      - name: Record current tag for rollback
+        run: |
+          kubectl get deploy backend -n migration-agent \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null \
+            | tee /tmp/previous-image.txt || true
+          echo
+
+      - name: Render and apply manifest
+        env:
+          IMAGE_TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          envsubst < deploy/kubernetes/deployment.yaml > /tmp/rendered.yaml
+          grep -n 'image:' /tmp/rendered.yaml
+          kubectl apply -f /tmp/rendered.yaml
+
+      - name: Wait for rollout
+        run: |
+          for d in ai-service backend frontend; do
+            kubectl rollout status "deployment/$d" -n migration-agent --timeout=300s
+          done
+
+      - name: Smoke test
+        run: ./deploy/smoke-test.sh
+
+      - name: Roll back on failure
+        if: failure()
+        run: |
+          echo "::error::deploy or smoke test failed — rolling back"
+          for d in ai-service backend frontend; do
+            kubectl rollout undo "deployment/$d" -n migration-agent || true
+          done
+          for d in ai-service backend frontend; do
+            kubectl rollout status "deployment/$d" -n migration-agent --timeout=300s || true
+          done
+          ./deploy/smoke-test.sh || true
