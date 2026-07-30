@@ -34,8 +34,9 @@ from docx.oxml import parse_xml
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-INPUT_PATH = Path(__file__).parent / "ARCHITECTURE.md"
-OUTPUT_PATH = Path(__file__).parent / "ARCHITECTURE.docx"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+INPUT_PATH = REPO_ROOT / "docs" / "ARCHITECTURE.md"
+OUTPUT_PATH = REPO_ROOT / "ARCHITECTURE.docx"
 
 FONT_BODY = "Calibri"
 FONT_MONO = "Courier New"
@@ -75,7 +76,7 @@ def _find_chrome():
 
 
 def _find_mmdc():
-    local = Path(__file__).parent / "node_modules" / ".bin" / "mmdc"
+    local = REPO_ROOT / "node_modules" / ".bin" / "mmdc"
     if local.exists():
         return str(local)
     return shutil.which("mmdc")

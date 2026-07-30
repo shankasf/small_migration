@@ -33,37 +33,43 @@ Frontend (React/Vite)      Backend (Express)         AI Service (FastAPI)
 - **File Downloads**: Export generated SQL output files directly from chat messages
 - **Session TTL**: In-memory agent sessions auto-evict after 1 hour of inactivity (max 50 concurrent)
 - **File Re-hydration**: Session files are automatically reloaded from the database when resuming a conversation
-- **Legacy Streamlit UI**: Original single-file Streamlit interface still available for quick local testing
 
 ## Project Structure
 
 ```
 small_migration/
-├── frontend/              # React + Vite + TypeScript
-│   └── src/
-│       ├── components/    # ChatArea, ChatInput, FileUpload, MessageBubble, Sidebar
-│       ├── hooks/         # useRealtimeLogs (Socket.IO)
-│       ├── pages/         # ChatPage
-│       ├── services/      # API client
-│       └── types/         # TypeScript interfaces
-├── backend/               # Node.js + Express + Prisma
-│   ├── prisma/            # Schema (Session, Message, UploadedFile, GeneratedOutput)
-│   └── src/
-│       ├── routes/        # sessions, chat, files, stt
-│       └── services/      # aiService (proxy to AI service)
-├── ai-service/            # Python FastAPI
-│   ├── routes/
-│   │   ├── migration.py   # Chat and migration endpoints
-│   │   └── stt.py         # Speech-to-text (Whisper)
-│   ├── utils/             # Realtime log broadcasting
-│   └── config.py          # Settings from environment
-├── kubernetes/            # K8s deployment manifests and deploy script
-├── sample_files/          # Sample template/mapping files for testing
-├── output/                # Generated files storage (local dev)
-├── app.py                 # Legacy Streamlit UI
-├── agent.py               # Legacy standalone agent script
-├── requirements.txt       # Python deps for legacy Streamlit agent
-└── start-dev.sh           # Start all 3 services for local development
+├── services/
+│   ├── frontend/              # React + Vite + TypeScript
+│   │   └── src/
+│   │       ├── components/    # ChatArea, ChatInput, FileUpload, Brand, ThemeToggle, ui
+│   │       ├── hooks/         # useRealtimeLogs (Socket.IO)
+│   │       ├── pages/         # ChatPage, LoginPage, AdminPage
+│   │       ├── services/      # API client, auth
+│   │       └── types/         # TypeScript interfaces
+│   ├── backend/               # Node.js + Express + Prisma
+│   │   ├── prisma/            # Schema (User, Session, Message, AuditEvent, UsageRecord, ...)
+│   │   └── src/
+│   │       ├── middleware/    # auth (JWT / Entra ID), RBAC guards
+│   │       ├── routes/        # auth, admin, sessions, chat, files, stt
+│   │       ├── services/      # aiService proxy, audit, usage metering
+│   │       └── otel.ts        # OpenTelemetry tracing
+│   └── ai-service/            # Python FastAPI
+│       ├── routes/
+│       │   ├── migration.py   # Chat and migration endpoints
+│       │   └── stt.py         # Speech-to-text (Whisper)
+│       ├── utils/             # Realtime log broadcasting
+│       ├── guardrails.py      # Input/output policy checks
+│       ├── llm.py             # Centralised LLM client
+│       ├── telemetry.py       # OpenTelemetry tracing
+│       └── config.py          # Settings from environment
+├── deploy/
+│   └── kubernetes/            # K8s manifests, ingress and deploy script
+├── docs/                      # ARCHITECTURE.md, CNA_IMPLEMENTATION.md
+├── scripts/
+│   ├── start-dev.sh           # Start all 3 services for local development
+│   └── generate_*_doc.py      # Build .docx deliverables from docs/*.md
+├── samples/                   # Sample template/mapping files for testing
+└── output/                    # Generated files storage, local dev (gitignored)
 ```
 
 ## Setup
@@ -76,7 +82,7 @@ small_migration/
 
 ### 1. Environment Variables
 
-**Backend** (`backend/.env`):
+**Backend** (`services/backend/.env`):
 
 ```
 DATABASE_URL=postgresql://user:password@localhost:5432/migration_agent?schema=public
@@ -85,7 +91,7 @@ PORT=3001
 CORS_ORIGIN=http://localhost:5173
 ```
 
-**AI Service** (`ai-service/.env`):
+**AI Service** (`services/ai-service/.env`):
 
 ```
 OPENAI_API_KEY=
@@ -99,7 +105,7 @@ BACKEND_URL=http://localhost:3001
 
 ```bash
 # Backend
-cd backend
+cd services/backend
 npm install
 npx prisma generate
 npx prisma db push
@@ -120,7 +126,7 @@ pip install -r requirements.txt
 The quickest way to start all services:
 
 ```bash
-./start-dev.sh
+./scripts/start-dev.sh
 ```
 
 This launches:
@@ -134,13 +140,13 @@ To start services individually:
 
 ```bash
 # AI Service
-cd ai-service && source venv/bin/activate && uvicorn main:app --port 8084 --reload
+cd services/ai-service && source venv/bin/activate && uvicorn main:app --port 8084 --reload
 
 # Backend
-cd backend && npm run dev
+cd services/backend && npm run dev
 
 # Frontend
-cd frontend && npm run dev
+cd services/frontend && npm run dev
 ```
 
 ## API Endpoints
@@ -192,25 +198,14 @@ The migration agent has access to these tools per session:
 
 ```bash
 # Build images
-docker build -t migration-agent-frontend:latest ./frontend
-docker build -t migration-agent-backend:latest ./backend
-docker build -t migration-agent-ai:latest ./ai-service
+docker build -t migration-agent-frontend:latest ./services/frontend
+docker build -t migration-agent-backend:latest ./services/backend
+docker build -t migration-agent-ai:latest ./services/ai-service
 
 # Deploy
-kubectl apply -f kubernetes/deployment.yaml
+kubectl apply -f deploy/kubernetes/deployment.yaml
 
 # Check status
 kubectl get pods -n migration-agent
 ```
 
-## Legacy Streamlit UI
-
-The original Streamlit interface is still available:
-
-```bash
-source venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Access at http://localhost:8501

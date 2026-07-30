@@ -38,8 +38,11 @@ env/
 *.swo
 *~
 
-# Output folders (optional - uncomment to ignore)
-# output/
+# Generated run outputs (created at runtime, never committed)
+output/
+
+# Generated documents — rebuild from docs/*.md via scripts/generate_*_doc.py
+*.docx
 
 # Streamlit
 .streamlit/

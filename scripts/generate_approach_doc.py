@@ -8,6 +8,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml
+from pathlib import Path
 import os
 
 doc = Document()
@@ -394,6 +395,9 @@ run.italic = True
 run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
 
 # ── Save ──
-output_path = "/home/ubuntu/apps/small_migration/Agentic_AI_Approach_Comparison_and_Migration_Testing.docx"
+output_path = str(
+    Path(__file__).resolve().parent.parent
+    / "Agentic_AI_Approach_Comparison_and_Migration_Testing.docx"
+)
 doc.save(output_path)
 print(f"Document saved to: {output_path}")

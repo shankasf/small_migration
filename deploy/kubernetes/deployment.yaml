@@ -105,7 +105,7 @@ spec:
             claimName: outputs-pvc
         - name: ai-service-code
           hostPath:
-            path: /home/ubuntu/apps/small_migration/ai-service
+            path: /home/ubuntu/apps/small_migration/services/ai-service
             type: Directory
 
 ---
@@ -217,11 +217,11 @@ spec:
       volumes:
         - name: backend-src
           hostPath:
-            path: /home/ubuntu/apps/small_migration/backend/src
+            path: /home/ubuntu/apps/small_migration/services/backend/src
             type: Directory
         - name: backend-prisma
           hostPath:
-            path: /home/ubuntu/apps/small_migration/backend/prisma
+            path: /home/ubuntu/apps/small_migration/services/backend/prisma
             type: Directory
 
 ---
@@ -300,35 +300,35 @@ spec:
       volumes:
         - name: frontend-src
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/src
+            path: /home/ubuntu/apps/small_migration/services/frontend/src
             type: Directory
         - name: frontend-public
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/public
+            path: /home/ubuntu/apps/small_migration/services/frontend/public
             type: Directory
         - name: frontend-index
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/index.html
+            path: /home/ubuntu/apps/small_migration/services/frontend/index.html
             type: File
         - name: frontend-vite-config
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/vite.config.ts
+            path: /home/ubuntu/apps/small_migration/services/frontend/vite.config.ts
             type: File
         - name: frontend-tsconfig
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/tsconfig.json
+            path: /home/ubuntu/apps/small_migration/services/frontend/tsconfig.json
             type: File
         - name: frontend-tsconfig-node
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/tsconfig.node.json
+            path: /home/ubuntu/apps/small_migration/services/frontend/tsconfig.node.json
             type: File
         - name: frontend-tailwind-config
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/tailwind.config.js
+            path: /home/ubuntu/apps/small_migration/services/frontend/tailwind.config.js
             type: File
         - name: frontend-postcss-config
           hostPath:
-            path: /home/ubuntu/apps/small_migration/frontend/postcss.config.js
+            path: /home/ubuntu/apps/small_migration/services/frontend/postcss.config.js
             type: File
 
 ---

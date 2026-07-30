@@ -3,7 +3,8 @@
 
 set -e
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SERVICES_DIR="$PROJECT_DIR/services"
 
 echo "Starting Circini Migration Agent Development Environment..."
 
@@ -20,7 +21,7 @@ trap cleanup SIGINT SIGTERM
 
 # Start AI Service
 echo "Starting AI Service (port 8084)..."
-cd "$PROJECT_DIR/ai-service"
+cd "$SERVICES_DIR/ai-service"
 # Use the venv if present, otherwise system python
 [ -f venv/bin/activate ] && source venv/bin/activate
 python3 -m uvicorn main:app --port 8084 --reload &
@@ -28,13 +29,13 @@ AI_PID=$!
 
 # Start Backend
 echo "Starting Backend (port 3001)..."
-cd "$PROJECT_DIR/backend"
+cd "$SERVICES_DIR/backend"
 npm run dev &
 BACKEND_PID=$!
 
 # Start Frontend
 echo "Starting Frontend (port 5173)..."
-cd "$PROJECT_DIR/frontend"
+cd "$SERVICES_DIR/frontend"
 npm run dev &
 FRONTEND_PID=$!
 
