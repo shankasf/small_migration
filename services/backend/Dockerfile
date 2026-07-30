@@ -6,9 +6,16 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
+# apt-get upgrade picks up security fixes published after the base image was
+# built (e.g. the GnuTLS auth-bypass fix); without it the image ships whatever
+# the base tag froze.
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends openssl libssl3 ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ # The base image bundles an npm whose vendored tar carries a critical
+ # advisory. Upgrading npm replaces that vendored copy.
+ && npm install -g npm@latest && npm cache clean --force
 
 COPY package*.json ./
 RUN npm ci
@@ -24,9 +31,16 @@ FROM node:20-slim AS runtime
 
 WORKDIR /app
 
+# apt-get upgrade picks up security fixes published after the base image was
+# built (e.g. the GnuTLS auth-bypass fix); without it the image ships whatever
+# the base tag froze.
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends openssl libssl3 ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ # The base image bundles an npm whose vendored tar carries a critical
+ # advisory. Upgrading npm replaces that vendored copy.
+ && npm install -g npm@latest && npm cache clean --force
 
 ENV NODE_ENV=production
 
