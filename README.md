@@ -189,6 +189,124 @@ known-credential account.
 > `deploy/kubernetes/deploy.sh` rebuilds the ConfigMap and Secret from a local
 > `.env`; if that file is partial it will **blank live secrets**.
 
+## CnA readiness
+
+Status of the five agreed work items, **verified against the running system on
+30 July 2026** — not against the design intent. Where something is built but
+unproven, it says so.
+
+| # | Item | Status |
+|---|---|---|
+| 1 | RBAC for user activity management | ✅ **Live and verified** |
+| 2 | Consume models hosted under client controls | ⚠️ **Partial** — one provider seam, two of four hosts |
+| 3 | OTEL telemetry on documented key items | ⚠️ **Instrumented, not exporting** |
+| 4 | Security scans | ⚠️ **Run — findings open** |
+| 5 | Guardrails around AI usage | ✅ **Live and verified** |
+
+### 1. RBAC — live
+
+Three roles (`admin`, `analyst`, `auditor`) with account states
+`active` / `restricted` / `disabled`, enforced server-side on every request and
+re-checked per call rather than only at login. Row-level scoping means an
+analyst cannot reach another analyst's session even with a valid id. Every
+allow and deny lands in the `AuditEvent` table with a PII-scrubbed payload.
+
+Verified end to end: admin login issues a token; `/api/auth/me`,
+`/api/sessions`, `/api/admin/users` and `/api/admin/audit` return 200 with it
+and 401 without; a chat round-trip wrote `auth.login`, `session.create`,
+`chat.message` and `session.delete` to the audit log.
+
+Entra ID sign-in is implemented behind `AUTH_MODE=entra` but has **never been
+run against a real tenant** — the live deployment is `AUTH_MODE=local`.
+
+### 2. Client-hosted models — partial
+
+There is a provider seam in `services/ai-service/llm.py`: switching hosts is an
+environment change, not a code change. What exists today:
+
+| Host | Status |
+|---|---|
+| OpenAI (direct) | ✅ In use live (`gpt-5.2-2025-12-11`) |
+| Azure OpenAI / AI Foundry | ⚠️ Implemented, never exercised against a real tenant |
+| AWS Bedrock | ❌ Not built |
+| Google Vertex AI | ❌ Not built |
+| Org model registry | ❌ Not built — model is a plain env string, not a registry lookup |
+
+The Azure path installs an `AsyncAzureOpenAI` client and covers **OpenAI models
+hosted in Foundry**. It does not cover Foundry's non-OpenAI catalogue, which
+speaks a different API.
+
+To close this properly the seam needs one adapter per host behind the existing
+interface (Bedrock and Vertex both use their own SDKs and auth — IAM roles and
+workload identity respectively, not API keys), plus a registry lookup so the
+model is resolved by registered identifier and version rather than a free-text
+env var. The seam is the right shape for that; the adapters simply do not exist
+yet. **Treat multi-host support as unproven until it has been run against a real
+subscription in each target.**
+
+### 3. OTEL — instrumented but not exporting
+
+Both services are instrumented: auto-instrumentation on HTTP/Express/Postgres
+and FastAPI, plus custom spans carrying `gen_ai.*` semantic conventions
+(`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens` /
+`output_tokens`) and governance attributes (`circini.guardrail.decision`,
+`circini.data_class`). Metrics: `gen_ai.client.token.usage` and
+`circini.guardrail.decisions`. Audit events attach as span events.
+
+**`OTEL_EXPORTER_OTLP_ENDPOINT` is unset in the live deployment**, so both pods
+report `exporter=none`: spans are created in-process and dropped. Nothing is
+observable outside the pod today. The remaining work is deploying a collector
+and setting that variable — no application change.
+
+### 4. Security scans — findings open
+
+Run 30 July 2026. Reproduce with `npm audit` in `services/backend` and
+`services/frontend`, and `pip-audit -r services/ai-service/requirements.txt`.
+
+| Scope | Result |
+|---|---|
+| ai-service (pip-audit) | ✅ No known vulnerabilities |
+| backend (npm audit) | 7 high — 6 transitive with fixes available, 1 direct with **no fix** |
+| frontend (npm audit) | 1 high, 4 moderate — all require major-version upgrades |
+
+The one that needs a decision is **`xlsx` (SheetJS) prototype pollution, no fix
+available**. It is a direct dependency used to parse uploaded spreadsheets, so
+it sits directly in the untrusted-input path. Options are migrating to
+`exceljs`, or sandboxing parsing. The other six backend findings are transitive
+(`brace-expansion`, `minimatch`, `glob`, `rimraf`, `gaxios`, `gcp-metadata`) and
+clear with a lockfile refresh.
+
+Frontend findings are `vite` (path traversal in optimised-deps `.map` handling)
+and `prismjs` DOM clobbering via `react-syntax-highlighter`; both need major
+bumps (`vite@8`, `react-syntax-highlighter@16`). The vite issue affects the
+**dev server**, which is what this deployment currently runs — see the dev-mode
+warning above.
+
+No SAST or container image scanning is wired up yet; dependency auditing is the
+only scanning in place.
+
+### 5. Guardrails — live
+
+Enforced server-side in `services/ai-service/guardrails.py` on every chat call,
+inbound and outbound. Detects NZ NHI, IRD, email, phone, DOB-in-context,
+generic secrets (OpenAI/AWS keys, private keys), prompt-injection patterns and
+denied-intent patterns. Outbound responses are redacted for PII and secrets.
+
+Live config is `GUARDRAILS_ENABLED=true`, `PHI_MODE=false` — **Mode A**, meaning
+health-identifiable data is blocked outright rather than redacted. Mode B
+(`PHI_MODE=true`) redacts and proceeds instead.
+
+Verified against the running app with synthetic data:
+
+| Input | Decision |
+|---|---|
+| Fake NHI + date of birth | `blocked` — `health_pii_blocked_mode_a`, findings `nhi`, `dob` |
+| "Ignore all previous instructions…" | `blocked` — `prompt_injection` |
+| Benign migration question | `allow` |
+
+Detection is regex-based. The interface is designed for Microsoft Presidio to
+drop in behind it if richer NER is required for the production CnA build.
+
 ## Project Structure
 
 ```
