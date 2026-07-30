@@ -127,9 +127,11 @@ export function requireInternalKey(req: Request, res: Response, next: NextFuncti
 
 export function authenticate(prisma: PrismaClient) {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    // Only an exact-match allowlist is exempt. Service-to-service routes are
+    // NOT exempted by prefix here — they are registered ahead of this
+    // middleware in index.ts with their own fail-closed requireInternalKey
+    // guard, so a newly added route can never silently inherit an exemption.
     if (PUBLIC_PATHS.includes(req.path)) return next();
-    // Internal endpoints authenticate with x-internal-key, not user JWTs
-    if (req.path.startsWith('/api/logs/') || req.path.startsWith('/api/internal/')) return next();
 
     const header = req.headers.authorization || '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -235,8 +237,20 @@ export async function seedAdminUser(prisma: PrismaClient) {
   const email = process.env.SEED_ADMIN_EMAIL || 'admin@callsphere.tech';
   const existing = await prisma.user.count({ where: { role: 'admin' } });
   if (existing > 0) return;
+  // Never fall back to a hardcoded password: that would silently create a
+  // known-credential admin on any deploy where the env var was forgotten.
+  // Skipping (rather than throwing) keeps a running service up; the operator
+  // sets the var and restarts to get their admin account.
+  const password = process.env.SEED_ADMIN_PASSWORD;
+  if (!password || password.length < 12) {
+    console.error(
+      '[AUTH] No admin account exists and SEED_ADMIN_PASSWORD is unset or shorter ' +
+        'than 12 characters — skipping admin seed. Set SEED_ADMIN_PASSWORD to a ' +
+        'strong value and restart to create the initial admin.'
+    );
+    return;
+  }
   const bcrypt = await import('bcryptjs');
-  const password = process.env.SEED_ADMIN_PASSWORD || 'ChangeMe123!';
   await prisma.user.create({
     data: {
       email,

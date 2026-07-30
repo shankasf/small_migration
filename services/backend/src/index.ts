@@ -68,7 +68,18 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Authentication (skips /api/health, /api/auth/login and internal endpoints)
+// Service-to-service endpoints are registered BEFORE the user-auth middleware
+// and carry their own fail-closed x-internal-key guard. Registering them here
+// (rather than exempting a path prefix inside authenticate) means a new route
+// can never inherit an auth exemption implicitly.
+app.post('/api/logs/:sessionId', requireInternalKey, (req, res) => {
+  const { sessionId } = req.params;
+  const { step, message, type, data } = req.body;
+  emitLog(sessionId, { step, message, type, data });
+  res.json({ ok: true });
+});
+
+// Authentication — every route below this line requires a valid user token
 app.use(authenticate(prisma));
 
 // Routes
@@ -124,14 +135,6 @@ export function emitLog(sessionId: string, log: { step: string; message: string;
     ...log
   });
 }
-
-// Endpoint for AI service to send logs (service-to-service, x-internal-key)
-app.post('/api/logs/:sessionId', requireInternalKey, express.json(), (req, res) => {
-  const { sessionId } = req.params;
-  const { step, message, type, data } = req.body;
-  emitLog(sessionId, { step, message, type, data });
-  res.json({ ok: true });
-});
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {

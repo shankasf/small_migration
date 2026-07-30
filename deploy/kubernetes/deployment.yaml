@@ -197,8 +197,10 @@ spec:
           volumeMounts:
             - name: backend-src
               mountPath: /app/src
+              readOnly: true
             - name: backend-prisma
               mountPath: /app/prisma
+              readOnly: true
           resources:
             requests:
               memory: "256Mi"
@@ -268,20 +270,28 @@ spec:
           volumeMounts:
             - name: frontend-src
               mountPath: /app/src
+              readOnly: true
             - name: frontend-public
               mountPath: /app/public
+              readOnly: true
             - name: frontend-index
               mountPath: /app/index.html
+              readOnly: true
             - name: frontend-vite-config
               mountPath: /app/vite.config.ts
+              readOnly: true
             - name: frontend-tsconfig
               mountPath: /app/tsconfig.json
+              readOnly: true
             - name: frontend-tsconfig-node
               mountPath: /app/tsconfig.node.json
+              readOnly: true
             - name: frontend-tailwind-config
               mountPath: /app/tailwind.config.js
+              readOnly: true
             - name: frontend-postcss-config
               mountPath: /app/postcss.config.js
+              readOnly: true
           resources:
             requests:
               memory: "256Mi"
