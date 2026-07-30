@@ -76,39 +76,33 @@ alone.
 
 ### Authentication and authorisation
 
+Every request passes four gates. Any failure is denied and audited.
+
 ```mermaid
 flowchart TD
-    R["Incoming request"] --> PUB{"Exact match in<br/>PUBLIC_PATHS?<br/><small>/api/health · /api/auth/login</small>"}
-    PUB -- yes --> OK1["✅ Handler"]
-    PUB -- no --> TOK{"Bearer token<br/>present?"}
-    TOK -- no --> D1["❌ 401<br/>Authentication required"]
-    TOK -- yes --> MODE{"AUTH_MODE"}
+    R(["Request"]) --> P{"Public<br/>path?"}
+    P -- no --> T{"Valid<br/>token?"}
+    T -- yes --> A{"Account<br/>enabled?"}
+    A -- yes --> G{"Role allows<br/>this route?"}
+    G -- yes --> OK(["✅ Handler"])
+    P -- yes --> OK
 
-    MODE -- local --> JWT["Verify HS256 JWT<br/>issuer: circini-backend<br/>secret ≥ 32 chars, else startup fails"]
-    MODE -- entra --> EJWT["Verify against tenant JWKS<br/>map app-roles / AD groups → role<br/>upsert local mirror, no password"]
-
-    JWT --> USR{"User row found?"}
-    EJWT --> USR
-    USR -- no --> D2["❌ 401<br/>Invalid or expired token"]
-    USR -- yes --> ST{"status"}
-    ST -- disabled --> D3["❌ 403 + audit<br/>Account disabled"]
-    ST -- "active / restricted" --> ROLE{"Route guard"}
-
-    ROLE -- "requireRole(...)" --> RR{"role permitted?"}
-    RR -- no --> D4["❌ 403 + audit<br/>Insufficient permissions"]
-    RR -- yes --> OK2["✅ Handler"]
-
-    ROLE -- requireWriteAccess --> WA{"auditor or<br/>restricted?"}
-    WA -- yes --> D5["❌ 403 + audit<br/>Read-only"]
-    WA -- no --> OK2
+    T -- no --> D1["❌ 401"]
+    A -- no --> D2["❌ 403"]
+    G -- no --> D3["❌ 403"]
 
     classDef ok fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
     classDef deny fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
-    classDef check fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
-    class OK1,OK2 ok
-    class D1,D2,D3,D4,D5 deny
-    class JWT,EJWT check
+    class OK ok
+    class D1,D2,D3 deny
 ```
+
+| Gate | What it checks |
+|---|---|
+| **Public path** | Exact-match allowlist only — `/api/health`, `/api/auth/login`. No prefix matching. |
+| **Valid token** | `local`: HS256 JWT, issuer `circini-backend` (startup fails if the secret is under 32 chars). `entra`: verified against the tenant JWKS, with app-roles / AD groups mapped to a role. |
+| **Account enabled** | `disabled` is refused outright; `restricted` keeps read access but loses writes. |
+| **Role allows route** | `requireRole(...)` gates admin and auditor routes; `requireWriteAccess` blocks auditors and restricted accounts from any write. |
 
 Service-to-service routes are **registered ahead of** the user-auth middleware
 and carry their own fail-closed `requireInternalKey` guard. There is no path
