@@ -12,7 +12,10 @@ class RealtimeLogger:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.backend_url = f"{settings.BACKEND_URL}/api/logs/{session_id}"
-        self._client = httpx.AsyncClient(timeout=5.0)
+        headers = {}
+        if settings.INTERNAL_API_KEY:
+            headers["x-internal-key"] = settings.INTERNAL_API_KEY
+        self._client = httpx.AsyncClient(timeout=5.0, headers=headers)
 
     async def log(self, step: str, message: str, log_type: str = "info", data: Optional[Any] = None):
         """Send a log entry to the backend"""

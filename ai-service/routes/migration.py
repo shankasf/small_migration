@@ -15,6 +15,13 @@ load_dotenv()
 
 from config import settings
 from utils.realtime_logger import RealtimeLogger
+import guardrails
+from telemetry import (
+    get_tracer,
+    record_guardrail_decision,
+    record_token_usage,
+    annotate_genai_span,
+)
 
 # Try to import the agents library
 try:
@@ -39,9 +46,24 @@ class GeneratedFile(BaseModel):
     path: str
     content: str
 
+class UsageInfo(BaseModel):
+    provider: str = "openai"
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+class GuardrailInfo(BaseModel):
+    decision: str = "allow"  # allow | redacted | blocked
+    reasons: List[str] = []
+    findings: List[Dict[str, Any]] = []
+    data_class: str = "metadata"
+
 class ChatResponse(BaseModel):
     response: str
     generated_files: List[GeneratedFile] = []
+    usage: Optional[UsageInfo] = None
+    guardrail: Optional[GuardrailInfo] = None
 
 # Session storage
 session_storage: Dict[str, Dict[str, Any]] = {}
@@ -275,7 +297,7 @@ def get_or_create_agent(session_id: str) -> "Agent":
         session_agents[session_id] = Agent(
             name="MigrationAgent",
             instructions=INSTRUCTIONS,
-            model=settings.OPENAI_MODEL,
+            model=settings.model_name,
             tools=tools,
             model_settings=ModelSettings(
                 reasoning=Reasoning(effort="low"),
@@ -291,19 +313,48 @@ async def chat(request: ChatRequest):
     logger = RealtimeLogger(request.session_id)
 
     try:
+        # --- Guardrails inbound (§9): sanitise, injection/deny checks, PII
+        # detection, then block (Mode A) or redact before any model egress ---
+        await logger.thinking("Running guardrail checks...")
+        inbound = guardrails.check_inbound(request.message, request.files)
+        record_guardrail_decision(inbound.decision, stage="inbound")
+
+        if inbound.decision == "blocked":
+            await logger.log(
+                step="guardrail",
+                message=f"Request blocked: {', '.join(inbound.reasons)}",
+                log_type="error",
+            )
+            return ChatResponse(
+                response=guardrails.block_message(inbound.reasons),
+                guardrail=GuardrailInfo(**inbound.as_dict()),
+                usage=UsageInfo(provider=settings.LLM_PROVIDER, model=settings.model_name),
+            )
+
+        if inbound.decision == "redacted":
+            await logger.log(
+                step="guardrail",
+                message="Sensitive data redacted before model submission",
+                log_type="info",
+            )
+
+        # Redacted payload is what reaches storage and the model
+        safe_message = inbound.text
+        safe_files = getattr(inbound, "redacted_files", request.files or {})
+
         # Bug 7 fix: Hydrate session storage from request files if storage is empty
         # (handles pod restart — files come from DB via backend)
-        if request.files:
+        if safe_files:
             await logger.thinking("Loading uploaded files...")
-            for filename, content in request.files.items():
+            for filename, content in safe_files.items():
                 storage["files"][filename] = content
 
         # Build the current user message (with file upload context if any)
-        current_message = request.message
-        if request.files:
-            file_list = ", ".join(request.files.keys())
+        current_message = safe_message
+        if safe_files:
+            file_list = ", ".join(safe_files.keys())
             current_message += f"\n\n[Uploaded files: {file_list}]\n"
-            for filename, content in request.files.items():
+            for filename, content in safe_files.items():
                 current_message += f"\n[{filename}]:\n{content}\n"
 
         # Bug 2 fix: Build structured message list instead of flat text
@@ -322,6 +373,17 @@ async def chat(request: ChatRequest):
 
         await logger.thinking("Processing your request...")
 
+        input_tokens = 0
+        output_tokens = 0
+        tracer = get_tracer()
+        span_cm = (
+            tracer.start_as_current_span("circini.chat")
+            if tracer is not None
+            else None
+        )
+        if span_cm is not None:
+            span_cm.__enter__()
+
         try:
             if AGENTS_AVAILABLE:
                 # Bug 3 fix: Reuse cached agent for session continuity
@@ -335,12 +397,49 @@ async def chat(request: ChatRequest):
                     pass  # Consume all events to drive the run to completion
                 response_text = result.final_output
 
+                # Token usage for metering/governance (defensive across SDK versions)
+                try:
+                    usage = result.context_wrapper.usage
+                    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+                    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                except Exception as usage_err:
+                    print(f"[USAGE] Could not extract token usage: {usage_err}")
+
                 await logger.complete("Response ready")
             else:
-                response_text = f"Received: {request.message}\nFiles: {list(request.files.keys()) if request.files else 'None'}"
+                response_text = f"Received: {safe_message}\nFiles: {list(safe_files.keys()) if safe_files else 'None'}"
         except Exception as e:
             await logger.error(f"AI processing failed: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            if span_cm is not None:
+                try:
+                    from opentelemetry import trace as _trace
+                    annotate_genai_span(
+                        _trace.get_current_span(),
+                        model=settings.model_name,
+                        provider=settings.LLM_PROVIDER,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        guardrail_decision=inbound.decision,
+                        data_class=inbound.data_class,
+                    )
+                finally:
+                    span_cm.__exit__(None, None, None)
+
+        record_token_usage(settings.model_name, input_tokens, output_tokens)
+
+        # --- Guardrails outbound (§9): content filter on the response and any
+        # generated files before returning to the user ---
+        outbound = guardrails.check_outbound(response_text or "")
+        record_guardrail_decision(outbound.decision, stage="outbound")
+        response_text = outbound.text
+        if outbound.decision == "redacted":
+            await logger.log(
+                step="guardrail",
+                message="Sensitive data redacted from model output",
+                log_type="info",
+            )
 
         # Bug 4 fix: Only return NEW outputs generated this turn
         generated_files = []
@@ -348,15 +447,35 @@ async def chat(request: ChatRequest):
             if content and filename not in existing_output_keys:
                 output_folder = storage.get("output_folder")
                 filepath = str(output_folder / filename) if output_folder else filename
+                filtered = guardrails.check_outbound(content)
                 generated_files.append(GeneratedFile(
                     name=filename,
                     path=filepath,
-                    content=content
+                    content=filtered.text
                 ))
+
+        # Combined guardrail verdict for audit: blocked > redacted > allow
+        decision = "redacted" if (inbound.decision == "redacted" or outbound.decision == "redacted") else "allow"
+        combined_findings = dict(inbound.findings)
+        for k, v in outbound.findings.items():
+            combined_findings[k] = combined_findings.get(k, 0) + v
 
         return ChatResponse(
             response=response_text,
-            generated_files=generated_files
+            generated_files=generated_files,
+            usage=UsageInfo(
+                provider=settings.LLM_PROVIDER,
+                model=settings.model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+            ),
+            guardrail=GuardrailInfo(
+                decision=decision,
+                reasons=list(dict.fromkeys(inbound.reasons + outbound.reasons)),
+                findings=[{"type": k, "count": v} for k, v in combined_findings.items()],
+                data_class=inbound.data_class,
+            ),
         )
     finally:
         await logger.close()
