@@ -76,33 +76,19 @@ alone.
 
 ### Authentication and authorisation
 
-Every request passes four gates. Any failure is denied and audited.
+Every request passes four gates in order. A request that clears gate 1 skips
+straight to the handler; any other failure is denied and audited.
 
-```mermaid
-flowchart TD
-    R(["Request"]) --> P{"Public<br/>path?"}
-    P -- no --> T{"Valid<br/>token?"}
-    T -- yes --> A{"Account<br/>enabled?"}
-    A -- yes --> G{"Role allows<br/>this route?"}
-    G -- yes --> OK(["✅ Handler"])
-    P -- yes --> OK
+| # | Gate | What it checks | On failure |
+|---|---|---|---|
+| 1 | **Public path** | Exact-match allowlist only — `/api/health`, `/api/auth/login`. No prefix matching, so nothing falls through by resembling a public route. | — (passes to handler) |
+| 2 | **Valid token** | `local`: HS256 JWT, issuer `circini-backend` (startup fails if the secret is under 32 chars). `entra`: verified against the tenant JWKS, with app-roles / AD groups mapped to a role. | `401` |
+| 3 | **Account enabled** | `disabled` is refused outright; `restricted` keeps read access but loses writes. | `403` + audit |
+| 4 | **Role allows route** | `requireRole(...)` gates admin and auditor routes; `requireWriteAccess` blocks auditors and restricted accounts from any write. | `403` + audit |
 
-    T -- no --> D1["❌ 401"]
-    A -- no --> D2["❌ 403"]
-    G -- no --> D3["❌ 403"]
-
-    classDef ok fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
-    classDef deny fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
-    class OK ok
-    class D1,D2,D3 deny
-```
-
-| Gate | What it checks |
-|---|---|
-| **Public path** | Exact-match allowlist only — `/api/health`, `/api/auth/login`. No prefix matching. |
-| **Valid token** | `local`: HS256 JWT, issuer `circini-backend` (startup fails if the secret is under 32 chars). `entra`: verified against the tenant JWKS, with app-roles / AD groups mapped to a role. |
-| **Account enabled** | `disabled` is refused outright; `restricted` keeps read access but loses writes. |
-| **Role allows route** | `requireRole(...)` gates admin and auditor routes; `requireWriteAccess` blocks auditors and restricted accounts from any write. |
+Gates 2–4 are re-evaluated on **every** request, not just at login — revoking a
+role or disabling an account takes effect on the user's next action rather than
+when their token expires.
 
 Service-to-service routes are **registered ahead of** the user-auth middleware
 and carry their own fail-closed `requireInternalKey` guard. There is no path
