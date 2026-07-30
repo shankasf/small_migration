@@ -176,18 +176,15 @@ The initial admin is seeded **only** when no admin exists and
 without a valid one the seed is skipped with a loud error rather than creating a
 known-credential account.
 
-> [!WARNING]
-> **Current deployment posture.** Pods run in dev mode — they hostPath-mount
-> source off the node and run `tsx watch` / `uvicorn --reload`. Source mounts are
-> `readOnly`, so a file-write bug cannot reach the host tree, but building
-> immutable images remains the durable fix. Update the hostPaths in
-> `deploy/kubernetes/deployment.yaml` before moving or renaming any source
-> directory, or the live site will break.
-
 > [!NOTE]
-> Use `kubectl apply -f deploy/kubernetes/deployment.yaml` to deploy.
+> **Deployment is pipeline-only.** Production runs immutable images pinned per
+> commit; nothing is mounted from the host and no watcher reloads code in place.
+> Push to `main` and the pipeline builds, scans, deploys and smoke-tests. Do not
+> deploy by hand.
+>
 > `deploy/kubernetes/deploy.sh` rebuilds the ConfigMap and Secret from a local
-> `.env`; if that file is partial it will **blank live secrets**.
+> `.env`; if that file is partial it will **blank live secrets**. It is not part
+> of the pipeline and should be run deliberately, if ever.
 
 ## CnA readiness
 
@@ -211,7 +208,7 @@ unproven, it says so.
 | 1 | RBAC for user activity management | ✅ **Live and verified** |
 | 2 | Consume models hosted under client controls | ⚠️ **Partial** — one provider seam, two of four hosts |
 | 3 | OTEL telemetry on documented key items | ⚠️ **Instrumented, not exporting** |
-| 4 | Security scans | ⚠️ **Run — findings open** |
+| 4 | Security scans | ✅ **Automated in CI — criticals blocked** |
 | 5 | Guardrails around AI usage | ✅ **Live and verified** |
 
 ### 1. RBAC — live
@@ -269,32 +266,38 @@ report `exporter=none`: spans are created in-process and dropped. Nothing is
 observable outside the pod today. The remaining work is deploying a collector
 and setting that variable — no application change.
 
-### 4. Security scans — findings open
+### 4. Security scans — automated
 
-Run 30 July 2026. Reproduce with `npm audit` in `services/backend` and
-`services/frontend`, and `pip-audit -r services/ai-service/requirements.txt`.
+Scanning runs on **every push and pull request**, not on request. Nothing
+reaches production without passing.
 
-| Scope | Result |
-|---|---|
-| ai-service (pip-audit) | ✅ No known vulnerabilities |
-| backend (npm audit) | 7 high — 6 transitive with fixes available, 1 direct with **no fix** |
-| frontend (npm audit) | 1 high, 4 moderate — all require major-version upgrades |
+| Layer | Tool | Gate |
+|---|---|---|
+| Application dependencies | `npm audit`, `pip-audit` | CRITICAL blocks; highs reported to the run summary |
+| Container images | Trivy | CRITICAL blocks the deploy |
+| Secrets in history | Gitleaks | any finding blocks |
+| Kubernetes manifests | policy checks | hostPath, `:latest`, secret literals or `--reload` block |
+| Application security controls | pytest suite | 44 tests; any failure blocks |
 
-The one that needs a decision is **`xlsx` (SheetJS) prototype pollution, no fix
-available**. It is a direct dependency used to parse uploaded spreadsheets, so
-it sits directly in the untrusted-input path. Options are migrating to
-`exceljs`, or sandboxing parsing. The other six backend findings are transitive
-(`brace-expansion`, `minimatch`, `glob`, `rimraf`, `gaxios`, `gcp-metadata`) and
-clear with a lockfile refresh.
+Image scanning immediately paid for itself, catching two criticals that
+dependency auditing structurally cannot see because they live below the
+application: **GnuTLS CVE-2026-42010** (authentication bypass via NUL
+character) in the base OS layer, and a `tar` advisory inside the npm vendored
+in the Node base image. Both are fixed — the images now apply OS security
+updates at build time and upgrade npm.
 
-Frontend findings are `vite` (path traversal in optimised-deps `.map` handling)
-and `prismjs` DOM clobbering via `react-syntax-highlighter`; both need major
-bumps (`vite@8`, `react-syntax-highlighter@16`). The vite issue affects the
-**dev server**, which is what this deployment currently runs — see the dev-mode
-warning above.
+Accepted, non-blocking findings:
 
-No SAST or container image scanning is wired up yet; dependency auditing is the
-only scanning in place.
+- **`xlsx` (SheetJS) prototype pollution — no fix available.** A direct
+  dependency that parses uploaded spreadsheets, so it sits in the
+  untrusted-input path. Options are migrating to `exceljs` or sandboxing the
+  parse. This is the main outstanding dependency risk.
+- Six transitive backend highs (`brace-expansion`, `minimatch`, `glob`,
+  `rimraf`, `gaxios`, `gcp-metadata`) pinned by `@opentelemetry` packages.
+- The `vite` advisory affects the **dev server**. Production now serves a
+  static build from nginx, so it no longer applies at runtime.
+
+Not yet in place: SAST. Dependency, image, secret and manifest scanning are.
 
 ### 5. Guardrails — live
 
@@ -317,6 +320,51 @@ Verified against the running app with synthetic data:
 
 Detection is regex-based. The interface is designed for Microsoft Presidio to
 drop in behind it if richer NER is required for the production CnA build.
+
+## CI/CD
+
+Every push to `main` runs the same gated pipeline. There is no manual build or
+deploy path.
+
+```mermaid
+flowchart LR
+    P(["push to main"]) --> CI["CI<br/>typecheck · lint · 44 tests<br/>dep audit · secret scan<br/>manifest policy"]
+    CI -- pass --> B["Build 3 images<br/>tag sha-&lt;commit&gt;<br/>push to GHCR"]
+    CI -- fail --> X1["❌ stop"]
+    B --> SC["Trivy scan<br/>CRITICAL blocks"]
+    SC -- fail --> X2["❌ stop, nothing deployed"]
+    SC -- pass --> D["Deploy<br/>self-hosted runner"]
+    D --> SM["Smoke test<br/>19 assertions"]
+    SM -- pass --> OK(["✅ live"])
+    SM -- fail --> RB["↩️ automatic<br/>rollout undo"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef bad fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+    classDef step fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    class OK ok
+    class X1,X2,RB bad
+    class CI,B,SC,D,SM step
+```
+
+**Why a self-hosted runner.** The k3s API server listens on `127.0.0.1` only,
+so GitHub-hosted runners cannot reach the cluster. CD runs on a runner on the
+node itself, authenticated as a ServiceAccount scoped to the `migration-agent`
+namespace — it can manage this application and nothing else in the cluster.
+
+**Credentials.** No long-lived registry credential is stored in the cluster.
+The GHCR pull secret is minted from the deploy job's ephemeral token on every
+run.
+
+**Images.** Tagged `sha-<commit>` and never overwritten, so what is running is
+always traceable to a commit and any previous build can be redeployed as-is.
+
+| Concern | Before | Now |
+|---|---|---|
+| Build | manual `buildctl` from a working tree | CI from a commit |
+| What's running | `:latest`, untraceable | `sha-<commit>` |
+| Rollback | not possible — tag overwritten | redeploy an earlier tag |
+| Source of truth | files on the host | the image |
+| Checks | when someone remembered | every push, blocking |
 
 ## Project Structure
 
@@ -496,18 +544,40 @@ The migration agent has access to these tools per session:
 | ADD_INFO | DBT transformation model | `AMS_AI_DBT_ADD_INFO.sql` |
 | STG | DBT staging model | `AMS_AI_DBT_STG_ADD_INFO.sql` |
 
-## Kubernetes Deployment
+## Deployment
+
+Deployment is automated. Pushing to `main` runs CI, builds the three images,
+scans them, deploys, and smoke-tests — see [CI/CD](#cicd). There is no manual
+build or `kubectl apply` step.
 
 ```bash
-# Build images
-docker build -t migration-agent-frontend:latest ./services/frontend
-docker build -t migration-agent-backend:latest ./services/backend
-docker build -t migration-agent-ai:latest ./services/ai-service
+# Watch the current deploy
+gh run watch
 
-# Deploy
-kubectl apply -f deploy/kubernetes/deployment.yaml
+# What is running right now
+kubectl get deploy -n migration-agent \
+  -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image'
 
-# Check status
-kubectl get pods -n migration-agent
+# Verify the deployment and its security controls at any time
+./deploy/smoke-test.sh
+```
+
+### Rollback
+
+Every commit's images stay in GHCR, so rolling back is redeploying an earlier
+tag — no rebuild:
+
+```bash
+gh workflow run deploy.yml -f image_tag=sha-abc1234
+```
+
+The pipeline also rolls back on its own: if the rollout or the smoke test
+fails, it runs `kubectl rollout undo` and re-verifies before reporting failure.
+
+### One-time cluster bootstrap
+
+```bash
+deploy/kubernetes/bootstrap.sh            # namespace + scoped deploy ServiceAccount
+deploy/kubernetes/runner-kubeconfig.sh    # kubeconfig for the CD runner
 ```
 
