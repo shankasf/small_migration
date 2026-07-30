@@ -15,12 +15,36 @@ FAIL=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
 bad()  { printf '  \033[31m✗\033[0m %s  (%s)\n' "$1" "$2"; FAIL=$((FAIL+1)); }
 
+# Retries before failing: immediately after a rollout the ingress may still be
+# routing to a terminating pod, which surfaces as a transient 502/503. Without
+# this the smoke test reports a false failure and triggers a needless rollback.
+RETRIES="${SMOKE_RETRIES:-10}"
+RETRY_DELAY="${SMOKE_RETRY_DELAY:-3}"
+
 expect_code() { # label url expected [curl args...]
   local label="$1" url="$2" want="$3"; shift 3
-  local got
-  got=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "$@" "$url" 2>/dev/null)
-  [ "$got" = "$want" ] && ok "$label" || bad "$label" "want $want, got $got"
+  local got attempt
+  for attempt in $(seq 1 "$RETRIES"); do
+    got=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "$@" "$url" 2>/dev/null)
+    [ "$got" = "$want" ] && { ok "$label"; return; }
+    # Only a gateway-level blip is worth retrying; a definite wrong answer
+    # (e.g. 200 where 401 was required) is a real failure, so fail fast.
+    case "$got" in
+      502|503|504|000) sleep "$RETRY_DELAY" ;;
+      *) break ;;
+    esac
+  done
+  bad "$label" "want $want, got $got"
 }
+
+# Wait for the ingress to serve a ready backend before asserting anything.
+printf '  waiting for endpoints to settle'
+for _ in $(seq 1 20); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/api/health" 2>/dev/null)
+  [ "$code" = "200" ] && break
+  printf '.'; sleep 3
+done
+echo
 
 echo "== availability =="
 expect_code "frontend serves"            "$BASE/"             200
