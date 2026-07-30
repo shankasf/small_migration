@@ -154,7 +154,7 @@ flowchart TD
     L3["👤 Authorisation<br/>role guards · write guard · per-row session ownership"]
     L4["📊 Quota<br/>per-user daily and monthly token caps → 429"]
     L5["🛡️ Guardrails<br/>inbound secret + health-PII detection · outbound redaction"]
-    L6["📁 Filesystem<br/>allowlisted output names · resolved-parent check<br/>read-only source mounts"]
+    L6["📁 Runtime<br/>allowlisted output names · resolved-parent check<br/>non-root · read-only rootfs · no capabilities"]
     L7["📝 Audit<br/>every allow/deny recorded with PII-scrubbed detail"]
 
     L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7
@@ -208,7 +208,7 @@ unproven, it says so.
 | 1 | RBAC for user activity management | ✅ **Live and verified** |
 | 2 | Consume models hosted under client controls | ⚠️ **Partial** — one provider seam, two of four hosts |
 | 3 | OTEL telemetry on documented key items | ⚠️ **Instrumented, not exporting** |
-| 4 | Security scans | ✅ **Automated in CI — criticals blocked** |
+| 4 | Security scans | ✅ **Automated in CI — all layers clean** |
 | 5 | Guardrails around AI usage | ✅ **Live and verified** |
 
 ### 1. RBAC — live
@@ -266,38 +266,46 @@ report `exporter=none`: spans are created in-process and dropped. Nothing is
 observable outside the pod today. The remaining work is deploying a collector
 and setting that variable — no application change.
 
-### 4. Security scans — automated
+### 4. Security scans — automated, clean
 
-Scanning runs on **every push and pull request**, not on request. Nothing
-reaches production without passing.
+Scanning runs on **every push and pull request**. Nothing reaches production
+without passing, and every layer is currently clean.
 
-| Layer | Tool | Gate |
-|---|---|---|
-| Application dependencies | `npm audit`, `pip-audit` | CRITICAL blocks; highs reported to the run summary |
-| Container images | Trivy | CRITICAL blocks the deploy |
-| Secrets in history | Gitleaks | any finding blocks |
-| Kubernetes manifests | policy checks | hostPath, `:latest`, secret literals or `--reload` block |
-| Application security controls | pytest suite | 44 tests; any failure blocks |
+| Layer | Tool | Gate | Status |
+|---|---|---|---|
+| Application dependencies | `npm audit`, `pip-audit` | HIGH blocks | ✅ 0 findings |
+| Container images | Trivy | CRITICAL blocks | ✅ 0 findings |
+| Static analysis (SAST) | Semgrep, 569 rules | any finding blocks | ✅ 0 findings |
+| Secrets in history | Gitleaks | any finding blocks | ✅ clean |
+| Kubernetes manifests | policy checks | hostPath, `:latest`, secret literals or `--reload` block | ✅ pass |
+| Security controls | pytest | any failure blocks | ✅ 44 tests |
 
-Image scanning immediately paid for itself, catching two criticals that
-dependency auditing structurally cannot see because they live below the
-application: **GnuTLS CVE-2026-42010** (authentication bypass via NUL
-character) in the base OS layer, and a `tar` advisory inside the npm vendored
-in the Node base image. Both are fixed — the images now apply OS security
-updates at build time and upgrade npm.
+Reaching clean required fixing rather than suppressing:
 
-Accepted, non-blocking findings:
+- **`xlsx`** — the npm copy is abandoned at 0.18.5 with an unfixable
+  prototype-pollution advisory. Now sourced from SheetJS's official
+  distribution (0.20.3), which fixes it with an identical API. `exceljs` was
+  evaluated and rejected: it brings nine highs of its own.
+- **OpenTelemetry** — every remaining backend high descended from
+  `auto-instrumentations-node` via its GCP resource detector. Replaced with
+  explicit HTTP and Express instrumentations, which also stops the process
+  loading adapters for a dozen services this app never calls.
+- **Image CVEs** — Trivy caught two criticals below the application layer that
+  dependency auditing structurally cannot see, including GnuTLS
+  **CVE-2026-42010** (authentication bypass via NUL character). Images now
+  apply OS security updates at build time.
+- **Containers** — all three now run unprivileged with a read-only root
+  filesystem, all capabilities dropped and privilege escalation disabled.
+- **Fonts** — self-hosted rather than loaded from Google. Subresource
+  integrity cannot be applied to Google Fonts (the CSS varies by user agent),
+  and self-hosting also stops user IPs and referrers reaching a third party on
+  every page load.
+- **Supply chain** — all GitHub Actions pinned to commit SHAs, not mutable
+  tags.
 
-- **`xlsx` (SheetJS) prototype pollution — no fix available.** A direct
-  dependency that parses uploaded spreadsheets, so it sits in the
-  untrusted-input path. Options are migrating to `exceljs` or sandboxing the
-  parse. This is the main outstanding dependency risk.
-- Six transitive backend highs (`brace-expansion`, `minimatch`, `glob`,
-  `rimraf`, `gaxios`, `gcp-metadata`) pinned by `@opentelemetry` packages.
-- The `vite` advisory affects the **dev server**. Production now serves a
-  static build from nginx, so it no longer applies at runtime.
-
-Not yet in place: SAST. Dependency, image, secret and manifest scanning are.
+One suppression exists: the favicon is an inline `data:` URI, so the
+missing-integrity rule is a verified false positive. It is suppressed on that
+single line with the reasoning recorded, not by relaxing the ruleset.
 
 ### 5. Guardrails — live
 
