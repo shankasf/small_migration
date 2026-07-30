@@ -21,8 +21,9 @@ trap cleanup SIGINT SIGTERM
 # Start AI Service
 echo "Starting AI Service (port 8084)..."
 cd "$PROJECT_DIR/ai-service"
-source venv/bin/activate
-uvicorn main:app --port 8084 --reload &
+# Use the venv if present, otherwise system python
+[ -f venv/bin/activate ] && source venv/bin/activate
+python3 -m uvicorn main:app --port 8084 --reload &
 AI_PID=$!
 
 # Start Backend

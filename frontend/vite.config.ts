@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '0.0.0.0',
-    allowedHosts: ['circini.callsphere.site', 'callsphere.site', 'www.callsphere.site', 'localhost'],
+    allowedHosts: ['migration.callsphere.site', 'circini.callsphere.site', 'callsphere.site', 'www.callsphere.site', 'localhost'],
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

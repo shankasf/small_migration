@@ -65,6 +65,16 @@ spec:
                 secretKeyRef:
                   name: migration-agent-secret
                   key: OPENAI_API_KEY
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: INTERNAL_API_KEY
+            # Explicit so the hostPath-mounted .env (localhost dev value) never wins
+            - name: BACKEND_URL
+              value: "http://backend:3001"
+            - name: OTEL_SERVICE_NAME
+              value: "circini-ai-service"
           volumeMounts:
             - name: outputs
               mountPath: /data/outputs
@@ -156,6 +166,30 @@ spec:
                 secretKeyRef:
                   name: migration-agent-secret
                   key: DATABASE_URL
+            - name: AUTH_MODE
+              value: "local"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: JWT_SECRET
+            - name: INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: INTERNAL_API_KEY
+            - name: SEED_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: SEED_ADMIN_EMAIL
+            - name: SEED_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: SEED_ADMIN_PASSWORD
+            - name: OTEL_SERVICE_NAME
+              value: "circini-backend"
           volumeMounts:
             - name: backend-src
               mountPath: /app/src
@@ -312,71 +346,9 @@ spec:
       targetPort: 5173
 
 ---
-# Ingress with TLS
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: migration-agent-ingress
-  namespace: migration-agent
-  annotations:
-    kubernetes.io/ingress.class: traefik
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    traefik.ingress.kubernetes.io/router.middlewares: migration-agent-strip-prefix@kubernetescrd
-spec:
-  tls:
-    - hosts:
-        - callsphere.site
-        - www.callsphere.site
-      secretName: migration-agent-tls
-  rules:
-    - host: callsphere.site
-      http:
-        paths:
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: backend
-                port:
-                  number: 3001
-          - path: /ai
-            pathType: Prefix
-            backend:
-              service:
-                name: ai-service
-                port:
-                  number: 8084
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 5173
-    - host: www.callsphere.site
-      http:
-        paths:
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: backend
-                port:
-                  number: 3001
-          - path: /ai
-            pathType: Prefix
-            backend:
-              service:
-                name: ai-service
-                port:
-                  number: 8084
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 5173
+# NOTE: the public ingress for this app is kubernetes/ingress-circini.yaml
+# (circini.callsphere.site). The old apex-domain ingress was removed —
+# callsphere.site must not be claimed by this namespace.
 
 ---
 # Traefik Middleware for API paths
