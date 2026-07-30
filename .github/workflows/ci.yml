@@ -157,7 +157,9 @@ jobs:
 
       - name: No --reload in production Dockerfiles
         run: |
-          if grep -n -- '--reload' services/*/Dockerfile; then
+          # Strip comments before matching, so documentation that mentions
+          # --reload does not trip the check.
+          if grep -vE '^\s*#' services/*/Dockerfile | grep -n -- '--reload'; then
             echo "::error::--reload in a production image lets running code change in place"
             exit 1
           fi
