@@ -74,13 +74,6 @@ function App() {
       .finally(() => setAuthChecked(true));
   }, []);
 
-  // Load sessions once authenticated (auditors have no chat access)
-  useEffect(() => {
-    if (user && user.role !== 'auditor') {
-      loadSessions();
-    }
-  }, [user]);
-
   const loadSessions = useCallback(async () => {
     try {
       const data = await api.getSessions();
@@ -89,6 +82,15 @@ function App() {
       console.error('Failed to load sessions:', error);
     }
   }, []);
+
+  // Load sessions once authenticated (auditors have no chat access).
+  // Declared after loadSessions: referencing it earlier only worked because
+  // React defers the effect callback past the const initialisation.
+  useEffect(() => {
+    if (user && user.role !== 'auditor') {
+      loadSessions();
+    }
+  }, [user, loadSessions]);
 
   const loadSession = useCallback(async (sessionId: string) => {
     try {

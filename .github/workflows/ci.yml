@@ -26,10 +26,10 @@ jobs:
       run:
         working-directory: services/backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: services/backend/package-lock.json
       - run: npm ci
@@ -47,10 +47,10 @@ jobs:
       run:
         working-directory: services/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: services/frontend/package-lock.json
       - run: npm ci
@@ -68,8 +68,8 @@ jobs:
       run:
         working-directory: services/ai-service
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
           cache: pip
@@ -82,48 +82,66 @@ jobs:
     name: Dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: '22' }
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
 
-      # Gate: CRITICAL fails the build.
-      #
-      # Highs are reported but do not block, because the current highs have no
-      # available fix (xlsx/SheetJS prototype pollution) or are pinned
-      # transitively by @opentelemetry packages. Gating on high today would
-      # mean a permanently red pipeline, which trains people to ignore it.
-      # The accepted findings and their remediation plan are recorded in the
-      # CnA readiness section of the README; revisit when xlsx is replaced.
-      - name: npm audit — backend (critical blocks)
+      # Both services audit clean, so the gate is set at HIGH rather than
+      # critical. If this starts failing, fix the dependency — do not lower
+      # the threshold back.
+      - name: npm audit — backend
         working-directory: services/backend
-        run: npm audit --audit-level=critical
-      - name: npm audit — frontend (critical blocks)
+        run: npm audit --audit-level=high
+      - name: npm audit — frontend
         working-directory: services/frontend
-        run: npm audit --audit-level=critical
-
-      - name: Report high-severity findings (non-blocking)
-        run: |
-          for svc in backend frontend; do
-            echo "### $svc" >> "$GITHUB_STEP_SUMMARY"
-            (cd "services/$svc" && npm audit --audit-level=high 2>&1 | tail -25) >> "$GITHUB_STEP_SUMMARY" || true
-          done
+        run: npm audit --audit-level=high
 
       - name: pip-audit — ai-service
         run: |
           pip install pip-audit
           pip-audit -r services/ai-service/requirements.txt
 
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Semgrep scan
+        # Curated rulesets covering language security rules, OWASP Top Ten and
+        # infrastructure files. --error fails the job on any finding.
+        run: |
+          semgrep scan \
+            --config=p/default \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/typescript \
+            --config=p/python \
+            --config=p/dockerfile \
+            --config=p/kubernetes \
+            --metrics=off \
+            --sarif --output=semgrep.sarif \
+            --error
+      - name: Upload SARIF
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          if-no-files-found: ignore
+
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -131,7 +149,7 @@ jobs:
     name: Kubernetes manifest policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # These encode deployment invariants that a manifest edit must not undo.
       - name: No hostPath mounts

@@ -18,7 +18,12 @@ RUN apt-get update \
  && npm install -g npm@latest && npm cache clean --force
 
 COPY package*.json ./
-RUN npm ci
+# xlsx comes from SheetJS's official distribution rather than the npm
+# registry: the registry copy is abandoned at 0.18.5 and carries an unfixed
+# prototype-pollution advisory. npm 12 blocks remote tarballs by default, so
+# this is enabled deliberately — the lockfile still pins the exact URL and an
+# integrity hash, so the artefact is verified.
+RUN npm ci --allow-remote=root
 
 COPY prisma ./prisma/
 RUN npx prisma generate
@@ -46,7 +51,12 @@ ENV NODE_ENV=production
 
 # Runtime dependencies only — no tsx, typescript or @types in the shipped image.
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# xlsx comes from SheetJS's official distribution rather than the npm
+# registry: the registry copy is abandoned at 0.18.5 and carries an unfixed
+# prototype-pollution advisory. npm 12 blocks remote tarballs by default, so
+# this is enabled deliberately — the lockfile still pins the exact URL and an
+# integrity hash, so the artefact is verified.
+RUN npm ci --omit=dev --allow-remote=root && npm cache clean --force
 
 # The Prisma client is generated at build time into node_modules/.prisma;
 # carry it over rather than regenerating at runtime.

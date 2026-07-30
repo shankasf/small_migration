@@ -41,14 +41,22 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS. This service is only ever called server-to-server by the backend, so
+# there is no browser origin to allow. A wildcard combined with
+# allow_credentials is invalid per the CORS spec anyway, and browsers reject
+# it — it only ever looked permissive. CORS_ALLOW_ORIGINS can name explicit
+# origins if a browser ever needs direct access.
+_cors_origins = [
+    o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type", "x-internal-key"],
+    )
 
 # Service-to-service auth: every request (except health) must present the
 # shared key — the AI service only talks to the backend. Fail-closed: an

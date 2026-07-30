@@ -19,8 +19,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY . .
 
-# Output directory — mounted over by the outputs PVC in Kubernetes
-RUN mkdir -p /data/outputs
+# Output directory — mounted over by the outputs PVC in Kubernetes. The pod
+# sets fsGroup so the mounted volume is group-writable by this user.
+RUN mkdir -p /data/outputs \
+ && useradd --system --uid 10001 --create-home appuser \
+ && chown -R appuser:appuser /app /data/outputs
+USER appuser
 
 EXPOSE 8084
 

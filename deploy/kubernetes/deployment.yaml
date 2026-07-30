@@ -45,9 +45,20 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Makes the mounted outputs PVC group-writable by the container user.
+        fsGroup: 10001
       containers:
         - name: ai-service
           image: ghcr.io/shankasf/small_migration/ai-service:${IMAGE_TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8084
@@ -81,6 +92,10 @@ spec:
           volumeMounts:
             - name: outputs
               mountPath: /data/outputs
+            # readOnlyRootFilesystem is on, so anything that needs scratch
+            # space gets an explicit tmpfs rather than a writable image layer.
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               memory: "512Mi"
@@ -104,6 +119,8 @@ spec:
         - name: outputs
           persistentVolumeClaim:
             claimName: outputs-pvc
+        - name: tmp
+          emptyDir: {}
 
 ---
 # AI Service
@@ -141,9 +158,18 @@ spec:
       # Schema sync runs once, before the app starts, so replicas cannot race
       # on it and a failed sync surfaces as a clear init failure rather than a
       # crash-looping app container.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
       initContainers:
         - name: prisma-db-push
           image: ghcr.io/shankasf/small_migration/backend:${IMAGE_TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           imagePullPolicy: IfNotPresent
           command: ["npx", "prisma", "db", "push", "--skip-generate"]
           env:
@@ -162,6 +188,11 @@ spec:
       containers:
         - name: backend
           image: ghcr.io/shankasf/small_migration/backend:${IMAGE_TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3001
@@ -210,6 +241,9 @@ spec:
                   key: SEED_ADMIN_PASSWORD
             - name: OTEL_SERVICE_NAME
               value: "circini-backend"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               memory: "256Mi"
@@ -229,6 +263,9 @@ spec:
               port: 3001
             initialDelaySeconds: 5
             periodSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
 
 ---
 # Backend Service
@@ -263,9 +300,18 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
       containers:
         - name: frontend
           image: ghcr.io/shankasf/small_migration/frontend:${IMAGE_TAG}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5173
@@ -282,12 +328,22 @@ spec:
               port: 5173
             initialDelaySeconds: 10
             periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
           readinessProbe:
             httpGet:
               path: /
               port: 5173
             initialDelaySeconds: 3
             periodSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
 
 ---
 # Frontend Service

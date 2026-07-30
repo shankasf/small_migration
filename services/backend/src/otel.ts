@@ -10,7 +10,13 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { NodeSDK } from '@opentelemetry/sdk-node';
-import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+// Explicit instrumentations rather than auto-instrumentations-node: the
+// meta-package loads adapters for dozens of services this app never touches
+// (GCP, AWS, Redis, Mongo, ...), and its GCP resource detector dragged in the
+// gcp-metadata -> gaxios -> rimraf -> glob -> minimatch -> brace-expansion
+// chain that accounted for every outstanding high-severity advisory here.
+import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
+import { ExpressInstrumentation } from '@opentelemetry/instrumentation-express';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { trace, Tracer } from '@opentelemetry/api';
 
@@ -25,10 +31,8 @@ if (enabled) {
       ? { traceExporter: new OTLPTraceExporter({ url: `${otlpEndpoint.replace(/\/$/, '')}/v1/traces` }) }
       : {}),
     instrumentations: [
-      getNodeAutoInstrumentations({
-        // fs instrumentation is extremely noisy
-        '@opentelemetry/instrumentation-fs': { enabled: false },
-      }),
+      new HttpInstrumentation(),
+      new ExpressInstrumentation(),
     ],
   });
 
