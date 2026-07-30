@@ -171,8 +171,15 @@ spec:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
           imagePullPolicy: IfNotPresent
-          command: ["npx", "prisma", "db", "push", "--skip-generate"]
+          # Invoked directly rather than through npx: npx wants a writable
+          # cache under $HOME, which the read-only root filesystem denies.
+          command: ["node", "node_modules/prisma/build/index.js", "db", "push", "--skip-generate"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           env:
+            - name: HOME
+              value: /tmp
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

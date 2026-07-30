@@ -60,7 +60,12 @@ RUN npm ci --omit=dev --allow-remote=root && npm cache clean --force
 
 # The Prisma client is generated at build time into node_modules/.prisma;
 # carry it over rather than regenerating at runtime.
+# Prisma's native engines are fetched by a postinstall that does not run for
+# the pruned runtime install, so carry them over from the builder explicitly.
+# Without these the schema-engine cannot resolve and `prisma db push` fails.
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 
