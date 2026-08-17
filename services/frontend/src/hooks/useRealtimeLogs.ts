@@ -18,7 +18,7 @@ const getSocketUrl = () => {
   return 'http://localhost:3001';
 };
 
-export function useRealtimeLogs(sessionId: string | null) {
+export function useRealtimeLogs(sessionId: string | null, enabled: boolean = true) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const socketRef = useRef<Socket | null>(null);
@@ -29,8 +29,11 @@ export function useRealtimeLogs(sessionId: string | null) {
     setLogs([]);
   }, []);
 
-  // Create socket once on mount
+  // Create the socket whenever auth becomes available. Connecting pre-auth
+  // would present a null token and burn all reconnect attempts on guaranteed
+  // rejections — leaving live logs dead for the whole session after login.
   useEffect(() => {
+    if (!enabled || !getToken()) return;
     const socket = io(getSocketUrl(), {
       path: '/api/socket.io',
       transports: ['websocket', 'polling'],
@@ -73,7 +76,7 @@ export function useRealtimeLogs(sessionId: string | null) {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, []); // Empty deps — socket created once
+  }, [enabled]); // Re-runs on login/logout; at most one socket at a time
 
   // Handle session changes — join/leave rooms on the existing socket
   useEffect(() => {

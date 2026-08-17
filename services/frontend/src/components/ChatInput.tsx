@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, KeyboardEvent } from 'react';
+import { useState, useRef, useCallback, useEffect, KeyboardEvent } from 'react';
 import { ArrowUp, Paperclip, X, Mic, Square } from 'lucide-react';
 import * as api from '../services/api';
 
@@ -8,12 +8,16 @@ interface ChatInputProps {
   onSend: (message: string, files?: File[]) => void;
   disabled?: boolean;
   placeholder?: string;
+  /** Prefill the composer from an external action (e.g. a starter card).
+   *  nonce forces re-application even when the same text is picked twice. */
+  prefill?: { text: string; nonce: number };
 }
 
 export default function ChatInput({
   onSend,
   disabled = false,
   placeholder = 'Ask anything',
+  prefill,
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -38,6 +42,22 @@ export default function ChatInput({
       }
     }
   };
+
+  // Apply an external prefill and focus the composer so the user can edit,
+  // attach a file, or press Enter to send.
+  useEffect(() => {
+    if (!prefill || !prefill.text) return;
+    setMessage(prefill.text);
+    const ta = textareaRef.current;
+    if (ta) {
+      ta.focus();
+      ta.style.height = 'auto';
+      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+      const end = prefill.text.length;
+      ta.setSelectionRange(end, end);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.nonce]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {

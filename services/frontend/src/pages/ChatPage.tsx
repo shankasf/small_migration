@@ -1,9 +1,30 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
+import { ArrowUpRight } from 'lucide-react';
 import { Session, Message, UploadedFile, GeneratedOutput } from '../types';
 import ChatArea from '../components/ChatArea';
 import ChatInput from '../components/ChatInput';
 import { LogEntry } from '../hooks/useRealtimeLogs';
 import { CirciniMark } from '../components/Brand';
+
+// Domain starters — one tap drops a real prompt into the composer, so a first
+// run is a click away instead of a blank page.
+const STARTERS: { label: string; hint: string; prompt: string }[] = [
+  {
+    label: 'Generate a migration script',
+    hint: 'from a mapping file',
+    prompt: 'Generate a migration script from the mapping file I upload.',
+  },
+  {
+    label: 'Explain a script',
+    hint: 'walk through the logic',
+    prompt: 'Explain what this migration script does, step by step.',
+  },
+  {
+    label: 'Validate a mapping',
+    hint: 'check schema coverage',
+    prompt: 'Review my source-to-target mapping and flag any gaps or type mismatches.',
+  },
+];
 
 interface ChatPageProps {
   session: Session | null;
@@ -22,16 +43,41 @@ interface ChatPageProps {
   onDownloadFile?: (fileId: string) => void;
 }
 
-function WelcomeHero({ subtitle }: { subtitle: string }) {
+function WelcomeHero({
+  subtitle,
+  onPick,
+}: {
+  subtitle: string;
+  onPick?: (prompt: string) => void;
+}) {
   return (
-    <div className="flex flex-col items-center text-center animate-fade-up">
+    <div className="flex w-full flex-col items-center text-center animate-fade-up">
       <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-hairline bg-elevated text-brass shadow-console">
         <CirciniMark size={30} />
       </div>
-      <h2 className="font-display text-2xl font-700 tracking-tight text-ink mb-2 text-balance">
-        What&rsquo;s on your mind today?
+      <h2 className="mb-2 font-display text-[1.7rem] font-700 tracking-tight text-ink text-balance">
+        Where should we start?
       </h2>
-      <p className="text-sm text-muted mb-8 max-w-sm">{subtitle}</p>
+      <p className="mb-8 max-w-sm text-sm text-muted">{subtitle}</p>
+
+      {onPick && (
+        <div className="grid w-full max-w-xl gap-2.5 sm:grid-cols-3">
+          {STARTERS.map(s => (
+            <button
+              key={s.label}
+              type="button"
+              onClick={() => onPick(s.prompt)}
+              className="group flex flex-col rounded-xl border border-hairline bg-panel/70 p-3.5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-brass/40 hover:bg-elevated"
+            >
+              <div className="mb-1 flex items-start justify-between gap-2">
+                <span className="text-[13.5px] font-500 leading-snug text-ink">{s.label}</span>
+                <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-faint transition-colors group-hover:text-brass" />
+              </div>
+              <span className="text-xs text-faint">{s.hint}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -52,15 +98,21 @@ const ChatPage = memo(function ChatPage({
   onViewFile,
   onDownloadFile,
 }: ChatPageProps) {
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: '', nonce: 0 });
+  const pick = (prompt: string) => setPrefill({ text: prompt, nonce: Date.now() });
+
   // Welcome screen when no session
   if (!session) {
     return (
       <div className="relative flex-1 flex flex-col min-h-0 bg-obsidian">
         <div className="console-grid pointer-events-none absolute inset-0 opacity-60" />
-        <div className="relative flex-1 flex flex-col items-center justify-center px-4">
-          <WelcomeHero subtitle="Upload migration files or ask questions about your data migration" />
+        <div className="relative flex-1 flex flex-col items-center justify-center gap-8 px-4">
+          <WelcomeHero
+            subtitle="Upload migration files or ask a question to get started."
+            onPick={pick}
+          />
           <div className="w-full max-w-xl">
-            <ChatInput onSend={onSend} disabled={false} placeholder="Ask anything..." />
+            <ChatInput onSend={onSend} disabled={false} placeholder="Ask anything..." prefill={prefill} />
           </div>
         </div>
       </div>
@@ -85,8 +137,8 @@ const ChatPage = memo(function ChatPage({
       {messages.length === 0 ? (
         <div className="relative flex-1 flex flex-col items-center justify-center px-4">
           <div className="console-grid pointer-events-none absolute inset-0 opacity-60" />
-          <div className="relative">
-            <WelcomeHero subtitle="Start by uploading files or asking a question" />
+          <div className="relative w-full max-w-xl">
+            <WelcomeHero subtitle="Upload files or pick a starting point below." onPick={pick} />
           </div>
         </div>
       ) : (
@@ -132,6 +184,7 @@ const ChatPage = memo(function ChatPage({
         onSend={onSend}
         disabled={isLoading || isUploading}
         placeholder={isUploading ? 'Please wait, uploading files...' : 'Ask anything...'}
+        prefill={prefill}
       />
     </div>
   );
