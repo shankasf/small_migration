@@ -10,6 +10,8 @@ import FilePreviewModal from './components/FilePreviewModal';
 import { Session, Message, UploadedFile, GeneratedOutput, User } from './types';
 import * as api from './services/api';
 import { getToken, getStoredUser, fetchMe, logout } from './services/auth';
+import { AuthConfig, fetchAuthConfig, completeLogin } from './services/oidc';
+import { CenterSpinner } from './components/ui';
 import { useRealtimeLogs } from './hooks/useRealtimeLogs';
 
 // Associate generated outputs with the assistant message that produced them
@@ -47,6 +49,11 @@ function buildMessageOutputMap(
 function App() {
   const [user, setUser] = useState<User | null>(getStoredUser());
   const [authChecked, setAuthChecked] = useState(!getToken());
+  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
+  // True while we hold an authorization code on /auth/callback and are exchanging it
+  const [oidcExchanging, setOidcExchanging] = useState(
+    window.location.pathname === '/auth/callback'
+  );
   const [view, setView] = useState<'chat' | 'admin'>('chat');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
@@ -63,7 +70,7 @@ function App() {
   const [previewFile, setPreviewFile] = useState<{ filename: string; content: string } | null>(null);
 
   // Real-time logs from WebSocket (path: /api/socket.io)
-  const { logs: realtimeLogs, clearLogs } = useRealtimeLogs(activeSession?.id || null);
+  const { logs: realtimeLogs, clearLogs } = useRealtimeLogs(activeSession?.id || null, !!user);
 
   // Validate the stored token on mount (401s are handled by the interceptor)
   useEffect(() => {
@@ -72,6 +79,44 @@ function App() {
       .then(me => setUser(me))
       .catch(() => setUser(null))
       .finally(() => setAuthChecked(true));
+  }, []);
+
+  // Fetch the auth config, then finish the OIDC redirect if we are on the
+  // callback route (nginx serves index.html for every path, so the SPA sees it)
+  useEffect(() => {
+    (async () => {
+      let cfg: AuthConfig = { mode: 'local' };
+      try {
+        cfg = await fetchAuthConfig();
+      } catch (error) {
+        console.error('Failed to fetch auth config, defaulting to local mode:', error);
+      }
+      setAuthConfig(cfg);
+
+      if (window.location.pathname !== '/auth/callback') return;
+      try {
+        if (cfg.mode !== 'oidc' || !cfg.oidc) {
+          throw new Error('Received an OIDC callback while not in oidc mode');
+        }
+        const me = await completeLogin(cfg.oidc);
+        history.replaceState({}, '', '/');
+        setUser(me);
+        setView(me.role === 'auditor' ? 'admin' : 'chat');
+        setAuthChecked(true);
+      } catch (error) {
+        // Fall back to the login page
+        console.error('OIDC sign-in failed:', error);
+        history.replaceState({}, '', '/');
+      } finally {
+        setOidcExchanging(false);
+      }
+    })();
+  }, []);
+
+  // Sign-in is embedded (no hosted-UI session is ever created), so logout is
+  // purely local in both auth modes.
+  const handleLogout = useCallback(() => {
+    logout();
   }, []);
 
   const loadSessions = useCallback(async () => {
@@ -335,9 +380,16 @@ function App() {
   }, []);
 
   // ---- Auth gate ----
+  if (oidcExchanging) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-obsidian">
+        <CenterSpinner label="Signing you in…" />
+      </div>
+    );
+  }
   if (!user) {
-    return authChecked
-      ? <LoginPage onLogin={u => { setUser(u); setView(u.role === 'auditor' ? 'admin' : 'chat'); }} />
+    return authChecked && authConfig
+      ? <LoginPage config={authConfig} onLogin={u => { setUser(u); setView(u.role === 'auditor' ? 'admin' : 'chat'); }} />
       : <div className="min-h-screen bg-obsidian" />;
   }
 
@@ -373,7 +425,7 @@ function App() {
             )}
             <span className="chip !py-0.5 uppercase tracking-wide !border-brass/40 !text-brass-bright hidden sm:inline-flex">{user.role}</span>
             <ThemeToggle />
-            <button onClick={logout} title="Sign out" className="rounded-md p-1.5 text-faint transition-colors hover:bg-danger/10 hover:text-danger">
+            <button onClick={handleLogout} title="Sign out" className="rounded-md p-1.5 text-faint transition-colors hover:bg-danger/10 hover:text-danger">
               <LogOut className="w-4 h-4" />
             </button>
           </div>
@@ -396,7 +448,7 @@ function App() {
                 onSelectSession={selectSession}
                 onDeleteSession={deleteSession}
                 user={user}
-                onLogout={logout}
+                onLogout={handleLogout}
                 onOpenAdmin={isAdmin ? () => setView('admin') : undefined}
               />
             </div>
@@ -417,7 +469,7 @@ function App() {
                     onSelectSession={s => { selectSession(s); setMobileNavOpen(false); }}
                     onDeleteSession={deleteSession}
                     user={user}
-                    onLogout={logout}
+                    onLogout={handleLogout}
                     onOpenAdmin={isAdmin ? () => { setView('admin'); setMobileNavOpen(false); } : undefined}
                   />
                 </div>

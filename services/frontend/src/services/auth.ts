@@ -18,8 +18,13 @@ export function getStoredUser(): User | null {
   }
 }
 
-function storeAuth(token: string, user: User) {
+/** Store just the session token (used by the OIDC flow before /auth/me resolves the user). */
+export function storeToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token);
+}
+
+function storeAuth(token: string, user: User) {
+  storeToken(token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
