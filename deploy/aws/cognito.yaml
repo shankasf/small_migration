@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Circini Migration Agent demo - identity layer.
+  Amazon Cognito user pool replacing the self-hosted Keycloak from the
+  architecture doc (S8 decision 1). One SPA client using Authorization Code
+  + PKCE; realm roles map to Cognito groups admin / analyst / auditor.
+
+Parameters:
+  AppUrl:
+    Type: String
+    Description: HTTPS origin of the deployed frontend (OIDC redirect target)
+    Default: https://migration.callsphere.site
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: circini-demo
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: 'ON'  # every user must enroll TOTP at first login
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: admin
+      UserPoolId: !Ref UserPool
+
+  AnalystGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: analyst
+      UserPoolId: !Ref UserPool
+
+  AuditorGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: auditor
+      UserPoolId: !Ref UserPool
+
+  SpaClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: circini-spa
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs:
+        - !Sub '${AppUrl}/auth/callback'
+        - http://localhost:5173/auth/callback
+      LogoutURLs:
+        - !Ref AppUrl
+        - http://localhost:5173
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub 'circini-demo-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+    Export: { Name: circini-UserPoolId }
+  SpaClientId:
+    Value: !Ref SpaClient
+    Export: { Name: circini-SpaClientId }
+  Issuer:
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+    Export: { Name: circini-OidcIssuer }
+  JwksUrl:
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/jwks.json'
+    Export: { Name: circini-OidcJwksUrl }
+  HostedUiDomain:
+    Value: !Sub 'https://circini-demo-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com'
+    Export: { Name: circini-HostedUiDomain }

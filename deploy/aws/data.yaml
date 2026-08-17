@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Circini Migration Agent demo - data layer.
+  RDS PostgreSQL (single instance, encrypted) plus the application secrets
+  in Secrets Manager. Imports the network stack's subnets and security group.
+
+Parameters:
+  DBName:
+    Type: String
+    Default: circini
+  DBUser:
+    Type: String
+    Default: circini
+  SeedAdminEmail:
+    Type: String
+    Default: admin@circini.com
+
+Resources:
+  DbMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/db-master
+      Description: RDS master credentials for the circini demo
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DBUser}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: circini demo data subnets
+      SubnetIds: !Split [',', !ImportValue circini-DataSubnets]
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: circini-demo
+      Engine: postgres
+      EngineVersion: '16'
+      DBInstanceClass: db.t4g.small
+      AllocatedStorage: '20'
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: !Ref DBName
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DbMasterSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DbMasterSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - !ImportValue circini-SgData
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 7
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+
+  # Assembled at deploy time; ECS injects it as DATABASE_URL.
+  DatabaseUrlSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/database-url
+      Description: Full Prisma connection string for the app database
+      SecretString: !Sub
+        - 'postgresql://${DBUser}:{{resolve:secretsmanager:${DbMasterSecret}:SecretString:password}}@${Endpoint}:5432/${DBName}?schema=public'
+        - Endpoint: !GetAtt Database.Endpoint.Address
+
+  JwtSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/jwt-secret
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  InternalApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/internal-api-key
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  SeedAdminSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/seed-admin
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"email": "${SeedAdminEmail}"}'
+        GenerateStringKey: password
+        PasswordLength: 20
+        ExcludeCharacters: '"''\@/'
+
+  # Placeholder - set the real key with:
+  #   aws secretsmanager put-secret-value --secret-id circini/openai-api-key --secret-string sk-...
+  OpenAiApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/openai-api-key
+      SecretString: REPLACE_ME
+
+Outputs:
+  DbEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+    Export: { Name: circini-DbEndpoint }
+  DatabaseUrlSecretArn:
+    Value: !Ref DatabaseUrlSecret
+    Export: { Name: circini-SecretDatabaseUrl }
+  JwtSecretArn:
+    Value: !Ref JwtSecret
+    Export: { Name: circini-SecretJwt }
+  InternalApiKeySecretArn:
+    Value: !Ref InternalApiKeySecret
+    Export: { Name: circini-SecretInternalApiKey }
+  SeedAdminSecretArn:
+    Value: !Ref SeedAdminSecret
+    Export: { Name: circini-SecretSeedAdmin }
+  OpenAiApiKeySecretArn:
+    Value: !Ref OpenAiApiKeySecret
+    Export: { Name: circini-SecretOpenAi }

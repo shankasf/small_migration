@@ -53,3 +53,7 @@ Thumbs.db
 
 # Local tooling for docx diagram rendering (mermaid-cli)
 node_modules/
+
+# Local test artifacts
+.playwright-mcp/
+/*.png

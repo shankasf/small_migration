@@ -1,0 +1,502 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Circini Migration Agent demo - application layer.
+  ECS Fargate cluster with Service Connect, task definitions mirroring
+  deploy/kubernetes/deployment.yaml (read-only rootfs, writable /tmp,
+  /var/cache/nginx and /data/outputs), the ALB with path routing and
+  sticky sessions for Socket.IO, and the on-deploy schema-sync task.
+
+Parameters:
+  ImageTag:
+    Type: String
+    Default: b589327
+  AuthMode:
+    Type: String
+    Default: local
+    AllowedValues: [local, oidc, entra]
+  OpenAiModel:
+    Type: String
+    Default: gpt-5.6-sol
+  CertificateArn:
+    Type: String
+    Default: ''
+  AppDomain:
+    Type: String
+    Default: migration.callsphere.site
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/circini
+      RetentionInDays: 30
+
+  Namespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: circini
+      Vpc: !ImportValue circini-VpcId
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: circini-demo
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: circini-task-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: read-circini-secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:circini/*'
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: circini-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      # For the ADOT collector sidecars: traces -> X-Ray, metrics -> CloudWatch.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  # ---------------------------------------------------------------- ALB ----
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: circini-demo
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Split [',', !ImportValue circini-PublicSubnets]
+      SecurityGroups: [!ImportValue circini-SgAlb]
+      LoadBalancerAttributes:
+        - { Key: idle_timeout.timeout_seconds, Value: '660' }
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: circini-frontend
+      VpcId: !ImportValue circini-VpcId
+      Protocol: HTTP
+      Port: 5173
+      TargetType: ip
+      HealthCheckPath: /
+      Matcher: { HttpCode: 200-399 }
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: circini-backend
+      VpcId: !ImportValue circini-VpcId
+      Protocol: HTTP
+      Port: 3001
+      TargetType: ip
+      HealthCheckPath: /api/health
+      Matcher: { HttpCode: '200' }
+      TargetGroupAttributes:
+        - { Key: stickiness.enabled, Value: 'true' }
+        - { Key: stickiness.type, Value: lb_cookie }
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions: !If
+        - HasCertificate
+        - - Type: redirect
+            RedirectConfig: { Protocol: HTTPS, Port: '443', StatusCode: HTTP_301 }
+        - - Type: forward
+            TargetGroupArn: !Ref FrontendTargetGroup
+
+  # One set of rules on whichever listener serves traffic: the HTTPS listener
+  # when a certificate is configured (HTTP then only redirects), otherwise the
+  # HTTP listener. Unconditional so BackendService's DependsOn always resolves.
+  ApiRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !If [HasCertificate, !Ref HttpsListener, !Ref HttpListener]
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig: { Values: ['/api/*'] }
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  SocketIoRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !If [HasCertificate, !Ref HttpsListener, !Ref HttpListener]
+      Priority: 11
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig: { Values: ['/socket.io/*'] }
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  # ------------------------------------------------------- task definitions
+  FrontendTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: circini-frontend
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - { Name: tmp }
+        - { Name: nginx-cache }
+      ContainerDefinitions:
+        # Fargate mounts volumes root:root 0755; the app containers run
+        # non-root, so a root init container opens them up first (the
+        # equivalent of Kubernetes' emptyDir 0777).
+        - Name: volume-init
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-frontend:${ImageTag}'
+          Essential: false
+          User: '0'
+          EntryPoint: [sh, -c, 'chmod 1777 /tmp /var/cache/nginx']
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+            - { SourceVolume: nginx-cache, ContainerPath: /var/cache/nginx }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: init-frontend
+        - Name: frontend
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-frontend:${ImageTag}'
+          Essential: true
+          DependsOn: [{ ContainerName: volume-init, Condition: SUCCESS }]
+          PortMappings:
+            - { Name: web, ContainerPort: 5173, Protocol: tcp }
+          ReadonlyRootFilesystem: true
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+            - { SourceVolume: nginx-cache, ContainerPath: /var/cache/nginx }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: frontend
+
+  BackendTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: circini-backend
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      # 2 GB task memory: 1 GB floor for the app (multer upload buffers) plus
+      # headroom for the ADOT collector sidecar.
+      Cpu: '512'
+      Memory: '2048'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - { Name: tmp }
+      ContainerDefinitions:
+        - Name: volume-init
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-backend:${ImageTag}'
+          Essential: false
+          User: '0'
+          EntryPoint: [sh, -c, 'chmod 1777 /tmp']
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: init-backend
+        - Name: backend
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-backend:${ImageTag}'
+          Essential: true
+          DependsOn: [{ ContainerName: volume-init, Condition: SUCCESS }]
+          PortMappings:
+            - { Name: api, ContainerPort: 3001, Protocol: tcp }
+          ReadonlyRootFilesystem: true
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+          Environment:
+            - { Name: PORT, Value: '3001' }
+            - { Name: AI_SERVICE_URL, Value: 'http://ai-service:8084' }
+            - { Name: CORS_ORIGIN, Value: !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}'] }
+            - { Name: AUTH_MODE, Value: !Ref AuthMode }
+            - { Name: OIDC_ISSUER, Value: !ImportValue circini-OidcIssuer }
+            - { Name: OIDC_AUDIENCE, Value: !ImportValue circini-SpaClientId }
+            - { Name: OIDC_CLIENT_ID, Value: !ImportValue circini-SpaClientId }
+            - { Name: OIDC_HOSTED_UI, Value: !ImportValue circini-HostedUiDomain }
+            - { Name: OIDC_ROLES_CLAIM, Value: 'cognito:groups' }
+            - { Name: OTEL_SERVICE_NAME, Value: circini-backend }
+            - { Name: OTEL_EXPORTER_OTLP_ENDPOINT, Value: 'http://localhost:4318' }
+          Secrets:
+            - { Name: DATABASE_URL, ValueFrom: !ImportValue circini-SecretDatabaseUrl }
+            - { Name: JWT_SECRET, ValueFrom: !ImportValue circini-SecretJwt }
+            - { Name: INTERNAL_API_KEY, ValueFrom: !ImportValue circini-SecretInternalApiKey }
+            - { Name: SEED_ADMIN_EMAIL, ValueFrom: !Sub ['${Arn}:email::', { Arn: !ImportValue circini-SecretSeedAdmin }] }
+            - { Name: SEED_ADMIN_PASSWORD, ValueFrom: !Sub ['${Arn}:password::', { Arn: !ImportValue circini-SecretSeedAdmin }] }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: backend
+        - Name: otel-collector
+          Image: public.ecr.aws/aws-observability/aws-otel-collector:latest
+          Essential: false
+          Command: ['--config=/etc/ecs/ecs-default-config.yaml']
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: otel-backend
+
+  AiServiceTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: circini-ai-service
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      # +1 GB over the doc sizing for the ADOT collector sidecar.
+      Cpu: '512'
+      Memory: '2048'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - { Name: tmp }
+        - { Name: outputs }
+      ContainerDefinitions:
+        - Name: volume-init
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-ai-service:${ImageTag}'
+          Essential: false
+          User: '0'
+          EntryPoint: [sh, -c, 'chmod 1777 /tmp /data/outputs']
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+            - { SourceVolume: outputs, ContainerPath: /data/outputs }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: init-ai
+        - Name: ai-service
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-ai-service:${ImageTag}'
+          Essential: true
+          DependsOn: [{ ContainerName: volume-init, Condition: SUCCESS }]
+          PortMappings:
+            - { Name: ai, ContainerPort: 8084, Protocol: tcp }
+          ReadonlyRootFilesystem: true
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+            - { SourceVolume: outputs, ContainerPath: /data/outputs }
+          Environment:
+            - { Name: PORT, Value: '8084' }
+            - { Name: OPENAI_MODEL, Value: !Ref OpenAiModel }
+            - { Name: OUTPUT_DIR, Value: /data/outputs }
+            - { Name: BACKEND_URL, Value: 'http://backend:3001' }
+            - { Name: OTEL_SERVICE_NAME, Value: circini-ai-service }
+            - { Name: OTEL_EXPORTER_OTLP_ENDPOINT, Value: 'http://localhost:4318' }
+          Secrets:
+            - { Name: OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretOpenAi }
+            - { Name: INTERNAL_API_KEY, ValueFrom: !ImportValue circini-SecretInternalApiKey }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ai-service
+        - Name: otel-collector
+          Image: public.ecr.aws/aws-observability/aws-otel-collector:latest
+          Essential: false
+          Command: ['--config=/etc/ecs/ecs-default-config.yaml']
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: otel-ai
+
+  # prisma db push - run as a one-off task on each deploy (doc S7 item 2)
+  SchemaSyncTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: circini-schema-sync
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - { Name: tmp }
+      ContainerDefinitions:
+        - Name: volume-init
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-backend:${ImageTag}'
+          Essential: false
+          User: '0'
+          EntryPoint: [sh, -c, 'chmod 1777 /tmp']
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: init-schema
+        - Name: schema-sync
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-backend:${ImageTag}'
+          Essential: true
+          DependsOn: [{ ContainerName: volume-init, Condition: SUCCESS }]
+          Command: [node, node_modules/prisma/build/index.js, db, push, --skip-generate]
+          ReadonlyRootFilesystem: true
+          MountPoints:
+            - { SourceVolume: tmp, ContainerPath: /tmp }
+          Environment:
+            - { Name: HOME, Value: /tmp }
+          Secrets:
+            - { Name: DATABASE_URL, ValueFrom: !ImportValue circini-SecretDatabaseUrl }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: schema-sync
+
+  # ---------------------------------------------------------------- services
+  BackendService:
+    Type: AWS::ECS::Service
+    DependsOn: [ApiRule, SocketIoRule]
+    Properties:
+      ServiceName: backend
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref BackendTaskDef
+      LaunchType: FARGATE
+      DesiredCount: 1
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Split [',', !ImportValue circini-AppSubnets]
+          SecurityGroups: [!ImportValue circini-SgApp]
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: backend
+          ContainerPort: 3001
+          TargetGroupArn: !Ref BackendTargetGroup
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !GetAtt Namespace.Arn
+        Services:
+          - PortName: api
+            DiscoveryName: backend
+            # Explicit DnsName: without it ECS aliases as backend.circini and
+            # the app's http://backend:3001 URLs fail to resolve.
+            ClientAliases: [{ Port: 3001, DnsName: backend }]
+
+  AiService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: ai-service
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref AiServiceTaskDef
+      LaunchType: FARGATE
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Split [',', !ImportValue circini-AppSubnets]
+          SecurityGroups: [!ImportValue circini-SgApp]
+          AssignPublicIp: DISABLED
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !GetAtt Namespace.Arn
+        Services:
+          - PortName: ai
+            DiscoveryName: ai-service
+            ClientAliases: [{ Port: 8084, DnsName: ai-service }]
+
+  FrontendService:
+    Type: AWS::ECS::Service
+    # ApiRule sits on whichever listener is live, so waiting on it guarantees
+    # the frontend target group is attached to the ALB in both TLS states.
+    DependsOn: ApiRule
+    Properties:
+      ServiceName: frontend
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref FrontendTaskDef
+      LaunchType: FARGATE
+      DesiredCount: 1
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Split [',', !ImportValue circini-AppSubnets]
+          SecurityGroups: [!ImportValue circini-SgApp]
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: frontend
+          ContainerPort: 5173
+          TargetGroupArn: !Ref FrontendTargetGroup
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !GetAtt Namespace.Arn
+
+Outputs:
+  AlbUrl:
+    Value: !Sub 'http://${Alb.DNSName}'
+  AlbDnsName:
+    Value: !GetAtt Alb.DNSName
+    Export: { Name: circini-AlbDnsName }
+  AlbHostedZoneId:
+    Value: !GetAtt Alb.CanonicalHostedZoneID
+  ClusterName:
+    Value: !Ref Cluster
+    Export: { Name: circini-Cluster }
