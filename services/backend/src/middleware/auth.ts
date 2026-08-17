@@ -9,7 +9,7 @@ export interface AuthedRequest extends Request {
   user?: User;
 }
 
-const AUTH_MODE = (process.env.AUTH_MODE || 'local').toLowerCase(); // local | entra
+const AUTH_MODE = (process.env.AUTH_MODE || 'local').toLowerCase(); // local | entra | oidc
 const JWT_SECRET = process.env.JWT_SECRET || '';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '12h';
 
@@ -21,6 +21,13 @@ if (JWT_SECRET.length < 32) {
 if (AUTH_MODE === 'entra' && !process.env.ENTRA_TENANT_ID) {
   throw new Error('AUTH_MODE=entra requires ENTRA_TENANT_ID');
 }
+// Fail closed on every var the mode depends on: a missing audience would
+// otherwise accept tokens minted for any other client of the same issuer.
+if (AUTH_MODE === 'oidc') {
+  for (const key of ['OIDC_ISSUER', 'OIDC_AUDIENCE', 'OIDC_CLIENT_ID', 'OIDC_HOSTED_UI'] as const) {
+    if (!process.env[key]) throw new Error(`AUTH_MODE=oidc requires ${key}`);
+  }
+}
 
 // Entra ID (config-gated; used when AUTH_MODE=entra)
 const ENTRA_TENANT_ID = process.env.ENTRA_TENANT_ID || '';
@@ -30,6 +37,17 @@ const entraJwks = ENTRA_TENANT_ID
       new URL(`https://login.microsoftonline.com/${ENTRA_TENANT_ID}/discovery/v2.0/keys`)
     )
   : null;
+
+// Generic OIDC provider (config-gated; used when AUTH_MODE=oidc). Works with
+// any spec-compliant issuer — Cognito, Keycloak, Auth0, ... The roles claim
+// name is configurable because providers differ (Cognito: "cognito:groups",
+// Keycloak: "roles" via a client mapper).
+const OIDC_ISSUER = (process.env.OIDC_ISSUER || '').replace(/\/$/, '');
+const OIDC_JWKS_URL =
+  process.env.OIDC_JWKS_URL || (OIDC_ISSUER ? `${OIDC_ISSUER}/.well-known/jwks.json` : '');
+const OIDC_AUDIENCE = process.env.OIDC_AUDIENCE || '';
+const OIDC_ROLES_CLAIM = process.env.OIDC_ROLES_CLAIM || 'roles';
+const oidcJwks = OIDC_JWKS_URL ? jose.createRemoteJWKSet(new URL(OIDC_JWKS_URL)) : null;
 
 function entraGroupRoleMap(): Array<{ groupId: string; role: Role }> {
   const map: Array<{ groupId: string; role: Role }> = [];
@@ -109,8 +127,70 @@ async function verifyEntraToken(prisma: PrismaClient, token: string): Promise<Us
   }
 }
 
+/**
+ * OIDC mode: verify a token from the configured issuer against its JWKS and
+ * upsert a local User mirror, exactly like Entra mode. The subject claim is
+ * stored in the same external-identity column (entraOid) to avoid a schema
+ * change; role comes from the configured roles claim, defaulting to analyst.
+ */
+async function verifyOidcToken(prisma: PrismaClient, token: string): Promise<User | null> {
+  if (!oidcJwks) return null;
+  try {
+    const { payload } = await jose.jwtVerify(token, oidcJwks, {
+      issuer: OIDC_ISSUER,
+      ...(OIDC_AUDIENCE ? { audience: OIDC_AUDIENCE } : {}),
+    });
+
+    // Cognito stamps token_use on both token types; only the ID token carries
+    // the audience and identity claims we authorize on. Reject access tokens
+    // rather than relying on the aud check alone to exclude them.
+    if (payload.token_use !== undefined && payload.token_use !== 'id') return null;
+
+    const sub = payload.sub!;
+    const email =
+      (payload.email as string) ||
+      (payload.preferred_username as string) ||
+      (payload['cognito:username'] as string) ||
+      `${sub}@oidc.local`;
+    const name = (payload.name as string) || null;
+
+    let role: Role = 'analyst';
+    // Array check matters: a string-valued claim would turn .includes() into a
+    // substring test ("aws.cognito.signin.user.admin" would grant admin).
+    const rawRoles = payload[OIDC_ROLES_CLAIM];
+    const claimRoles = Array.isArray(rawRoles) ? (rawRoles as string[]) : [];
+    if (claimRoles.includes('admin')) role = 'admin';
+    else if (claimRoles.includes('auditor')) role = 'auditor';
+
+    // Resolve the local mirror. Prefer the stable IdP subject; fall back to
+    // email ONLY to link a pre-provisioned local account (admin portal, seed)
+    // on its first SSO login. Guardrails against an email-claim takeover:
+    //   - the token must assert email_verified (Cognito sets this true for
+    //     admin-created users; a forged/unverified email cannot link)
+    //   - link by email only when that account is not already bound to an IdP
+    //     identity, so an existing SSO account can never be rebound
+    // Role still derives from the admin-controlled cognito:groups claim (users
+    // cannot self-join groups and self-signup is disabled), so it is not a
+    // user-settable elevation vector.
+    let existing = await prisma.user.findUnique({ where: { entraOid: sub } });
+    if (!existing && payload.email_verified === true) {
+      const byEmail = await prisma.user.findUnique({ where: { email } });
+      if (byEmail && byEmail.entraOid == null) existing = byEmail;
+    }
+    if (existing) {
+      return await prisma.user.update({
+        where: { id: existing.id },
+        data: { entraOid: sub, email, name, role, lastLoginAt: new Date() },
+      });
+    }
+    return await prisma.user.create({ data: { entraOid: sub, email, name, role } });
+  } catch {
+    return null;
+  }
+}
+
 /** Paths that skip user authentication entirely. */
-const PUBLIC_PATHS = ['/api/health', '/api/auth/login'];
+const PUBLIC_PATHS = ['/api/health', '/api/auth/login', '/api/auth/config'];
 
 /** Guard for service-to-service endpoints (AI service -> backend). Fail-closed:
  * an unconfigured key refuses the request rather than skipping auth. */
@@ -142,6 +222,8 @@ export function authenticate(prisma: PrismaClient) {
     let user: User | null = null;
     if (AUTH_MODE === 'entra') {
       user = await verifyEntraToken(prisma, token);
+    } else if (AUTH_MODE === 'oidc') {
+      user = await verifyOidcToken(prisma, token);
     } else {
       const decoded = await verifyLocalToken(token);
       if (decoded) {

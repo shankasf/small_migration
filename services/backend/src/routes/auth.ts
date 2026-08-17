@@ -7,15 +7,37 @@ import { recordAudit } from '../services/audit.js';
 const router = Router();
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
 
+const AUTH_MODE = (process.env.AUTH_MODE || 'local').toLowerCase(); // local | entra | oidc
+
 function publicUser(user: any) {
   const { passwordHash, ...rest } = user;
   return rest;
 }
 
-// Login (local mode). In entra mode the SPA acquires tokens from Entra ID
-// directly (MSAL) and this endpoint is not used.
+// Public: tells the SPA which login flow to render (allowlisted in
+// middleware/auth.ts).
+router.get('/config', (_req: Request, res: Response) => {
+  if (AUTH_MODE === 'oidc') {
+    return res.json({
+      mode: 'oidc',
+      oidc: {
+        authority: (process.env.OIDC_ISSUER || '').replace(/\/$/, ''),
+        clientId: process.env.OIDC_CLIENT_ID || '',
+        hostedUi: (process.env.OIDC_HOSTED_UI || '').replace(/\/$/, ''),
+        scopes: 'openid email profile',
+      },
+    });
+  }
+  res.json({ mode: 'local' });
+});
+
+// Login (local mode). In SSO modes the SPA acquires tokens from the IdP
+// directly and password login is rejected.
 router.post('/login', async (req: Request, res: Response) => {
   try {
+    if (AUTH_MODE !== 'local') {
+      return res.status(400).json({ error: 'Password login is disabled — use single sign-on' });
+    }
     const prisma = getPrisma(req);
     const { email, password } = req.body || {};
     if (!email || !password) {
