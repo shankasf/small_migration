@@ -6,21 +6,23 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Existing image tag to roll back to (e.g. sha-abc1234). Leave blank to build from this commit.'
+        description: 'Existing image tag to redeploy (e.g. sha-abc1234). Leave blank to build from this commit.'
         required: false
         type: string
 
+# id-token: write lets the job mint a GitHub OIDC token and assume the AWS
+# deploy role — no long-lived AWS keys are stored in the repo.
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 concurrency:
   group: deploy-production
   cancel-in-progress: false
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+  ECR_PREFIX: circini
 
 jobs:
   # Nothing deploys unless the full CI suite passes first.
@@ -35,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
+      registry: ${{ steps.login-ecr.outputs.registry }}
     strategy:
       matrix:
         service: [ai-service, backend, frontend]
@@ -45,14 +48,19 @@ jobs:
         name: Derive immutable tag
         run: echo "tag=sha-$(echo "${{ github.sha }}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      # NOTE: pin these two AWS actions to a commit SHA after verifying it, to
+      # match the SHA-pinning used elsewhere in this repo.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and push ${{ matrix.service }}
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -60,46 +68,36 @@ jobs:
           context: services/${{ matrix.service }}
           file: services/${{ matrix.service }}/Dockerfile
           push: true
-          tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ steps.tag.outputs.tag }}
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_PREFIX }}-${{ matrix.service }}:${{ steps.tag.outputs.tag }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-  scan-images:
-    name: Scan images
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service: [ai-service, backend, frontend]
-    steps:
+      # ECR repositories are created with scan-on-push; this is a hard gate on
+      # top of that — a CRITICAL, fixable finding fails the build.
       - name: Trivy scan ${{ matrix.service }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ needs.build.outputs.image_tag }}
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_PREFIX }}-${{ matrix.service }}:${{ steps.tag.outputs.tag }}
           severity: CRITICAL
           exit-code: '1'
           ignore-unfixed: true
-        env:
-          TRIVY_USERNAME: ${{ github.actor }}
-          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
 
   deploy:
-    name: Deploy to production
-    needs: [build, scan-images]
-    # A failed image scan must block the deploy. always() is needed so a
-    # rollback via workflow_dispatch can skip build and scan entirely, but the
-    # build/scan results are then checked explicitly rather than ignored.
+    name: Deploy to AWS
+    needs: build
+    # always() so a workflow_dispatch rollback (which skips the build job)
+    # still runs; the build result is then checked explicitly.
     if: >-
       ${{ always() && (
         inputs.image_tag != '' ||
-        (needs.build.result == 'success' && needs.scan-images.result == 'success')
+        needs.build.result == 'success'
       ) }}
-    runs-on: [self-hosted, k3s]
+    runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Resolve tag
+      - name: Resolve image tag
         id: resolve
         env:
           REQUESTED: ${{ inputs.image_tag }}
@@ -107,64 +105,80 @@ jobs:
         run: |
           TAG="${REQUESTED:-$BUILT}"
           [ -n "$TAG" ] || { echo "::error::no image tag resolved"; exit 1; }
-          # The tag is substituted into a Kubernetes manifest, so constrain it
-          # to a safe character set rather than trusting the dispatch input.
-          case "$TAG" in
-            sha-[0-9a-f]*) ;;
-            *) echo "::error::refusing tag '$TAG' — expected sha-<hex>"; exit 1 ;;
-          esac
-          echo "$TAG" | grep -qE '^sha-[0-9a-f]{7,40}$' || {
-            echo "::error::tag failed validation"; exit 1; }
+          echo "$TAG" | grep -qE '^sha-[0-9a-f]{7,40}$' \
+            || { echo "::error::refusing tag '$TAG' — expected sha-<hex>"; exit 1; }
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Deploying $TAG"
 
-      # The cluster pulls private images from GHCR. Rather than storing a
-      # long-lived PAT in the cluster, mint the pull secret from this job's
-      # ephemeral token on every deploy.
-      - name: Refresh GHCR pull secret
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          kubectl create secret docker-registry ghcr-pull \
-            --namespace=migration-agent \
-            --docker-server=ghcr.io \
-            --docker-username="${{ github.actor }}" \
-            --docker-password="$GHCR_TOKEN" \
-            --dry-run=client -o yaml \
-            | kubectl apply --server-side --force-conflicts -f -
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Record current tag for rollback
+      # Base stacks are idempotent — an unchanged template is a no-op. The app
+      # stack carries the new image tag and config.
+      - name: Deploy network / data / cognito stacks
         run: |
-          kubectl get deploy backend -n migration-agent \
-            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null \
-            | tee /tmp/previous-image.txt || true
-          echo
+          set -euo pipefail
+          aws cloudformation deploy --stack-name circini-network \
+            --template-file deploy/aws/network.yaml --no-fail-on-empty-changeset
+          aws cloudformation deploy --stack-name circini-data \
+            --template-file deploy/aws/data.yaml --no-fail-on-empty-changeset
+          aws cloudformation deploy --stack-name circini-cognito \
+            --template-file deploy/aws/cognito.yaml --no-fail-on-empty-changeset \
+            --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
 
-      - name: Render and apply manifest
-        env:
-          IMAGE_TAG: ${{ steps.resolve.outputs.tag }}
+      - name: Deploy app stack
         run: |
-          envsubst < deploy/kubernetes/deployment.yaml > /tmp/rendered.yaml
-          grep -n 'image:' /tmp/rendered.yaml
-          kubectl apply -f /tmp/rendered.yaml
+          set -euo pipefail
+          aws cloudformation deploy --stack-name circini-app \
+            --template-file deploy/aws/app.yaml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              ImageTag="${{ steps.resolve.outputs.tag }}" \
+              AuthMode="${{ vars.AUTH_MODE || 'oidc' }}" \
+              CertificateArn="${{ vars.CERTIFICATE_ARN }}" \
+              AppDomain="${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}" \
+              OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-5.6-sol' }}"
 
-      - name: Wait for rollout
+      # Fargate has no init containers, so schema convergence runs as a one-off
+      # task, then the backend is restarted to seed against the live schema.
+      # Ordering is safe on a first-ever deploy: /api/health is DB-independent,
+      # so the app stack's services reach steady state before the schema exists.
+      - name: Run schema-sync task
         run: |
-          for d in ai-service backend frontend; do
-            kubectl rollout status "deployment/$d" -n migration-agent --timeout=300s
+          set -euo pipefail
+          SUBNETS=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='circini-AppSubnets'].Value" --output text)
+          SG=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='circini-SgApp'].Value" --output text)
+          TASK=$(aws ecs run-task --cluster circini-demo --launch-type FARGATE \
+            --task-definition circini-schema-sync \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "schema-sync task: $TASK"
+          aws ecs wait tasks-stopped --cluster circini-demo --tasks "$TASK"
+          CODE=$(aws ecs describe-tasks --cluster circini-demo --tasks "$TASK" \
+            --query "tasks[0].containers[?name=='schema-sync'].exitCode" --output text)
+          echo "schema-sync exit code: $CODE"
+          [ "$CODE" = "0" ] || { echo "::error::schema-sync failed"; exit 1; }
+
+      - name: Roll services and wait for steady state
+        run: |
+          set -euo pipefail
+          for s in backend ai-service frontend; do
+            aws ecs update-service --cluster circini-demo --service "$s" \
+              --force-new-deployment >/dev/null
           done
+          aws ecs wait services-stable --cluster circini-demo \
+            --services backend ai-service frontend
 
       - name: Smoke test
-        run: ./deploy/smoke-test.sh
-
-      - name: Roll back on failure
-        if: failure()
         run: |
-          echo "::error::deploy or smoke test failed — rolling back"
-          for d in ai-service backend frontend; do
-            kubectl rollout undo "deployment/$d" -n migration-agent || true
-          done
-          for d in ai-service backend frontend; do
-            kubectl rollout status "deployment/$d" -n migration-agent --timeout=300s || true
-          done
-          ./deploy/smoke-test.sh || true
+          set -euo pipefail
+          BASE="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
+          curl -fsS -o /dev/null "$BASE/"
+          curl -fsS "$BASE/api/health" | grep -q '"status":"ok"'
+          echo "smoke test passed"

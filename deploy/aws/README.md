@@ -49,8 +49,37 @@ aws secretsmanager put-secret-value --secret-id circini/openai-api-key --secret-
 `circini/database-url` embeds the RDS endpoint + master password (resolved at
 deploy time — re-deploy `circini-data` if the password rotates).
 
-## Still pending
+## CI/CD (GitHub Actions → ECR + CloudFormation)
 
-- HTTPS: ACM cert + DNS (Hostinger CNAME) + 443 listener; then set CORS_ORIGIN to the https origin.
-- Cognito wiring: backend `AUTH_MODE=oidc` change (doc §3.1) + frontend OIDC client; currently `AUTH_MODE=local`.
-- Optional add-ons (WAF, OTel collector, Multi-AZ): not deployed.
+`.github/workflows/deploy.yml` runs on every push to `main`: CI gate → build the
+three images and push to ECR → `cloudformation deploy` all four stacks → run the
+schema-sync task → roll the services → smoke-test `https://<AppDomain>`. It
+authenticates with a short-lived GitHub OIDC token (no static AWS keys).
+
+One-time setup (needs an admin identity — creating IAM roles is not in the
+PowerUser set):
+
+```bash
+# 1. Create the OIDC provider + deploy role
+aws cloudformation deploy --stack-name circini-github-oidc \
+  --template-file deploy/aws/github-oidc.yaml --capabilities CAPABILITY_NAMED_IAM
+ROLE=$(aws cloudformation describe-stacks --stack-name circini-github-oidc \
+  --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" --output text)
+
+# 2. Point the repo at it (plus deploy config as repo variables)
+gh variable set AWS_DEPLOY_ROLE_ARN --body "$ROLE"
+gh variable set AWS_REGION        --body ap-southeast-2
+gh variable set APP_DOMAIN        --body migration.callsphere.site
+gh variable set AUTH_MODE         --body oidc
+gh variable set OPENAI_MODEL      --body gpt-5.6-sol
+gh variable set CERTIFICATE_ARN   --body <acm-cert-arn>   # from `aws acm list-certificates`
+```
+
+The OpenAI API key is **not** a repo secret — it lives in Secrets Manager
+(`circini/openai-api-key`) and is rotated with `put-secret-value`.
+
+## Status
+
+- HTTPS: live — ACM cert, Hostinger CNAME to the ALB, 443 listener, HTTP→HTTPS redirect.
+- Identity: live — Amazon Cognito, `AUTH_MODE=oidc`, TOTP MFA required, embedded in-app sign-in.
+- Optional add-ons: OTel collector deployed (ADOT sidecars). WAF and Multi-AZ RDS not deployed.

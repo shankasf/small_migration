@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  GitHub Actions OIDC deploy role for the Circini Migration Agent.
+  Lets the repo's workflows assume a role via short-lived OIDC tokens —
+  no static AWS keys in GitHub. Deploy this ONCE, with an admin identity,
+  then set the repo variable AWS_DEPLOY_ROLE_ARN to the DeployRoleArn output.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: shankasf
+  GitHubRepo:
+    Type: String
+    Default: small_migration
+  ExistingProviderArn:
+    Type: String
+    Default: ''
+    Description: ARN of an existing GitHub OIDC provider, if the account already has one.
+
+Conditions:
+  # Reuse an existing account-level GitHub OIDC provider if one is passed;
+  # otherwise this stack creates it.
+  CreateProvider: !Equals [!Ref ExistingProviderArn, '']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      # GitHub's OIDC thumbprint is validated by the STS trust chain; this
+      # value is accepted for backwards compatibility.
+      ThumbprintList: ['6938fd4d98bab03faadb97b34396831e3780aea1']
+
+  # SECURITY NOTE: this role retains iam:PutRolePolicy over circini-* roles,
+  # which app.yaml needs to attach the ExecutionRole's inline secrets-read
+  # policy. A compromised main branch could in principle write a broad inline
+  # policy to a circini-* role and pass it onward. For a hardened production
+  # posture, attach a permissions boundary to the circini task/exec roles and
+  # require it here with a Condition on iam:CreateRole/PutRolePolicy, or move
+  # the task/exec roles into an admin-managed stack and grant this role only
+  # iam:PassRole on their fixed ARNs.
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: circini-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              # The build job's OIDC subject is the branch ref; the deploy job
+              # references `environment: production`, which changes its subject
+              # to the environment form. Both must be allowed, and nothing
+              # broader (no forks, no other repos, no other branches).
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub 'repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main'
+                  - !Sub 'repo:${GitHubOrg}/${GitHubRepo}:environment:production'
+      Policies:
+        - PolicyName: circini-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Push images (CreateRepository makes a first-ever push on a
+              # fresh account self-healing; repos already exist otherwise).
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeImages
+                  - ecr:DescribeRepositories
+                  - ecr:CreateRepository
+                Resource: '*'
+              # Drive the CloudFormation stacks and the resources they manage.
+              - Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - ec2:*
+                  - rds:*
+                  - ecs:*
+                  - elasticloadbalancing:*
+                  - acm:*
+                  - cognito-idp:*
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:TagResource
+                  - logs:*
+                  - servicediscovery:*
+                  - application-autoscaling:*
+                  - kms:CreateGrant
+                  - kms:Describe*
+                Resource: '*'
+              # Manage and pass ONLY the circini-* task/execution roles the app
+              # stack defines. iam:PassRole is scoped so a compromised pipeline
+              # cannot hand an arbitrary role to ECS or CloudFormation.
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:PassRole
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:TagRole
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/circini-*'
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/*'
+              # AttachRolePolicy is allowlisted to exactly the managed policies
+              # the app stack uses — so the pipeline cannot attach
+              # AdministratorAccess (or any other policy) to a circini-* role
+              # and escalate to account admin.
+              - Effect: Allow
+                Action: iam:AttachRolePolicy
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/circini-*'
+                Condition:
+                  ArnLike:
+                    iam:PolicyARN:
+                      - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+                      - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+                      - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+Outputs:
+  DeployRoleArn:
+    Description: Set this as the repo variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn
