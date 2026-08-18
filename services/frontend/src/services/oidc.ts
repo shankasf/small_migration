@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { User } from '../types';
-import { clearAuth, fetchMe, storeToken } from './auth';
+import { clearAuth, fetchMe, storeToken, storeRefreshToken } from './auth';
 
 export interface OidcConfig {
   authority: string;
@@ -112,6 +112,9 @@ export async function completeLogin(cfg: OidcConfig): Promise<User> {
       throw new Error('Token response did not include an id_token');
     }
     storeToken(idToken);
+    if (response.data?.refresh_token) {
+      storeRefreshToken(response.data.refresh_token);
+    }
     const user = await fetchMe();
     clearFlowState();
     return user;

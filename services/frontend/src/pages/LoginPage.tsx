@@ -1,7 +1,7 @@
 import { useState, FormEvent, InputHTMLAttributes } from 'react';
 import { ArrowRight, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import QRCode from 'qrcode';
-import { login, storeToken, fetchMe, clearAuth } from '../services/auth';
+import { login, storeToken, storeRefreshToken, fetchMe, clearAuth } from '../services/auth';
 import { AuthConfig } from '../services/oidc';
 import { initPool, signIn, Step } from '../services/cognito';
 import { User } from '../types';
@@ -91,6 +91,7 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
         setConfirmPassword('');
         setQrDataUrl(null);
         storeToken(next.idToken);
+        storeRefreshToken(next.refreshToken);
         try {
           const me = await fetchMe();
           onLogin(me);

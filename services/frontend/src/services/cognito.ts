@@ -13,7 +13,7 @@ import { OidcConfig } from './oidc';
  * on the step object — which resolves to the next Step (or 'done').
  */
 export type Step =
-  | { kind: 'done'; idToken: string }
+  | { kind: 'done'; idToken: string; refreshToken: string }
   | { kind: 'newPasswordRequired'; complete: (newPassword: string) => Promise<Step> }
   | {
       kind: 'mfaSetup';
@@ -96,7 +96,14 @@ export function signIn(email: string, password: string): Promise<Step> {
 
   const callbacks: IAuthenticationCallback = {
     onSuccess: (session: CognitoUserSession) => {
-      resolveStep({ kind: 'done', idToken: session.getIdToken().getJwtToken() });
+      resolveStep({
+        kind: 'done',
+        idToken: session.getIdToken().getJwtToken(),
+        // Kept under the app's own storage keys (see auth.ts) so logout still
+        // clears every credential; enables silent renewal when the short-lived
+        // ID token expires instead of bouncing the user to the login page.
+        refreshToken: session.getRefreshToken().getToken(),
+      });
     },
 
     onFailure: (err: unknown) => {

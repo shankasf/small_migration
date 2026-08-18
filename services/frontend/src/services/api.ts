@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary } from '../types';
-import { getToken, clearAuth } from './auth';
+import { getToken, clearAuth, refreshIdToken } from './auth';
 
 const API_BASE = '/api';
 
@@ -19,11 +19,26 @@ api.interceptors.request.use(config => {
   return config;
 });
 
-// Expired/invalid token -> back to login
+// Expired token -> silently refresh once and retry the request (single-flight:
+// concurrent 401s share one refresh). Only when refresh is impossible or fails
+// does the session end — previously any 401 hard-reloaded the page mid-click.
+let refreshInFlight: Promise<string | null> | null = null;
+
 api.interceptors.response.use(
   response => response,
-  error => {
-    if (error?.response?.status === 401) {
+  async error => {
+    const original = error?.config;
+    if (error?.response?.status === 401 && original && !original._retried) {
+      original._retried = true;
+      refreshInFlight = refreshInFlight ?? refreshIdToken().finally(() => {
+        refreshInFlight = null;
+      });
+      const newToken = await refreshInFlight;
+      if (newToken) {
+        original.headers = original.headers || {};
+        original.headers.Authorization = `Bearer ${newToken}`;
+        return api.request(original);
+      }
       clearAuth();
       window.location.reload();
     }
