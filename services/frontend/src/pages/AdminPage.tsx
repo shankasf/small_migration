@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Users, BarChart3, ShieldAlert, RefreshCw, UserPlus, Ban, ShieldCheck, AlertTriangle,
+  ScrollText, Activity, Pause, Play, Trash2,
 } from 'lucide-react';
+import { io } from 'socket.io-client';
+import { getToken } from '../services/auth';
 import {
   adminGetUsers, adminGetUsageSummary, adminGetAudit, adminGetSecuritySummary,
   adminCreateUser, adminUpdateUser, apiErrorMessage,
@@ -15,7 +18,7 @@ const fmtDate = (iso: string) => new Date(iso).toLocaleString('en-NZ', {
   day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
 });
 
-type Tab = 'overview' | 'users' | 'security';
+type Tab = 'overview' | 'users' | 'security' | 'audit' | 'ailogs';
 
 interface AdminPageProps {
   currentUser: User;
@@ -509,6 +512,211 @@ function SecurityTab({ days }: { days: number }) {
   );
 }
 
+// ---------------------------------------------------------------- Audit logs
+
+function AuditTab() {
+  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionInput, setActionInput] = useState('');
+  const [action, setAction] = useState('');
+  const [decision, setDecision] = useState('');
+  const [severity, setSeverity] = useState('');
+  const [limit, setLimit] = useState(200);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setEvents(await adminGetAudit({
+        ...(action ? { action } : {}),
+        ...(decision ? { decision } : {}),
+        ...(severity ? { severity } : {}),
+        limit,
+      }));
+    } catch (err) {
+      console.error('Failed to load audit events:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [action, decision, severity, limit]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const selectCls = 'field !h-8 !py-0 !px-2 !text-xs !w-auto';
+
+  return (
+    <div className="space-y-4 animate-fade-up">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-display text-lg font-700 text-ink">Audit logs</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            className="field !h-8 !py-0 !px-2 !text-xs w-44"
+            placeholder="Filter action (Enter)…"
+            value={actionInput}
+            onChange={e => setActionInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') setAction(actionInput.trim()); }}
+          />
+          <select className={selectCls} value={decision} onChange={e => setDecision(e.target.value)}>
+            <option value="">All decisions</option>
+            <option value="allow">allow</option>
+            <option value="deny">deny</option>
+            <option value="blocked">blocked</option>
+          </select>
+          <select className={selectCls} value={severity} onChange={e => setSeverity(e.target.value)}>
+            <option value="">All severities</option>
+            <option value="info">info</option>
+            <option value="warning">warning</option>
+            <option value="critical">critical</option>
+          </select>
+          <select className={selectCls} value={limit} onChange={e => setLimit(Number(e.target.value))}>
+            <option value={100}>100 rows</option>
+            <option value={200}>200 rows</option>
+            <option value={500}>500 rows</option>
+          </select>
+          <button onClick={load} className="flex h-8 w-8 items-center justify-center rounded-md border border-hairline text-muted hover:bg-elevated hover:text-ink transition-colors" title="Refresh">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      <div className="panel overflow-x-auto">
+        <table className="w-full text-sm min-w-[960px]">
+          <thead>
+            <tr className="border-b border-hairline">
+              <th className={cx(thCls, 'pl-5')}>Time</th>
+              <th className={thCls}>User</th>
+              <th className={thCls}>Action</th>
+              <th className={thCls}>Resource</th>
+              <th className={thCls}>Decision</th>
+              <th className={thCls}>Severity</th>
+              <th className={thCls}>IP</th>
+              <th className={cx(thCls, 'pr-5')}>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map(e => (
+              <tr key={e.id} className="border-b border-hairline/50 last:border-0 hover:bg-elevated/40 align-top transition-colors">
+                <td className={cx(tdCls, 'pl-5 font-mono text-xs text-faint whitespace-nowrap')}>{fmtDate(e.createdAt)}</td>
+                <td className={cx(tdCls, 'text-xs text-muted')}>{e.user?.email || '—'}</td>
+                <td className={cx(tdCls, 'font-mono text-xs text-ink')}>{e.action}</td>
+                <td className={cx(tdCls, 'font-mono text-xs text-faint max-w-[9rem] truncate')} title={e.resource || ''}>{e.resource || '—'}</td>
+                <td className={tdCls}><StatusChip value={e.decision} /></td>
+                <td className={tdCls}><StatusChip value={e.severity} /></td>
+                <td className={cx(tdCls, 'font-mono text-xs text-faint whitespace-nowrap')}>{e.ip || '—'}</td>
+                <td className={cx(tdCls, 'pr-5 text-xs text-muted max-w-xs truncate')} title={e.detail || ''}>{e.detail || '—'}</td>
+              </tr>
+            ))}
+            {!loading && events.length === 0 && (
+              <tr><td colSpan={8} className="px-5 py-8 text-center text-faint">No events match these filters</td></tr>
+            )}
+          </tbody>
+        </table>
+        {loading && <div className="flex justify-center py-6"><Spinner /></div>}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- AI logs (live)
+
+interface AdminLogEntry {
+  sessionId: string;
+  timestamp: string;
+  step: string;
+  message: string;
+  type?: string;
+}
+
+const logTypeColor = (type?: string) =>
+  type === 'error' ? 'text-danger'
+  : type === 'success' ? 'text-success'
+  : type === 'thinking' || type === 'progress' ? 'text-faint'
+  : 'text-muted';
+
+function AiLogsTab() {
+  const [logs, setLogs] = useState<AdminLogEntry[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { pausedRef.current = paused; }, [paused]);
+
+  useEffect(() => {
+    const socket = io(window.location.origin, {
+      path: '/api/socket.io',
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      auth: { token: getToken() },
+    });
+    socket.on('connect', () => {
+      setConnected(true);
+      socket.emit('join-admin-logs');
+    });
+    socket.on('disconnect', () => setConnected(false));
+    socket.on('admin-log', (log: AdminLogEntry) => {
+      if (pausedRef.current) return;
+      setLogs(prev => [...prev.slice(-499), log]); // keep the last 500 lines
+    });
+    return () => {
+      socket.emit('leave-admin-logs');
+      socket.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!paused) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs, paused]);
+
+  const fmtTime = (iso: string) => new Date(iso).toLocaleTimeString('en-NZ', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+
+  return (
+    <div className="space-y-4 animate-fade-up">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <h2 className="font-display text-lg font-700 text-ink">AI service logs</h2>
+          <span className={cx('chip !py-0.5 text-xs', connected ? '!border-success/40 !text-success' : '!border-danger/40 !text-danger')}>
+            {connected ? 'live' : 'disconnected'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setPaused(p => !p)}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-hairline text-xs text-muted hover:bg-elevated hover:text-ink transition-colors"
+          >
+            {paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            onClick={() => setLogs([])}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-hairline text-xs text-muted hover:bg-elevated hover:text-danger transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Clear
+          </button>
+        </div>
+      </div>
+
+      <div className="panel overflow-y-auto max-h-[65vh] p-4 font-mono text-xs leading-relaxed">
+        {logs.length === 0 && (
+          <p className="py-8 text-center font-sans text-faint">
+            Waiting for activity — log lines appear here as the AI service processes user requests.
+          </p>
+        )}
+        {logs.map((log, i) => (
+          <div key={i} className="flex gap-3 py-0.5 border-b border-hairline/30 last:border-0">
+            <span className="text-faint whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</span>
+            <span className="text-brass whitespace-nowrap" title={log.sessionId}>{log.sessionId.slice(0, 8)}</span>
+            <span className="text-faint whitespace-nowrap">{log.step}</span>
+            <span className={cx('break-all', logTypeColor(log.type))}>{log.message}</span>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- Shell
 
 export default function AdminPage({ currentUser }: AdminPageProps) {
@@ -520,6 +728,8 @@ export default function AdminPage({ currentUser }: AdminPageProps) {
     { id: 'overview', label: 'Overview', icon: BarChart3, adminOnly: true },
     { id: 'users', label: 'Users', icon: Users, adminOnly: true },
     { id: 'security', label: 'Security', icon: ShieldAlert, adminOnly: false },
+    { id: 'audit', label: 'Audit logs', icon: ScrollText, adminOnly: false },
+    { id: 'ailogs', label: 'AI logs', icon: Activity, adminOnly: false },
   ];
 
   return (
@@ -540,6 +750,8 @@ export default function AdminPage({ currentUser }: AdminPageProps) {
         {tab === 'overview' && isAdmin && <OverviewTab days={days} setDays={setDays} />}
         {tab === 'users' && isAdmin && <UsersTab currentUser={currentUser} />}
         {tab === 'security' && <SecurityTab days={days} />}
+        {tab === 'audit' && <AuditTab />}
+        {tab === 'ailogs' && <AiLogsTab />}
       </div>
     </div>
   );

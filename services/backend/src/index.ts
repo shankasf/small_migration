@@ -7,14 +7,13 @@ import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
-import * as jose from 'jose';
 import sessionsRouter from './routes/sessions.js';
 import chatRouter from './routes/chat.js';
 import filesRouter from './routes/files.js';
 import sttRouter from './routes/stt.js';
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
-import { authenticate, requireInternalKey, seedAdminUser } from './middleware/auth.js';
+import { authenticate, requireInternalKey, resolveUserFromToken, seedAdminUser } from './middleware/auth.js';
 
 dotenv.config();
 
@@ -96,13 +95,16 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-// WebSocket connection handling — clients authenticate with their API JWT
+// WebSocket connection handling — clients authenticate with their API token,
+// verified per the configured auth mode (local JWT / Entra / OIDC), same as
+// HTTP requests. The resolved user rides on socket.data for role checks.
 io.use(async (socket, next) => {
   try {
     const token = (socket.handshake.auth as any)?.token as string | undefined;
     if (!token) return next(new Error('Authentication required'));
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET || '');
-    await jose.jwtVerify(token, secret, { issuer: 'circini-backend' });
+    const user = await resolveUserFromToken(prisma, token);
+    if (!user || user.status === 'disabled') return next(new Error('Invalid token'));
+    socket.data.user = { id: user.id, role: user.role };
     next();
   } catch {
     next(new Error('Invalid token'));
@@ -123,17 +125,31 @@ io.on('connection', (socket) => {
     console.log(`[WebSocket] ${socket.id} left session: ${sessionId}`);
   });
 
+  // Global AI-service log stream for the admin portal (admin/auditor only)
+  socket.on('join-admin-logs', () => {
+    const role = socket.data.user?.role;
+    if (role !== 'admin' && role !== 'auditor') return;
+    socket.join('admin:logs');
+    console.log(`[WebSocket] ${socket.id} joined admin log stream`);
+  });
+
+  socket.on('leave-admin-logs', () => {
+    socket.leave('admin:logs');
+  });
+
   socket.on('disconnect', () => {
     console.log(`[WebSocket] Client disconnected: ${socket.id}`);
   });
 });
 
-// Helper to emit logs to a session
+// Helper to emit logs to a session (and mirror to the admin stream)
 export function emitLog(sessionId: string, log: { step: string; message: string; type?: string; data?: any }) {
-  io.to(`session:${sessionId}`).emit('log', {
+  const entry = {
     timestamp: new Date().toISOString(),
     ...log
-  });
+  };
+  io.to(`session:${sessionId}`).emit('log', entry);
+  io.to('admin:logs').emit('admin-log', { sessionId, ...entry });
 }
 
 // Graceful shutdown

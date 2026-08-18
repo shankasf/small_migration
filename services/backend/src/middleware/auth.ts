@@ -205,6 +205,22 @@ export function requireInternalKey(req: Request, res: Response, next: NextFuncti
   next();
 }
 
+/**
+ * Resolve a bearer token to a User according to the configured auth mode.
+ * Shared by the HTTP middleware and the Socket.IO handshake — the socket
+ * path previously verified only local JWTs, which rejected every OIDC token.
+ */
+export async function resolveUserFromToken(
+  prisma: PrismaClient,
+  token: string
+): Promise<User | null> {
+  if (AUTH_MODE === 'entra') return await verifyEntraToken(prisma, token);
+  if (AUTH_MODE === 'oidc') return await verifyOidcToken(prisma, token);
+  const decoded = await verifyLocalToken(token);
+  if (!decoded) return null;
+  return await prisma.user.findUnique({ where: { id: decoded.userId } });
+}
+
 export function authenticate(prisma: PrismaClient) {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     // Only an exact-match allowlist is exempt. Service-to-service routes are
@@ -219,17 +235,7 @@ export function authenticate(prisma: PrismaClient) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    let user: User | null = null;
-    if (AUTH_MODE === 'entra') {
-      user = await verifyEntraToken(prisma, token);
-    } else if (AUTH_MODE === 'oidc') {
-      user = await verifyOidcToken(prisma, token);
-    } else {
-      const decoded = await verifyLocalToken(token);
-      if (decoded) {
-        user = await prisma.user.findUnique({ where: { id: decoded.userId } });
-      }
-    }
+    const user = await resolveUserFromToken(prisma, token);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid or expired token' });
