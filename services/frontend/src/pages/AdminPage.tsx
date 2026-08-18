@@ -7,7 +7,7 @@ import { io } from 'socket.io-client';
 import { getToken } from '../services/auth';
 import {
   adminGetUsers, adminGetUsageSummary, adminGetAudit, adminGetSecuritySummary,
-  adminCreateUser, adminUpdateUser, apiErrorMessage,
+  adminGetAiLogs, adminCreateUser, adminUpdateUser, apiErrorMessage,
 } from '../services/api';
 import { AdminUser, AuditEvent, SecuritySummary, UsageSummary, User } from '../types';
 import { Button, CenterSpinner, Field, Modal, Stat, StatusChip, Spinner, cx } from '../components/ui';
@@ -578,35 +578,39 @@ function AuditTab() {
         </div>
       </div>
 
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-sm min-w-[960px]">
+      {/* Fixed layout + wrapping cells: the table always fits the viewport
+          width — long detail payloads wrap instead of forcing a horizontal
+          scrollbar. Lower-value columns collapse on narrow screens. */}
+      <div className="panel overflow-hidden">
+        <table className="w-full table-fixed text-sm">
           <thead>
             <tr className="border-b border-hairline">
-              <th className={cx(thCls, 'pl-5')}>Time</th>
-              <th className={thCls}>User</th>
-              <th className={thCls}>Action</th>
-              <th className={thCls}>Resource</th>
-              <th className={thCls}>Decision</th>
-              <th className={thCls}>Severity</th>
-              <th className={thCls}>IP</th>
+              <th className={cx(thCls, 'pl-5 w-[7.5rem]')}>Time</th>
+              <th className={cx(thCls, 'hidden md:table-cell w-[11rem]')}>User</th>
+              <th className={cx(thCls, 'w-[9rem]')}>Action</th>
+              <th className={cx(thCls, 'w-[5.5rem]')}>Decision</th>
+              <th className={cx(thCls, 'hidden sm:table-cell w-[5.5rem]')}>Severity</th>
+              <th className={cx(thCls, 'hidden xl:table-cell w-[7rem]')}>IP</th>
               <th className={cx(thCls, 'pr-5')}>Detail</th>
             </tr>
           </thead>
           <tbody>
             {events.map(e => (
               <tr key={e.id} className="border-b border-hairline/50 last:border-0 hover:bg-elevated/40 align-top transition-colors">
-                <td className={cx(tdCls, 'pl-5 font-mono text-xs text-faint whitespace-nowrap')}>{fmtDate(e.createdAt)}</td>
-                <td className={cx(tdCls, 'text-xs text-muted')}>{e.user?.email || '—'}</td>
-                <td className={cx(tdCls, 'font-mono text-xs text-ink')}>{e.action}</td>
-                <td className={cx(tdCls, 'font-mono text-xs text-faint max-w-[9rem] truncate')} title={e.resource || ''}>{e.resource || '—'}</td>
+                <td className={cx(tdCls, 'pl-5 font-mono text-xs text-faint')}>{fmtDate(e.createdAt)}</td>
+                <td className={cx(tdCls, 'hidden md:table-cell text-xs text-muted break-words')}>{e.user?.email || '—'}</td>
+                <td className={cx(tdCls, 'font-mono text-xs text-ink break-words')}>
+                  {e.action}
+                  {e.resource && <span className="block text-faint truncate" title={e.resource}>{e.resource}</span>}
+                </td>
                 <td className={tdCls}><StatusChip value={e.decision} /></td>
-                <td className={tdCls}><StatusChip value={e.severity} /></td>
-                <td className={cx(tdCls, 'font-mono text-xs text-faint whitespace-nowrap')}>{e.ip || '—'}</td>
-                <td className={cx(tdCls, 'pr-5 text-xs text-muted max-w-xs truncate')} title={e.detail || ''}>{e.detail || '—'}</td>
+                <td className={cx(tdCls, 'hidden sm:table-cell')}><StatusChip value={e.severity} /></td>
+                <td className={cx(tdCls, 'hidden xl:table-cell font-mono text-xs text-faint break-words')}>{e.ip || '—'}</td>
+                <td className={cx(tdCls, 'pr-5 text-xs text-muted break-words')}>{e.detail || '—'}</td>
               </tr>
             ))}
             {!loading && events.length === 0 && (
-              <tr><td colSpan={8} className="px-5 py-8 text-center text-faint">No events match these filters</td></tr>
+              <tr><td colSpan={7} className="px-5 py-8 text-center text-faint">No events match these filters</td></tr>
             )}
           </tbody>
         </table>
@@ -640,6 +644,13 @@ function AiLogsTab() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { pausedRef.current = paused; }, [paused]);
+
+  // Backfill: everything the AI service logged since the last deployment
+  useEffect(() => {
+    adminGetAiLogs()
+      .then(history => setLogs(prev => (prev.length ? prev : history)))
+      .catch(err => console.error('Failed to load AI log history:', err));
+  }, []);
 
   useEffect(() => {
     const socket = io(window.location.origin, {

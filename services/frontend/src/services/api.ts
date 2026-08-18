@@ -209,6 +209,20 @@ export async function adminGetAudit(filters: {
   return response.data;
 }
 
+export interface AdminAiLog {
+  sessionId: string;
+  timestamp: string;
+  step: string;
+  message: string;
+  type?: string;
+}
+
+/** AI-service activity since the last deployment (backend in-memory buffer). */
+export async function adminGetAiLogs(): Promise<AdminAiLog[]> {
+  const response = await api.get('/admin/ailogs');
+  return response.data;
+}
+
 export async function adminGetSecuritySummary(days = 30): Promise<SecuritySummary> {
   const response = await api.get('/admin/security/summary', { params: { days } });
   return response.data;

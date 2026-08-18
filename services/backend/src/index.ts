@@ -142,6 +142,12 @@ io.on('connection', (socket) => {
   });
 });
 
+// Ring buffer of AI-service activity since this process started (i.e. since
+// the last deployment) — backfills the admin portal's live log view.
+const ADMIN_LOG_BUFFER_MAX = 1000;
+const adminLogBuffer: Array<{ sessionId: string; timestamp: string; step: string; message: string; type?: string }> = [];
+app.locals.adminLogBuffer = adminLogBuffer;
+
 // Helper to emit logs to a session (and mirror to the admin stream)
 export function emitLog(sessionId: string, log: { step: string; message: string; type?: string; data?: any }) {
   const entry = {
@@ -149,7 +155,14 @@ export function emitLog(sessionId: string, log: { step: string; message: string;
     ...log
   };
   io.to(`session:${sessionId}`).emit('log', entry);
-  io.to('admin:logs').emit('admin-log', { sessionId, ...entry });
+  // Streamed token deltas are chat content, not operational activity — keep
+  // them out of the admin stream and its backfill buffer.
+  if (log.type !== 'delta') {
+    const adminEntry = { sessionId, timestamp: entry.timestamp, step: log.step, message: log.message, type: log.type };
+    adminLogBuffer.push(adminEntry);
+    if (adminLogBuffer.length > ADMIN_LOG_BUFFER_MAX) adminLogBuffer.shift();
+    io.to('admin:logs').emit('admin-log', adminEntry);
+  }
 }
 
 // Graceful shutdown

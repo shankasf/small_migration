@@ -216,6 +216,14 @@ router.get('/usage/summary', requireRole('admin'), async (req: AuthedRequest, re
   }
 });
 
+// ---------- AI service activity (admin + auditor) ----------
+
+// Backfill for the live log view: everything emitted since the backend
+// process started, i.e. since the last deployment (in-memory ring buffer).
+router.get('/ailogs', requireRole('admin', 'auditor'), (req: AuthedRequest, res: Response) => {
+  res.json(req.app.locals.adminLogBuffer ?? []);
+});
+
 // ---------- Audit / security events (admin + auditor) ----------
 
 router.get('/audit', requireRole('admin', 'auditor'), async (req: AuthedRequest, res: Response) => {
