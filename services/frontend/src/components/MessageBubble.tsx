@@ -175,10 +175,19 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
                     </a>
                   );
                 },
+                // Unwrap the default <pre>: block code renders its own panel,
+                // and the outer prose <pre> styling (theme ink color, second
+                // border) must not cascade into it — in light mode that made
+                // untokenized code near-black on the dark panel.
+                pre({ children }) {
+                  return <>{children}</>;
+                },
                 code({ node, className, children, ...props }) {
                   const match = /language-(\w+)/.exec(className || '');
                   const codeString = String(children).replace(/\n$/, '');
-                  const isInline = !match && !className;
+                  // A fenced block without a language tag has no className —
+                  // treat anything multiline as a block, not inline code
+                  const isInline = !match && !className && !codeString.includes('\n');
                   const language = match ? match[1] : 'text';
                   const langLabel = languageIcons[language.toLowerCase()] || language.toUpperCase();
 
@@ -242,6 +251,12 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
                         codeTagProps={{
                           style: {
                             fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
+                            // codeTagProps REPLACES the theme's inline style on
+                            // the <code> tag, so restate the base text color:
+                            // without it, untokenized text inherits the page
+                            // ink color — invisible on this dark panel in
+                            // light mode.
+                            color: '#abb2bf',
                           }
                         }}
                       >

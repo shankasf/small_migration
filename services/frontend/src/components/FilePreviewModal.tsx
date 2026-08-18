@@ -84,6 +84,10 @@ export default function FilePreviewModal({ filename, content, onClose, onDownloa
             codeTagProps={{
               style: {
                 fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
+                // Restate the base text color: codeTagProps replaces the
+                // theme's inline style, and the page ink color is near-black
+                // in light mode — invisible on this dark panel.
+                color: '#abb2bf',
               }
             }}
           >
