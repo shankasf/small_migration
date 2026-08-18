@@ -11,6 +11,7 @@ import {
   Paperclip,
   Settings,
   LogOut,
+  Loader2,
 } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 
@@ -35,6 +36,10 @@ interface SidebarProps {
   user?: User;
   onLogout?: () => void;
   onOpenAdmin?: () => void;
+  /** Sessions with a generation running in the background */
+  pendingSessions?: Record<string, boolean>;
+  /** Sessions whose generation finished while the user was elsewhere */
+  unseenSessions?: Record<string, boolean>;
 }
 
 const Sidebar = memo(function Sidebar({
@@ -48,6 +53,8 @@ const Sidebar = memo(function Sidebar({
   user,
   onLogout,
   onOpenAdmin,
+  pendingSessions = {},
+  unseenSessions = {},
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [hoveredSession, setHoveredSession] = useState<string | null>(null);
@@ -248,6 +255,13 @@ const Sidebar = memo(function Sidebar({
                     >
                       {cleanName}
                     </span>
+
+                    {/* Background activity: generating / finished-unseen */}
+                    {pendingSessions[session.id] ? (
+                      <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-brass mt-0.5" />
+                    ) : unseenSessions[session.id] ? (
+                      <span className="w-2 h-2 flex-shrink-0 rounded-full bg-brass mt-1" title="Response ready" />
+                    ) : null}
 
                     {/* Delete button */}
                     {hoveredSession === session.id && (

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation, useNavigate, matchPath } from 'react-router-dom';
-import { LogOut, Menu, MessageSquare } from 'lucide-react';
+import { LogOut, Menu, MessageSquare, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import { Wordmark } from './components/Brand';
 import ThemeToggle from './components/ThemeToggle';
 import Sidebar from './components/Sidebar';
@@ -77,7 +77,12 @@ function App() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [_outputs, setOutputs] = useState<GeneratedOutput[]>([]);
   const [messageOutputMap, setMessageOutputMap] = useState<Record<string, GeneratedOutput[]>>({});
-  const [isLoading, setIsLoading] = useState(false);
+  // Sessions with a generation in flight — chats keep processing in the
+  // background when the user navigates to another thread or the admin portal
+  const [pendingSessions, setPendingSessions] = useState<Record<string, boolean>>({});
+  // Sessions whose generation finished while the user was elsewhere
+  const [unseenSessions, setUnseenSessions] = useState<Record<string, boolean>>({});
+  const [completedNotice, setCompletedNotice] = useState<{ sessionId: string; name: string; failed?: boolean } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -196,6 +201,17 @@ function App() {
     setMessageOutputMap({});
   }, []);
 
+  // Opening a thread clears its "finished while you were away" marker
+  useEffect(() => {
+    if (!routeSessionId) return;
+    setUnseenSessions(prev => {
+      if (!prev[routeSessionId]) return prev;
+      const next = { ...prev };
+      delete next[routeSessionId];
+      return next;
+    });
+  }, [routeSessionId]);
+
   // Route-driven thread loading: deep links, refreshes, and back/forward all
   // restore the thread named in the URL
   useEffect(() => {
@@ -229,6 +245,28 @@ function App() {
   const selectSession = useCallback((session: Session) => {
     navigate(`/chats/${session.id}`);
   }, [navigate]);
+
+  // Surface a completion notice for a thread the user is not looking at:
+  // in-app toast always, browser notification when the tab is hidden
+  const notifyCompletion = useCallback((sessionId: string, name: string, failed = false) => {
+    setCompletedNotice({ sessionId, name, failed });
+    if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+      try {
+        new Notification(failed ? 'Circini — response failed' : 'Circini — response ready', {
+          body: name,
+        });
+      } catch {
+        /* notification support varies; the in-app toast still shows */
+      }
+    }
+  }, []);
+
+  // Auto-dismiss the completion toast
+  useEffect(() => {
+    if (!completedNotice) return;
+    const timer = setTimeout(() => setCompletedNotice(null), 12000);
+    return () => clearTimeout(timer);
+  }, [completedNotice]);
 
   // Unified send handler - handles message with optional files
   const handleSend = useCallback(async (message: string, files?: File[]) => {
@@ -318,33 +356,52 @@ function App() {
       createdAt: new Date().toISOString(),
     };
     setMessages(prev => [...prev, userMessage]);
-    setIsLoading(true);
+    setPendingSessions(prev => ({ ...prev, [session.id]: true }));
     clearLogs();
+
+    // Ask once for browser-notification permission so completions can alert
+    // the user when they've navigated elsewhere or the tab is hidden
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
 
     try {
       const response = await api.sendMessage(session.id, messageContent);
 
-      // Update messages with real data
-      setMessages(prev => [
-        ...prev.filter(m => m.id !== userMessage.id),
-        response.userMessage,
-        response.assistantMessage,
-      ]);
-
-      // Use savedOutputs from response directly (no extra API call)
-      const outputs = response.savedOutputs;
-      if (outputs && outputs.length > 0) {
-        setOutputs(prev => {
-          const existingIds = new Set(prev.map(o => o.id));
-          const newOuts = outputs.filter(
-            (o: GeneratedOutput) => !existingIds.has(o.id)
-          );
-          return [...prev, ...newOuts];
+      // The user may have switched threads (or opened the admin portal) while
+      // this generated — only touch on-screen state if they're still here
+      if (activeSessionIdRef.current === session.id) {
+        setMessages(prev => {
+          // Dedup against the fetched thread in case the user left and came
+          // back mid-generation (loadSession already holds the user message)
+          const realIds = new Set([response.userMessage.id, response.assistantMessage.id]);
+          return [
+            ...prev.filter(m => m.id !== userMessage.id && !realIds.has(m.id)),
+            response.userMessage,
+            response.assistantMessage,
+          ];
         });
-        setMessageOutputMap(prev => ({
-          ...prev,
-          [response.assistantMessage.id]: outputs,
-        }));
+
+        // Use savedOutputs from response directly (no extra API call)
+        const outputs = response.savedOutputs;
+        if (outputs && outputs.length > 0) {
+          setOutputs(prev => {
+            const existingIds = new Set(prev.map(o => o.id));
+            const newOuts = outputs.filter(
+              (o: GeneratedOutput) => !existingIds.has(o.id)
+            );
+            return [...prev, ...newOuts];
+          });
+          setMessageOutputMap(prev => ({
+            ...prev,
+            [response.assistantMessage.id]: outputs,
+          }));
+        }
+      } else {
+        // Finished in the background — everything is persisted server-side and
+        // will load when the thread is opened; just tell the user it's ready
+        setUnseenSessions(prev => ({ ...prev, [session.id]: true }));
+        notifyCompletion(session.id, response.updatedSession?.name || session.name || 'Chat');
       }
 
       // Update the single session in-place instead of refetching all sessions
@@ -363,13 +420,22 @@ function App() {
       }
     } catch (error) {
       console.error('Failed to send message:', error);
-      setMessages(prev => prev.filter(m => m.id !== userMessage.id));
-      setErrorMessage(`Failed to get a response: ${api.apiErrorMessage(error)}`);
-      setTimeout(() => setErrorMessage(null), 8000);
+      if (activeSessionIdRef.current === session.id) {
+        setMessages(prev => prev.filter(m => m.id !== userMessage.id));
+        setErrorMessage(`Failed to get a response: ${api.apiErrorMessage(error)}`);
+        setTimeout(() => setErrorMessage(null), 8000);
+      } else {
+        setUnseenSessions(prev => ({ ...prev, [session.id]: true }));
+        notifyCompletion(session.id, session.name || 'Chat', true);
+      }
     } finally {
-      setIsLoading(false);
+      setPendingSessions(prev => {
+        const next = { ...prev };
+        delete next[session.id];
+        return next;
+      });
     }
-  }, [createNewSession, clearLogs]);
+  }, [createNewSession, clearLogs, notifyCompletion]);
 
   const downloadOutput = useCallback(async (output: GeneratedOutput) => {
     try {
@@ -451,6 +517,9 @@ function App() {
   const isAdmin = user.role === 'admin';
   const isAuditor = user.role === 'auditor';
   const activeView = isAuditor || (isAdminRoute && isAdmin) ? 'admin' : 'chat';
+  // Loading is per-thread: only show the typing indicator for the thread the
+  // user is actually viewing, even while others generate in the background
+  const isLoading = !!(activeSession && pendingSessions[activeSession.id]);
 
   return (
     <div className="flex flex-col h-screen bg-obsidian">
@@ -505,6 +574,8 @@ function App() {
                 user={user}
                 onLogout={handleLogout}
                 onOpenAdmin={isAdmin ? () => navigate('/admin') : undefined}
+                pendingSessions={pendingSessions}
+                unseenSessions={unseenSessions}
               />
             </div>
             {/* Mobile sidebar (slide-in drawer) */}
@@ -526,6 +597,8 @@ function App() {
                     user={user}
                     onLogout={handleLogout}
                     onOpenAdmin={isAdmin ? () => { navigate('/admin'); setMobileNavOpen(false); } : undefined}
+                    pendingSessions={pendingSessions}
+                    unseenSessions={unseenSessions}
                   />
                 </div>
               </div>
@@ -549,6 +622,39 @@ function App() {
           </>
         )}
       </div>
+
+      {/* Background-completion toast: a thread finished while the user was
+          elsewhere; click to jump to it */}
+      {completedNotice && (
+        <div className="fixed bottom-5 right-5 z-50 animate-fade-up">
+          <div
+            onClick={() => {
+              navigate(`/chats/${completedNotice.sessionId}`);
+              setCompletedNotice(null);
+            }}
+            className="flex items-center gap-3 rounded-xl border border-hairline bg-panel px-4 py-3 shadow-console cursor-pointer hover:bg-elevated transition-colors"
+          >
+            {completedNotice.failed ? (
+              <AlertTriangle className="w-5 h-5 text-danger flex-shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-5 h-5 text-success flex-shrink-0" />
+            )}
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink">
+                {completedNotice.failed ? 'Response failed' : 'Response ready'}
+              </p>
+              <p className="text-xs text-muted truncate max-w-[240px]">{completedNotice.name}</p>
+            </div>
+            <button
+              onClick={e => { e.stopPropagation(); setCompletedNotice(null); }}
+              className="p-1 rounded text-faint hover:text-ink transition-colors"
+              title="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* File preview modal */}
       {previewFile && (
