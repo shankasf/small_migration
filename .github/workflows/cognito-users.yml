@@ -13,7 +13,7 @@ on:
         required: true
         default: list
         type: choice
-        options: [list, provision]
+        options: [list, provision, check-db]
       users:
         description: 'provision only: comma-separated email:group pairs (groups: admin|analyst|auditor)'
         required: false
@@ -61,6 +61,29 @@ jobs:
               --query 'UserAttributes[?Name==`email`]|[0].Value' --output text)
             echo "groups: $EMAIL -> ${USERGROUPS:-<none>}"
           done
+
+      # Read-only look at the app's user mirror and recent denials in RDS,
+      # via a one-off Fargate task (the runner has no VPC access to the DB).
+      - name: Check app database
+        if: ${{ inputs.action == 'check-db' }}
+        run: |
+          set -euo pipefail
+          SUBNETS=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='circini-AppSubnets'].Value" --output text)
+          SG=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='circini-SgApp'].Value" --output text)
+          SCRIPT='const {PrismaClient}=require("@prisma/client");const p=new PrismaClient();(async()=>{const u=await p.user.findMany({select:{email:true,name:true,role:true,status:true,entraOid:true,createdAt:true,lastLoginAt:true}});console.log("APP_USERS "+JSON.stringify(u,null,1));const d=await p.auditEvent.findMany({where:{decision:{not:"allow"}},orderBy:{createdAt:"desc"},take:25,select:{createdAt:true,action:true,detail:true,userId:true}});console.log("RECENT_DENIALS "+JSON.stringify(d,null,1));await p.$disconnect();})().catch(e=>{console.error("QUERY_ERROR",e.message);process.exit(1);});'
+          TASK=$(aws ecs run-task --cluster circini-demo --launch-type FARGATE \
+            --task-definition circini-schema-sync \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}" \
+            --overrides "$(jq -n --arg s "$SCRIPT" '{containerOverrides:[{name:"schema-sync",command:["node","-e",$s]}]}')" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "one-off task: $TASK"
+          aws ecs wait tasks-stopped --cluster circini-demo --tasks "$TASK"
+          TID="${TASK##*/}"
+          aws logs get-log-events --log-group-name /ecs/circini \
+            --log-stream-name "schema-sync/schema-sync/$TID" \
+            --query 'events[].message' --output text
 
       - name: Provision users
         if: ${{ inputs.action == 'provision' }}
