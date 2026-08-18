@@ -68,6 +68,45 @@ function toError(err: unknown): Error {
 }
 
 /**
+ * Start the self-service password reset: Cognito emails a verification code
+ * to the account's verified address. With PreventUserExistenceErrors enabled
+ * on the client, unknown emails get a simulated success — no enumeration.
+ */
+export function forgotPassword(email: string): Promise<void> {
+  if (!pool) {
+    return Promise.reject(new Error('Sign-in is not configured — reload the page and try again'));
+  }
+  const cognitoUser = new CognitoUser({ Username: email, Pool: pool, Storage: poolStorage! });
+  return new Promise<void>((resolve, reject) => {
+    cognitoUser.forgotPassword({
+      // Some pool configurations invoke onSuccess directly instead of
+      // inputVerificationCode; either way the code email has been sent.
+      onSuccess: () => resolve(),
+      inputVerificationCode: () => resolve(),
+      onFailure: (err: unknown) => reject(toError(err)),
+    });
+  });
+}
+
+/** Complete the reset with the emailed code and the user's new password. */
+export function confirmForgotPassword(
+  email: string,
+  code: string,
+  newPassword: string
+): Promise<void> {
+  if (!pool) {
+    return Promise.reject(new Error('Sign-in is not configured — reload the page and try again'));
+  }
+  const cognitoUser = new CognitoUser({ Username: email, Pool: pool, Storage: poolStorage! });
+  return new Promise<void>((resolve, reject) => {
+    cognitoUser.confirmPassword(code, newPassword, {
+      onSuccess: () => resolve(),
+      onFailure: (err: unknown) => reject(toError(err)),
+    });
+  });
+}
+
+/**
  * Start a USER_SRP_AUTH sign-in. Cognito may interleave challenges
  * (new password, TOTP setup, TOTP code); every continuation funnels back
  * through ONE shared callbacks object, which resolves whichever Step promise

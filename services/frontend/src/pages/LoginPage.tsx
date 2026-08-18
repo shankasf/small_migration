@@ -3,7 +3,13 @@ import { ArrowRight, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import QRCode from 'qrcode';
 import { login, storeToken, storeRefreshToken, fetchMe, clearAuth } from '../services/auth';
 import { AuthConfig } from '../services/oidc';
-import { initPool, signIn, Step } from '../services/cognito';
+import {
+  initPool,
+  signIn,
+  forgotPassword,
+  confirmForgotPassword,
+  Step,
+} from '../services/cognito';
 import { User } from '../types';
 import { CirciniLogo } from '../components/Brand';
 import { Button, Field } from '../components/ui';
@@ -13,7 +19,13 @@ interface LoginPageProps {
   onLogin: (user: User) => void;
 }
 
-type StepName = 'credentials' | 'newPassword' | 'mfaSetup' | 'totp';
+type StepName =
+  | 'credentials'
+  | 'newPassword'
+  | 'mfaSetup'
+  | 'totp'
+  | 'forgotPassword'
+  | 'resetPassword';
 
 /** Password input with a show/hide toggle. Manages its own reveal state. */
 function PasswordInput({
@@ -60,6 +72,7 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [code, setCode] = useState('');
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const isOidc = config.mode === 'oidc' && !!config.oidc;
 
@@ -82,6 +95,7 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
   const advance = async (promise: Promise<Step>) => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const next = await promise;
       if (next.kind === 'done') {
@@ -160,6 +174,59 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
     await advance(pendingStep.submit(code.trim()));
   };
 
+  const startForgotPassword = () => {
+    setError(null);
+    setNotice(null);
+    setCode('');
+    setStep('forgotPassword');
+  };
+
+  const handleForgotPasswordSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!config.oidc || busy || !email) return;
+    setBusy(true);
+    setError(null);
+    try {
+      initPool(config.oidc);
+      await forgotPassword(email.trim());
+      setNotice(`If an account exists for ${email.trim()}, a verification code is on its way.`);
+      setStep('resetPassword');
+    } catch (err: any) {
+      setError(err?.message || 'Could not start the password reset — please try again');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResetPasswordSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!config.oidc || busy) return;
+    if (newPassword.length < 12) {
+      setError('New password must be at least 12 characters');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      initPool(config.oidc);
+      await confirmForgotPassword(email.trim(), code.trim(), newPassword);
+      setNewPassword('');
+      setConfirmPassword('');
+      setCode('');
+      setPassword('');
+      setNotice('Password reset — sign in with your new password.');
+      setStep('credentials');
+    } catch (err: any) {
+      setError(err?.message || 'Could not reset the password — please try again');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const subtitle = !isOidc
     ? 'Sign in with the credentials provisioned by your administrator.'
     : step === 'credentials'
@@ -168,11 +235,21 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
         ? 'Set a new password to continue.'
         : step === 'mfaSetup'
           ? 'Set up two-factor authentication to protect your account.'
-          : 'Enter the code from your authenticator app.';
+          : step === 'forgotPassword'
+            ? 'Enter your work email and we will send you a verification code.'
+            : step === 'resetPassword'
+              ? 'Enter the code from your email and choose a new password.'
+              : 'Enter the code from your authenticator app.';
 
   const errorBox = error && (
     <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
       {error}
+    </div>
+  );
+
+  const noticeBox = notice && (
+    <div className="rounded-lg border border-brass/40 bg-brass/10 px-3 py-2 text-sm text-ink">
+      {notice}
     </div>
   );
 
@@ -194,8 +271,100 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
     </Field>
   );
 
+  const backToSignIn = (
+    <button
+      type="button"
+      className="w-full text-center text-[13px] font-500 text-muted transition-colors hover:text-ink"
+      onClick={() => {
+        setError(null);
+        setNotice(null);
+        setCode('');
+        setNewPassword('');
+        setConfirmPassword('');
+        setStep('credentials');
+      }}
+    >
+      Back to sign in
+    </button>
+  );
+
   const renderOidcForm = () => {
     switch (step) {
+      case 'forgotPassword':
+        return (
+          <form onSubmit={handleForgotPasswordSubmit} className="space-y-4">
+            <Field label="Work email">
+              <input
+                type="email"
+                required
+                autoComplete="username"
+                className="field"
+                placeholder="you@circini.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                autoFocus
+              />
+            </Field>
+
+            {errorBox}
+
+            <Button type="submit" variant="brass" loading={busy} className="w-full">
+              Send reset code <ArrowRight className="h-4 w-4" />
+            </Button>
+            {backToSignIn}
+          </form>
+        );
+
+      case 'resetPassword':
+        return (
+          <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
+            {noticeBox}
+
+            <Field label="Verification code" help="Check your email for the 6-digit code">
+              <input
+                type="text"
+                required
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                autoComplete="one-time-code"
+                className="field font-mono tracking-[0.3em]"
+                placeholder="000000"
+                value={code}
+                onChange={e => setCode(e.target.value.replace(/[^0-9]/g, ''))}
+                autoFocus
+              />
+            </Field>
+            <Field label="New password" help="Minimum 12 characters">
+              <PasswordInput
+                required
+                minLength={12}
+                autoComplete="new-password"
+                placeholder="••••••••••••"
+                value={newPassword}
+                onChange={setNewPassword}
+              />
+            </Field>
+            <Field label="Confirm new password">
+              <PasswordInput
+                required
+                minLength={12}
+                autoComplete="new-password"
+                placeholder="••••••••••••"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+              />
+            </Field>
+
+            {errorBox}
+
+            <Button type="submit" variant="brass" loading={busy} className="w-full">
+              Reset password <ArrowRight className="h-4 w-4" />
+            </Button>
+            {backToSignIn}
+          </form>
+        );
+
       case 'newPassword':
         return (
           <form onSubmit={handleNewPasswordSubmit} className="space-y-4">
@@ -277,6 +446,8 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
       default:
         return (
           <form onSubmit={handleCognitoSubmit} className="space-y-4">
+            {noticeBox}
+
             <Field label="Work email">
               <input
                 type="email"
@@ -288,15 +459,26 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
                 onChange={e => setEmail(e.target.value)}
               />
             </Field>
-            <Field label="Password">
-              <PasswordInput
-                required
-                autoComplete="current-password"
-                placeholder="••••••••••••"
-                value={password}
-                onChange={setPassword}
-              />
-            </Field>
+            <div className="space-y-1.5">
+              <Field label="Password">
+                <PasswordInput
+                  required
+                  autoComplete="current-password"
+                  placeholder="••••••••••••"
+                  value={password}
+                  onChange={setPassword}
+                />
+              </Field>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={startForgotPassword}
+                  className="text-[13px] font-500 text-brass transition-colors hover:text-brass-bright"
+                >
+                  Forgot password?
+                </button>
+              </div>
+            </div>
 
             {errorBox}
 
@@ -359,7 +541,9 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
                 ? 'Set up your authenticator'
                 : isOidc && step === 'totp'
                   ? 'Two-factor authentication'
-                  : 'Access the console'}
+                  : isOidc && (step === 'forgotPassword' || step === 'resetPassword')
+                    ? 'Reset your password'
+                    : 'Access the console'}
           </h2>
           <p className="mb-6 text-sm text-muted">{subtitle}</p>
           {isOidc ? (
