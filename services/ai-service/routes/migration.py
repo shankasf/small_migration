@@ -106,6 +106,9 @@ def get_session_storage(session_id: str) -> Dict[str, Any]:
             "files": {},
             "outputs": {},
             "output_folder": None,
+            # Filenames written by generate_output during the current turn —
+            # includes revisions of files first generated in earlier turns.
+            "turn_outputs": [],
         }
     return session_storage[session_id]
 
@@ -172,20 +175,35 @@ def create_tools(session_id: str):
     @function_tool
     def generate_output(file_name: str, content: str) -> str:
         """
-        Generate and save an output file.
+        Save a generated output file and deliver it to the user as a
+        downloadable file card attached to your reply.
+
+        Call this on EVERY turn where you produce or revise a model — for
+        corrections, save the complete corrected file under the same file
+        name. Files not saved with this tool never reach the user as
+        downloads.
 
         Args:
-            file_name: Name for the output file.
-            content: The content to write to the file.
+            file_name: Name for the output file (e.g. "stg_contracts.sql").
+            content: The complete file content — never a fragment or diff.
         """
         try:
-            saved_path = save_output_file(session_id, file_name, content)
+            save_output_file(session_id, file_name, content)
         except ValueError as exc:
             # Surface the rejection to the agent so it can retry with a plain
             # file name rather than failing the whole turn.
             return f"Could not save file: {exc}"
         storage["outputs"][file_name] = content
-        return f"File saved to: {saved_path}"
+        turn_outputs = storage.setdefault("turn_outputs", [])
+        if file_name not in turn_outputs:
+            turn_outputs.append(file_name)
+        # Never return the server filesystem path: the model has echoed it as a
+        # download "link" in responses, which is a dead URL for the user.
+        return (
+            f"File '{file_name}' saved ({len(content)} characters). It will be "
+            "attached to your reply as a downloadable file card automatically — "
+            "do not write a link, URL, or file path for it."
+        )
 
     @function_tool
     def list_files() -> str:
@@ -195,10 +213,6 @@ def create_tools(session_id: str):
 
         result = "Input files: " + (", ".join(inputs) if inputs else "None")
         result += "\nOutput files: " + (", ".join(outputs) if outputs else "None")
-
-        if storage["output_folder"]:
-            result += f"\nOutput folder: {storage['output_folder']}"
-
         return result
 
     @function_tool
@@ -325,14 +339,15 @@ Before presenting output, verify ALL of the following:
 
 - Present your analysis first: template findings, mapping review, any flagged issues or questions.
 - Then provide the complete SQL model(s) — full model files, not snippets.
-- Use `generate_output` to save each model as a downloadable `.sql` file.
+- Save EVERY model you produce with `generate_output` — first generations AND every correction or revision in later turns. When revising a model, save the complete corrected file under the same filename.
+- Saved files are delivered to the user automatically as downloadable file cards attached to your reply. NEVER write a download link, URL, or file path in your response — you do not know the real download URL, and any link you invent will be broken. Refer to saved files by filename only (e.g. "saved as `stg_contracts.sql` — see the attached file").
 
 ## TOOL USAGE
 
 - When the user uploads files, use `read_file` to store them.
 - Use `get_file_content` to retrieve and analyze file contents before generating.
 - Use `list_files` to check what's available in the session.
-- Use `generate_output` to save each generated model as a downloadable file."""
+- Use `generate_output` to save each generated model as a downloadable file — on every turn where you produce or revise SQL, not just the first time."""
 
 def get_or_create_agent(session_id: str) -> "Agent":
     """Get cached agent for session, or create a new one"""
@@ -412,8 +427,10 @@ async def chat(request: ChatRequest):
         # Append the current user message
         messages.append({"role": "user", "content": current_message})
 
-        # Bug 4 fix: Snapshot output keys before processing to track only new outputs
-        existing_output_keys = set(storage["outputs"].keys())
+        # Reset the per-turn write log. generate_output records every file it
+        # writes this turn here — including revisions of files first generated
+        # in earlier turns, which a "new filenames only" filter would drop.
+        storage["turn_outputs"] = []
 
         await logger.thinking("Processing your request...")
 
@@ -485,18 +502,20 @@ async def chat(request: ChatRequest):
                 log_type="info",
             )
 
-        # Bug 4 fix: Only return NEW outputs generated this turn
+        # Return every file written this turn — new files and revisions alike
         generated_files = []
-        for filename, content in storage["outputs"].items():
-            if content and filename not in existing_output_keys:
-                output_folder = storage.get("output_folder")
-                filepath = str(output_folder / filename) if output_folder else filename
-                filtered = guardrails.check_outbound(content)
-                generated_files.append(GeneratedFile(
-                    name=filename,
-                    path=filepath,
-                    content=filtered.text
-                ))
+        output_folder = storage.get("output_folder")
+        for filename in storage.get("turn_outputs", []):
+            content = storage["outputs"].get(filename)
+            if not content:
+                continue
+            filepath = str(output_folder / filename) if output_folder else filename
+            filtered = guardrails.check_outbound(content)
+            generated_files.append(GeneratedFile(
+                name=filename,
+                path=filepath,
+                content=filtered.text
+            ))
 
         # Combined guardrail verdict for audit: blocked > redacted > allow
         decision = "redacted" if (inbound.decision == "redacted" or outbound.decision == "redacted") else "allow"
