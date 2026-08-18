@@ -161,6 +161,20 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
           <div className="prose-console max-w-none">
             <ReactMarkdown
               components={{
+                a({ href, children }) {
+                  // The model must not emit file links, but if one slips
+                  // through (a server path or invented URL), a relative href
+                  // would navigate the SPA and look like a page refresh.
+                  // Render non-http(s) links inert; open real links safely.
+                  if (!href || !/^https?:\/\//i.test(href)) {
+                    return <span>{children}</span>;
+                  }
+                  return (
+                    <a href={href} target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  );
+                },
                 code({ node, className, children, ...props }) {
                   const match = /language-(\w+)/.exec(className || '');
                   const codeString = String(children).replace(/\n$/, '');

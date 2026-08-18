@@ -32,6 +32,7 @@ export interface UploadedFile {
 export interface GeneratedOutput {
   id: string;
   sessionId: string;
+  messageId?: string | null; // assistant message that produced this version
   filename: string;
   filepath: string;
   fileType: 'sql' | 'txt';

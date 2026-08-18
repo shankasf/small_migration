@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useLocation, useNavigate, matchPath } from 'react-router-dom';
 import { LogOut, Menu, MessageSquare } from 'lucide-react';
 import { Wordmark } from './components/Brand';
 import ThemeToggle from './components/ThemeToggle';
@@ -22,14 +23,21 @@ function buildMessageOutputMap(
   const map: Record<string, GeneratedOutput[]> = {};
   if (!outs.length) return map;
 
-  // Assistant messages sorted chronologically
+  // Assistant messages sorted chronologically (for legacy rows below)
   const assistantMsgs = msgs
     .filter(m => m.role === 'assistant')
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   for (const output of outs) {
+    // Outputs carry the id of the message that produced them
+    if (output.messageId) {
+      if (!map[output.messageId]) map[output.messageId] = [];
+      map[output.messageId].push(output);
+      continue;
+    }
+    // Legacy rows created before message linking existed: attach to the last
+    // assistant message created at or before the output
     const outputTime = new Date(output.createdAt).getTime();
-    // Find the last assistant message created at or before the output
     let matched: Message | null = null;
     for (const msg of assistantMsgs) {
       if (new Date(msg.createdAt).getTime() <= outputTime) {
@@ -43,6 +51,9 @@ function buildMessageOutputMap(
       map[matched.id].push(output);
     }
   }
+  for (const id of Object.keys(map)) {
+    map[id].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
   return map;
 }
 
@@ -54,7 +65,12 @@ function App() {
   const [oidcExchanging, setOidcExchanging] = useState(
     window.location.pathname === '/auth/callback'
   );
-  const [view, setView] = useState<'chat' | 'admin'>('chat');
+  // URL is the source of truth for navigation: /chats/:sessionId opens a
+  // thread, /admin opens the portal (standard SPA routing, deep-linkable)
+  const location = useLocation();
+  const navigate = useNavigate();
+  const routeSessionId = matchPath('/chats/:sessionId', location.pathname)?.params.sessionId;
+  const isAdminRoute = location.pathname === '/admin';
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -99,14 +115,13 @@ function App() {
           throw new Error('Received an OIDC callback while not in oidc mode');
         }
         const me = await completeLogin(cfg.oidc);
-        history.replaceState({}, '', '/');
         setUser(me);
-        setView(me.role === 'auditor' ? 'admin' : 'chat');
         setAuthChecked(true);
+        navigate(me.role === 'auditor' ? '/admin' : '/', { replace: true });
       } catch (error) {
         // Fall back to the login page
         console.error('OIDC sign-in failed:', error);
-        history.replaceState({}, '', '/');
+        navigate('/', { replace: true });
       } finally {
         setOidcExchanging(false);
       }
@@ -137,19 +152,16 @@ function App() {
     }
   }, [user, loadSessions]);
 
+  // Throws on failure so the route effect can redirect away from dead links
   const loadSession = useCallback(async (sessionId: string) => {
-    try {
-      const session = await api.getSession(sessionId);
-      setActiveSession(session);
-      setMessages(session.messages || []);
-      setUploadedFiles(session.files || []);
-      setOutputs(session.outputs || []);
-      setMessageOutputMap(
-        buildMessageOutputMap(session.messages || [], session.outputs || [])
-      );
-    } catch (error) {
-      console.error('Failed to load session:', error);
-    }
+    const session = await api.getSession(sessionId);
+    setActiveSession(session);
+    setMessages(session.messages || []);
+    setUploadedFiles(session.files || []);
+    setOutputs(session.outputs || []);
+    setMessageOutputMap(
+      buildMessageOutputMap(session.messages || [], session.outputs || [])
+    );
   }, []);
 
   const createNewSession = useCallback(async (): Promise<Session | null> => {
@@ -161,35 +173,62 @@ function App() {
       setUploadedFiles([]);
       setOutputs([]);
       setMessageOutputMap({});
+      navigate(`/chats/${session.id}`);
       return session;
     } catch (error) {
       console.error('Failed to create session:', error);
       return null;
     }
+  }, [navigate]);
+
+  // Mirror of activeSession.id for effects/handlers that shouldn't re-run
+  // every time the session object changes
+  const activeSessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSession?.id ?? null;
+  }, [activeSession]);
+
+  const clearThreadState = useCallback(() => {
+    setActiveSession(null);
+    setMessages([]);
+    setUploadedFiles([]);
+    setOutputs([]);
+    setMessageOutputMap({});
   }, []);
+
+  // Route-driven thread loading: deep links, refreshes, and back/forward all
+  // restore the thread named in the URL
+  useEffect(() => {
+    if (!user || user.role === 'auditor') return;
+    if (!routeSessionId) {
+      if (location.pathname === '/' && activeSessionIdRef.current) {
+        clearThreadState();
+      }
+      return;
+    }
+    if (routeSessionId === activeSessionIdRef.current) return;
+    loadSession(routeSessionId).catch(error => {
+      console.error('Failed to load session:', error);
+      navigate('/', { replace: true });
+    });
+  }, [user, routeSessionId, location.pathname, loadSession, clearThreadState, navigate]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     try {
       await api.deleteSession(sessionId);
       setSessions(prev => prev.filter(s => s.id !== sessionId));
-      setActiveSession(prev => {
-        if (prev?.id === sessionId) {
-          setMessages([]);
-          setUploadedFiles([]);
-          setOutputs([]);
-          setMessageOutputMap({});
-          return null;
-        }
-        return prev;
-      });
+      if (activeSessionIdRef.current === sessionId) {
+        clearThreadState();
+        navigate('/', { replace: true });
+      }
     } catch (error) {
       console.error('Failed to delete session:', error);
     }
-  }, []);
+  }, [clearThreadState, navigate]);
 
   const selectSession = useCallback((session: Session) => {
-    loadSession(session.id);
-  }, [loadSession]);
+    navigate(`/chats/${session.id}`);
+  }, [navigate]);
 
   // Unified send handler - handles message with optional files
   const handleSend = useCallback(async (message: string, files?: File[]) => {
@@ -379,6 +418,22 @@ function App() {
     setSidebarOpen(prev => !prev);
   }, []);
 
+  // Keep the URL consistent with role-based access: analysts can't sit on
+  // /admin, auditors always land on it, unknown paths normalize to /
+  useEffect(() => {
+    if (!user) return;
+    if (isAdminRoute && user.role !== 'admin' && user.role !== 'auditor') {
+      navigate('/', { replace: true });
+    } else if (user.role === 'auditor' && !isAdminRoute) {
+      navigate('/admin', { replace: true });
+    } else if (
+      !isAdminRoute && !routeSessionId &&
+      location.pathname !== '/' && location.pathname !== '/auth/callback'
+    ) {
+      navigate('/', { replace: true });
+    }
+  }, [user, isAdminRoute, routeSessionId, location.pathname, navigate]);
+
   // ---- Auth gate ----
   if (oidcExchanging) {
     return (
@@ -389,13 +444,13 @@ function App() {
   }
   if (!user) {
     return authChecked && authConfig
-      ? <LoginPage config={authConfig} onLogin={u => { setUser(u); setView(u.role === 'auditor' ? 'admin' : 'chat'); }} />
+      ? <LoginPage config={authConfig} onLogin={u => { setUser(u); if (u.role === 'auditor') navigate('/admin', { replace: true }); }} />
       : <div className="min-h-screen bg-obsidian" />;
   }
 
   const isAdmin = user.role === 'admin';
   const isAuditor = user.role === 'auditor';
-  const activeView = isAuditor ? 'admin' : view;
+  const activeView = isAuditor || (isAdminRoute && isAdmin) ? 'admin' : 'chat';
 
   return (
     <div className="flex flex-col h-screen bg-obsidian">
@@ -417,7 +472,7 @@ function App() {
           <div className="flex items-center gap-2.5">
             {!isAuditor && (
               <button
-                onClick={() => setView('chat')}
+                onClick={() => navigate(activeSession ? `/chats/${activeSession.id}` : '/')}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-hairline text-xs font-medium text-muted transition-colors hover:bg-elevated hover:text-ink"
               >
                 <MessageSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Back to chat</span><span className="sm:hidden">Chat</span>
@@ -449,7 +504,7 @@ function App() {
                 onDeleteSession={deleteSession}
                 user={user}
                 onLogout={handleLogout}
-                onOpenAdmin={isAdmin ? () => setView('admin') : undefined}
+                onOpenAdmin={isAdmin ? () => navigate('/admin') : undefined}
               />
             </div>
             {/* Mobile sidebar (slide-in drawer) */}
@@ -470,7 +525,7 @@ function App() {
                     onDeleteSession={deleteSession}
                     user={user}
                     onLogout={handleLogout}
-                    onOpenAdmin={isAdmin ? () => { setView('admin'); setMobileNavOpen(false); } : undefined}
+                    onOpenAdmin={isAdmin ? () => { navigate('/admin'); setMobileNavOpen(false); } : undefined}
                   />
                 </div>
               </div>
