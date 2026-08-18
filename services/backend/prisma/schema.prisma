@@ -76,12 +76,13 @@ model Session {
 }
 
 model Message {
-  id        String   @id @default(uuid())
+  id        String            @id @default(uuid())
   sessionId String
-  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  role      String   // "user" | "assistant"
-  content   String   @db.Text
-  createdAt DateTime @default(now())
+  session   Session           @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String            // "user" | "assistant"
+  content   String            @db.Text
+  createdAt DateTime          @default(now())
+  outputs   GeneratedOutput[]
 
   @@index([sessionId])
 }
@@ -99,16 +100,21 @@ model UploadedFile {
   @@index([sessionId])
 }
 
+// Each row is one immutable generated-file version. Revisions of the same
+// filename create new rows (no upsert), each linked to the assistant message
+// that produced it — so every chat turn keeps the exact files it delivered.
 model GeneratedOutput {
   id        String   @id @default(uuid())
   sessionId String
   session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  messageId String?  // null on rows created before message linking existed
+  message   Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
   filename  String
   filepath  String   // Path on PersistentVolume
   fileType  String   // "sql" | "txt"
   content   String   @db.Text
   createdAt DateTime @default(now())
 
-  @@unique([sessionId, filename])
   @@index([sessionId])
+  @@index([messageId])
 }

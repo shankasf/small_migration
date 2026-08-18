@@ -90,8 +90,8 @@ router.get('/:id', async (req: AuthedRequest, res: Response) => {
           orderBy: { createdAt: 'asc' }
         },
         outputs: {
-          select: { id: true, filename: true, filepath: true, fileType: true, createdAt: true, sessionId: true },
-          orderBy: { createdAt: 'desc' }
+          select: { id: true, filename: true, filepath: true, fileType: true, createdAt: true, sessionId: true, messageId: true },
+          orderBy: { createdAt: 'asc' }
         }
       }
     });
@@ -196,8 +196,8 @@ router.get('/:id/outputs', async (req: AuthedRequest, res: Response) => {
 
     const outputs = await prisma.generatedOutput.findMany({
       where: { sessionId: id },
-      select: { id: true, filename: true, filepath: true, fileType: true, createdAt: true, sessionId: true },
-      orderBy: { createdAt: 'desc' }
+      select: { id: true, filename: true, filepath: true, fileType: true, createdAt: true, sessionId: true, messageId: true },
+      orderBy: { createdAt: 'asc' }
     });
 
     res.json(outputs);

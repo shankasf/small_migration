@@ -138,25 +138,25 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       }
     });
 
-    // Save generated files if any — parallel upserts using compound unique key
+    // Save generated files if any. Each generation is a new immutable version
+    // linked to the assistant message that produced it — revisions of the same
+    // filename get their own row, so earlier messages keep their own files.
     let savedOutputs: any[] = [];
     if (aiResponse.generated_files && aiResponse.generated_files.length > 0) {
       savedOutputs = await Promise.all(
         aiResponse.generated_files.map((file: any) =>
-          prisma.generatedOutput.upsert({
-            where: {
-              sessionId_filename: { sessionId, filename: file.name }
-            },
-            update: {
-              filepath: file.path,
-              content: file.content || '',
-            },
-            create: {
+          prisma.generatedOutput.create({
+            data: {
               sessionId,
+              messageId: assistantMessage.id,
               filename: file.name,
               filepath: file.path,
               fileType: file.name.endsWith('.sql') ? 'sql' : 'txt',
               content: file.content || '',
+            },
+            select: {
+              id: true, sessionId: true, messageId: true, filename: true,
+              filepath: true, fileType: true, createdAt: true,
             },
           })
         )
