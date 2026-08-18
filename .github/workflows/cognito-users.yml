@@ -1,0 +1,88 @@
+name: Cognito user admin
+
+# One-off user administration for the circini-demo user pool, run through the
+# same GitHub OIDC deploy role as the pipeline (no long-lived AWS keys).
+# - list: dump every user with status, email verification, and groups
+# - provision: idempotently create users (Cognito emails each a temporary
+#   password) and assign their group; existing users are never re-invited
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        required: true
+        default: list
+        type: choice
+        options: [list, provision]
+      users:
+        description: 'provision only: comma-separated email:group pairs (groups: admin|analyst|auditor)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+
+jobs:
+  cognito:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve user pool
+        id: pool
+        run: |
+          set -euo pipefail
+          POOL=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='circini-UserPoolId'].Value" --output text)
+          [ -n "$POOL" ] && [ "$POOL" != "None" ] || { echo "::error::user pool export not found"; exit 1; }
+          echo "id=$POOL" >> "$GITHUB_OUTPUT"
+
+      - name: List users
+        if: ${{ inputs.action == 'list' }}
+        run: |
+          set -euo pipefail
+          POOL="${{ steps.pool.outputs.id }}"
+          aws cognito-idp list-users --user-pool-id "$POOL" \
+            --query 'Users[].{Email:Attributes[?Name==`email`]|[0].Value,Status:UserStatus,Enabled:Enabled,EmailVerified:Attributes[?Name==`email_verified`]|[0].Value,Created:UserCreateDate}' \
+            --output table
+          for U in $(aws cognito-idp list-users --user-pool-id "$POOL" \
+              --query 'Users[].Username' --output text); do
+            GROUPS=$(aws cognito-idp admin-list-groups-for-user --user-pool-id "$POOL" \
+              --username "$U" --query 'Groups[].GroupName' --output text)
+            EMAIL=$(aws cognito-idp admin-get-user --user-pool-id "$POOL" --username "$U" \
+              --query 'UserAttributes[?Name==`email`]|[0].Value' --output text)
+            echo "groups: $EMAIL -> ${GROUPS:-<none>}"
+          done
+
+      - name: Provision users
+        if: ${{ inputs.action == 'provision' }}
+        env:
+          USERS: ${{ inputs.users }}
+        run: |
+          set -euo pipefail
+          POOL="${{ steps.pool.outputs.id }}"
+          [ -n "$USERS" ] || { echo "::error::users input required"; exit 1; }
+          IFS=',' read -ra PAIRS <<< "$USERS"
+          for PAIR in "${PAIRS[@]}"; do
+            EMAIL="${PAIR%%:*}"; GROUP="${PAIR##*:}"
+            case "$GROUP" in admin|analyst|auditor) ;; *) echo "::error::bad group '$GROUP' for $EMAIL"; exit 1;; esac
+            if aws cognito-idp admin-get-user --user-pool-id "$POOL" --username "$EMAIL" >/dev/null 2>&1; then
+              echo "exists:  $EMAIL (no invitation sent)"
+            else
+              aws cognito-idp admin-create-user --user-pool-id "$POOL" --username "$EMAIL" \
+                --user-attributes Name=email,Value="$EMAIL" Name=email_verified,Value=true \
+                --desired-delivery-mediums EMAIL >/dev/null
+              echo "created: $EMAIL — temporary password emailed"
+            fi
+            aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL" \
+              --username "$EMAIL" --group-name "$GROUP"
+            echo "group:   $EMAIL -> $GROUP"
+          done
