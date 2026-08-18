@@ -415,9 +415,12 @@ Resources:
       LaunchType: FARGATE
       DesiredCount: 1
       HealthCheckGracePeriodSeconds: 120
+      # Zero-downtime rolling deploys: start the replacement task and wait for
+      # it to pass health checks before draining the old one. With min=0/max=100
+      # every deploy took the whole service down for the stop->start gap.
       DeploymentConfiguration:
-        MinimumHealthyPercent: 0
-        MaximumPercent: 100
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
       NetworkConfiguration:
         AwsvpcConfiguration:
           Subnets: !Split [',', !ImportValue circini-AppSubnets]
@@ -445,9 +448,12 @@ Resources:
       TaskDefinition: !Ref AiServiceTaskDef
       LaunchType: FARGATE
       DesiredCount: 1
+      # Zero-downtime rolling deploys: start the replacement task and wait for
+      # it to pass health checks before draining the old one. With min=0/max=100
+      # every deploy took the whole service down for the stop->start gap.
       DeploymentConfiguration:
-        MinimumHealthyPercent: 0
-        MaximumPercent: 100
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
       NetworkConfiguration:
         AwsvpcConfiguration:
           Subnets: !Split [',', !ImportValue circini-AppSubnets]
@@ -473,9 +479,12 @@ Resources:
       LaunchType: FARGATE
       DesiredCount: 1
       HealthCheckGracePeriodSeconds: 60
+      # Zero-downtime rolling deploys: start the replacement task and wait for
+      # it to pass health checks before draining the old one. With min=0/max=100
+      # every deploy took the whole service down for the stop->start gap.
       DeploymentConfiguration:
-        MinimumHealthyPercent: 0
-        MaximumPercent: 100
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
       NetworkConfiguration:
         AwsvpcConfiguration:
           Subnets: !Split [',', !ImportValue circini-AppSubnets]
