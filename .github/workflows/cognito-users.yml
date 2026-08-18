@@ -55,11 +55,11 @@ jobs:
             --output table
           for U in $(aws cognito-idp list-users --user-pool-id "$POOL" \
               --query 'Users[].Username' --output text); do
-            GROUPS=$(aws cognito-idp admin-list-groups-for-user --user-pool-id "$POOL" \
+            USERGROUPS=$(aws cognito-idp admin-list-groups-for-user --user-pool-id "$POOL" \
               --username "$U" --query 'Groups[].GroupName' --output text)
             EMAIL=$(aws cognito-idp admin-get-user --user-pool-id "$POOL" --username "$U" \
               --query 'UserAttributes[?Name==`email`]|[0].Value' --output text)
-            echo "groups: $EMAIL -> ${GROUPS:-<none>}"
+            echo "groups: $EMAIL -> ${USERGROUPS:-<none>}"
           done
 
       - name: Provision users
