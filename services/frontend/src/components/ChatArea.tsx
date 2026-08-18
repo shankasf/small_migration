@@ -29,15 +29,21 @@ const ChatArea = memo(function ChatArea({
   const bottomRef = useRef<HTMLDivElement>(null);
   const [displayedThinking, setDisplayedThinking] = useState<string | null>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading, displayedThinking]);
-
   // Get the latest "thinking" message
   const latestThinking = useMemo(() => {
     const thinkingLogs = realtimeLogs.filter(log => log.type === 'thinking');
     return thinkingLogs.length > 0 ? thinkingLogs[thinkingLogs.length - 1].message : null;
   }, [realtimeLogs]);
+
+  // Accumulated partial response streamed from the model this turn
+  const streamingText = useMemo(
+    () => realtimeLogs.filter(log => log.type === 'delta').map(log => log.message).join(''),
+    [realtimeLogs]
+  );
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isLoading, displayedThinking, streamingText]);
 
   useEffect(() => {
     if (latestThinking) {
@@ -95,8 +101,21 @@ const ChatArea = memo(function ChatArea({
           );
         })}
 
+        {/* Live streamed response (replaced by the final message on completion) */}
+        {isLoading && streamingText && (
+          <MessageBubble
+            message={{
+              id: '__streaming__',
+              sessionId: '',
+              role: 'assistant',
+              content: streamingText,
+              createdAt: new Date().toISOString(),
+            }}
+          />
+        )}
+
         {/* Thinking/Loading indicator */}
-        {isLoading && (
+        {isLoading && !streamingText && (
           <div className="mb-8 flex items-start gap-4">
             <div className="w-8 h-8 rounded-full border border-hairline bg-elevated flex items-center justify-center flex-shrink-0 text-brass">
               <CirciniMark size={18} />

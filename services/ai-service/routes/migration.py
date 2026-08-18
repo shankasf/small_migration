@@ -452,10 +452,39 @@ async def chat(request: ChatRequest):
 
                 await logger.ai_thinking("AI agent is analyzing...")
 
-                # Pass structured message list to Runner
+                # Pass structured message list to Runner and stream text deltas
+                # to the client over the realtime-log channel as they arrive.
+                # Chunks are guardrail-filtered before egress; the final,
+                # fully-filtered text still replaces the stream at the end.
+                try:
+                    from openai.types.responses import ResponseTextDeltaEvent
+                except ImportError:
+                    ResponseTextDeltaEvent = None
+
                 result = Runner.run_streamed(agent, messages)
-                async for _event in result.stream_events():
-                    pass  # Consume all events to drive the run to completion
+                stream_buffer = ""
+                last_flush = time.monotonic()
+
+                async def flush_stream():
+                    nonlocal stream_buffer, last_flush
+                    if not stream_buffer:
+                        return
+                    chunk = guardrails.check_outbound(stream_buffer).text
+                    stream_buffer = ""
+                    last_flush = time.monotonic()
+                    await logger.log(step="stream", message=chunk, log_type="delta")
+
+                async for event in result.stream_events():
+                    if (
+                        ResponseTextDeltaEvent is not None
+                        and event.type == "raw_response_event"
+                        and isinstance(event.data, ResponseTextDeltaEvent)
+                        and event.data.delta
+                    ):
+                        stream_buffer += event.data.delta
+                        if len(stream_buffer) >= 400 or time.monotonic() - last_flush >= 0.4:
+                            await flush_stream()
+                await flush_stream()
                 response_text = result.final_output
 
                 # Token usage for metering/governance (defensive across SDK versions)

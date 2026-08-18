@@ -6,7 +6,7 @@ export interface LogEntry {
   timestamp: string;
   step: string;
   message: string;
-  type: 'info' | 'success' | 'warning' | 'error' | 'progress' | 'thinking';
+  type: 'info' | 'success' | 'warning' | 'error' | 'progress' | 'thinking' | 'delta';
   data?: any;
 }
 
