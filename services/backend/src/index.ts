@@ -38,6 +38,13 @@ const io = new SocketIOServer(httpServer, {
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3001;
 
+// Production traffic reaches Express through exactly one internet-facing ALB.
+// Trust that single hop so req.ip resolves the client address appended by the
+// ALB instead of recording the local/proxy socket address in every audit row.
+// Limiting this to one hop prevents a client-supplied left-most XFF value from
+// being accepted as the caller address.
+app.set('trust proxy', 1);
+
 // Make io available globally for broadcasting logs
 export { io };
 

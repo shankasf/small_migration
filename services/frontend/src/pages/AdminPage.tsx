@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   Users, BarChart3, ShieldAlert, RefreshCw, UserPlus, Ban, ShieldCheck, AlertTriangle,
   ScrollText, Activity, Pause, Play, Trash2,
@@ -81,8 +82,43 @@ function DailyTokensChart({ daily }: { daily: UsageSummary['daily'] }) {
   );
 }
 
-const thCls = 'px-4 py-2.5 font-mono text-[11px] uppercase tracking-wider text-faint font-medium text-left';
-const tdCls = 'px-4 py-2.5';
+// Admin tables keep every column and value available. Dense rows become
+// labelled records below desktop width; on wider screens they expand across
+// the full canvas. Wrapping prevents long emails, resource names, and JSON
+// detail payloads from being clipped or ellipsised.
+const thCls = 'sticky top-0 z-10 bg-panel px-2 py-2.5 sm:px-3 xl:px-4 font-mono text-[11px] uppercase tracking-wider text-faint font-medium text-left align-top';
+const tdCls = 'px-2 py-2.5 sm:px-3 xl:px-4 align-top break-words';
+const tablePanelCls = 'panel overflow-auto overscroll-contain';
+const viewportTablePanelCls = 'panel max-h-[calc(100dvh-13rem)] overflow-auto overscroll-contain';
+
+function ResponsiveCell({ label, children, className, valueClassName }: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+  valueClassName?: string;
+}) {
+  return (
+    <td className={cx(tdCls, 'grid grid-cols-[7rem_minmax(0,1fr)] gap-3 xl:table-cell', className)}>
+      <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-faint xl:hidden">{label}</span>
+      <div className={cx('min-w-0', valueClassName)}>{children}</div>
+    </td>
+  );
+}
+
+function formatAuditDetail(detail: string | null): string {
+  if (!detail) return '—';
+  try {
+    const parsed = JSON.parse(detail) as Record<string, unknown>;
+    const reasons = Array.isArray(parsed.reasons) ? parsed.reasons : null;
+    const findings = Array.isArray(parsed.findings) ? parsed.findings : null;
+    if (parsed.decision === 'allow' && reasons?.length === 0 && findings?.length === 0) {
+      return 'Guardrails passed — no reasons or findings.';
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return detail;
+  }
+}
 
 function OverviewTab({ days, setDays }: { days: number; setDays: (d: number) => void }) {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
@@ -148,9 +184,9 @@ function OverviewTab({ days, setDays }: { days: number; setDays: (d: number) => 
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
-        <div className="panel overflow-hidden">
+        <div className={tablePanelCls}>
           <div className="eyebrow px-5 pt-4 pb-2">Top users (this month)</div>
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[36rem] text-sm">
             <thead>
               <tr className="border-b border-hairline">
                 <th className={cx(thCls, 'pl-5')}>User</th>
@@ -162,7 +198,7 @@ function OverviewTab({ days, setDays }: { days: number; setDays: (d: number) => 
             <tbody>
               {topUsers.map(u => (
                 <tr key={u.id} className="border-b border-hairline/50 last:border-0">
-                  <td className={cx(tdCls, 'pl-5 text-ink')}>{u.email}</td>
+                  <td className={cx(tdCls, 'pl-5 text-ink break-all')}>{u.email}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{num.format(u.usage.monthTokens)}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{money(u.usage.monthCostUsd)}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted pr-5')}>{u.usage.sessions}</td>
@@ -175,9 +211,9 @@ function OverviewTab({ days, setDays }: { days: number; setDays: (d: number) => 
           </table>
         </div>
 
-        <div className="panel overflow-hidden">
+        <div className={tablePanelCls}>
           <div className="eyebrow px-5 pt-4 pb-2">By model</div>
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[36rem] text-sm">
             <thead>
               <tr className="border-b border-hairline">
                 <th className={cx(thCls, 'pl-5')}>Model</th>
@@ -189,7 +225,7 @@ function OverviewTab({ days, setDays }: { days: number; setDays: (d: number) => 
             <tbody>
               {summary.byModel.map(m => (
                 <tr key={`${m.provider}/${m.model}`} className="border-b border-hairline/50 last:border-0">
-                  <td className={cx(tdCls, 'pl-5 font-mono text-xs text-brass-bright')}>{m.model}</td>
+                  <td className={cx(tdCls, 'pl-5 font-mono text-xs text-brass-bright break-all')}>{m.model}</td>
                   <td className={cx(tdCls, 'text-muted')}>{m.provider}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{num.format(m.totalTokens)}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted pr-5')}>{money(m.costUsd)}</td>
@@ -369,9 +405,9 @@ function UsersTab({ currentUser }: { currentUser: User }) {
         </Button>
       </div>
 
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-sm min-w-[820px]">
-          <thead>
+      <div className={viewportTablePanelCls}>
+        <table className="block w-full text-sm xl:table xl:min-w-[70rem]">
+          <thead className="hidden xl:table-header-group">
             <tr className="border-b border-hairline">
               <th className={cx(thCls, 'pl-5')}>User</th>
               <th className={thCls}>Role</th>
@@ -383,22 +419,22 @@ function UsersTab({ currentUser }: { currentUser: User }) {
               <th className={cx(thCls, 'text-right', 'pr-5')}>Actions</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block xl:table-row-group">
             {users.map(u => (
-              <tr key={u.id} className="border-b border-hairline/50 last:border-0 hover:bg-elevated/40 transition-colors">
-                <td className={cx(tdCls, 'pl-5')}>
-                  <div className="text-ink">{u.email}</div>
+              <tr key={u.id} className="block border-b border-hairline/50 last:border-0 hover:bg-elevated/40 transition-colors xl:table-row">
+                <ResponsiveCell label="User" className="pl-5">
+                  <div className="text-ink break-all">{u.email}</div>
                   {u.name && <div className="text-xs text-faint">{u.name}</div>}
-                </td>
-                <td className={tdCls}><StatusChip value={u.role} /></td>
-                <td className={tdCls}><StatusChip value={u.status} /></td>
-                <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{num.format(u.usage.monthTokens)}</td>
-                <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{money(u.usage.monthCostUsd)}</td>
-                <td className={cx(tdCls, 'text-right font-mono tabular-nums text-xs text-faint')}>
+                </ResponsiveCell>
+                <ResponsiveCell label="Role"><StatusChip value={u.role} /></ResponsiveCell>
+                <ResponsiveCell label="Status"><StatusChip value={u.status} /></ResponsiveCell>
+                <ResponsiveCell label="Month tokens" valueClassName="font-mono tabular-nums text-muted xl:text-right">{num.format(u.usage.monthTokens)}</ResponsiveCell>
+                <ResponsiveCell label="Month cost" valueClassName="font-mono tabular-nums text-muted xl:text-right">{money(u.usage.monthCostUsd)}</ResponsiveCell>
+                <ResponsiveCell label="Caps (d/m)" valueClassName="font-mono tabular-nums text-xs text-faint xl:text-right">
                   {u.dailyTokenLimit ? num.format(u.dailyTokenLimit) : '∞'} / {u.monthlyTokenLimit ? num.format(u.monthlyTokenLimit) : '∞'}
-                </td>
-                <td className={cx(tdCls, 'text-xs text-faint')}>{u.lastLoginAt ? fmtDate(u.lastLoginAt) : 'never'}</td>
-                <td className={cx(tdCls, 'pr-5')}>
+                </ResponsiveCell>
+                <ResponsiveCell label="Last login" valueClassName="text-xs text-faint">{u.lastLoginAt ? fmtDate(u.lastLoginAt) : 'never'}</ResponsiveCell>
+                <ResponsiveCell label="Actions" className="pr-5">
                   <div className="flex justify-end items-center gap-1.5">
                     <Button variant="ghost" sm onClick={() => setEditing(u)}>Edit</Button>
                     {u.id !== currentUser.id && (u.status === 'active' ? (
@@ -407,7 +443,7 @@ function UsersTab({ currentUser }: { currentUser: User }) {
                       <button onClick={() => quickSetStatus(u, 'active')} title="Re-enable user" className="p-1.5 rounded-lg text-success hover:bg-success/10 transition-colors"><ShieldCheck className="w-4 h-4" /></button>
                     ))}
                   </div>
-                </td>
+                </ResponsiveCell>
               </tr>
             ))}
             {!loading && users.length === 0 && (
@@ -478,9 +514,9 @@ function SecurityTab({ days }: { days: number }) {
         </div>
       )}
 
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-sm min-w-[760px]">
-          <thead>
+      <div className={viewportTablePanelCls}>
+        <table className="block w-full text-sm xl:table xl:min-w-[64rem]">
+          <thead className="hidden xl:table-header-group">
             <tr className="border-b border-hairline">
               <th className={cx(thCls, 'pl-5')}>Time</th>
               <th className={thCls}>User</th>
@@ -490,15 +526,15 @@ function SecurityTab({ days }: { days: number }) {
               <th className={cx(thCls, 'pr-5')}>Detail</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block xl:table-row-group">
             {shown.map(e => (
-              <tr key={e.id} className="border-b border-hairline/50 last:border-0 hover:bg-elevated/40 align-top transition-colors">
-                <td className={cx(tdCls, 'pl-5 font-mono text-xs text-faint whitespace-nowrap')}>{fmtDate(e.createdAt)}</td>
-                <td className={cx(tdCls, 'text-xs text-muted')}>{e.user?.email || '—'}</td>
-                <td className={cx(tdCls, 'font-mono text-xs text-ink')}>{e.action}</td>
-                <td className={tdCls}><StatusChip value={e.decision} /></td>
-                <td className={tdCls}><StatusChip value={e.severity} /></td>
-                <td className={cx(tdCls, 'pr-5 text-xs text-muted max-w-xs truncate')} title={e.detail || ''}>{e.detail || '—'}</td>
+              <tr key={e.id} className="block border-b border-hairline/50 last:border-0 hover:bg-elevated/40 transition-colors xl:table-row">
+                <ResponsiveCell label="Time" className="pl-5" valueClassName="font-mono text-xs text-faint xl:whitespace-nowrap">{fmtDate(e.createdAt)}</ResponsiveCell>
+                <ResponsiveCell label="User" valueClassName="text-xs text-muted break-all">{e.user?.email || '—'}</ResponsiveCell>
+                <ResponsiveCell label="Action" valueClassName="font-mono text-xs text-ink break-all">{e.action}</ResponsiveCell>
+                <ResponsiveCell label="Decision"><StatusChip value={e.decision} /></ResponsiveCell>
+                <ResponsiveCell label="Severity"><StatusChip value={e.severity} /></ResponsiveCell>
+                <ResponsiveCell label="Detail" className="pr-5 xl:min-w-[22rem]" valueClassName="text-xs text-muted whitespace-pre-wrap break-words">{formatAuditDetail(e.detail)}</ResponsiveCell>
               </tr>
             ))}
             {!loading && shown.length === 0 && (
@@ -578,35 +614,32 @@ function AuditTab() {
         </div>
       </div>
 
-      {/* Fixed layout + wrapping cells: the table always fits the viewport
-          width — long detail payloads wrap instead of forcing a horizontal
-          scrollbar. Lower-value columns collapse on narrow screens. */}
-      <div className="panel overflow-hidden">
-        <table className="w-full table-fixed text-sm">
-          <thead>
+      <div className={viewportTablePanelCls}>
+        <table className="block w-full text-sm xl:table xl:min-w-[72rem]">
+          <thead className="hidden xl:table-header-group">
             <tr className="border-b border-hairline">
               <th className={cx(thCls, 'pl-5 w-[7.5rem]')}>Time</th>
-              <th className={cx(thCls, 'hidden md:table-cell w-[11rem]')}>User</th>
+              <th className={cx(thCls, 'w-[11rem]')}>User</th>
               <th className={cx(thCls, 'w-[9rem]')}>Action</th>
               <th className={cx(thCls, 'w-[5.5rem]')}>Decision</th>
-              <th className={cx(thCls, 'hidden sm:table-cell w-[5.5rem]')}>Severity</th>
-              <th className={cx(thCls, 'hidden xl:table-cell w-[7rem]')}>IP</th>
+              <th className={cx(thCls, 'w-[5.5rem]')}>Severity</th>
+              <th className={cx(thCls, 'w-[7rem]')}>IP</th>
               <th className={cx(thCls, 'pr-5')}>Detail</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block xl:table-row-group">
             {events.map(e => (
-              <tr key={e.id} className="border-b border-hairline/50 last:border-0 hover:bg-elevated/40 align-top transition-colors">
-                <td className={cx(tdCls, 'pl-5 font-mono text-xs text-faint')}>{fmtDate(e.createdAt)}</td>
-                <td className={cx(tdCls, 'hidden md:table-cell text-xs text-muted break-words')}>{e.user?.email || '—'}</td>
-                <td className={cx(tdCls, 'font-mono text-xs text-ink break-words')}>
+              <tr key={e.id} className="block border-b border-hairline/50 last:border-0 hover:bg-elevated/40 transition-colors xl:table-row">
+                <ResponsiveCell label="Time" className="pl-5" valueClassName="font-mono text-xs text-faint">{fmtDate(e.createdAt)}</ResponsiveCell>
+                <ResponsiveCell label="User" valueClassName="text-xs text-muted break-all">{e.user?.email || '—'}</ResponsiveCell>
+                <ResponsiveCell label="Action" valueClassName="font-mono text-xs text-ink break-all">
                   {e.action}
-                  {e.resource && <span className="block text-faint truncate" title={e.resource}>{e.resource}</span>}
-                </td>
-                <td className={tdCls}><StatusChip value={e.decision} /></td>
-                <td className={cx(tdCls, 'hidden sm:table-cell')}><StatusChip value={e.severity} /></td>
-                <td className={cx(tdCls, 'hidden xl:table-cell font-mono text-xs text-faint break-words')}>{e.ip || '—'}</td>
-                <td className={cx(tdCls, 'pr-5 text-xs text-muted break-words')}>{e.detail || '—'}</td>
+                  {e.resource && <span className="block text-faint whitespace-pre-wrap break-all">{e.resource}</span>}
+                </ResponsiveCell>
+                <ResponsiveCell label="Decision"><StatusChip value={e.decision} /></ResponsiveCell>
+                <ResponsiveCell label="Severity"><StatusChip value={e.severity} /></ResponsiveCell>
+                <ResponsiveCell label="IP" valueClassName="font-mono text-xs text-faint break-all">{e.ip || '—'}</ResponsiveCell>
+                <ResponsiveCell label="Detail" className="pr-5 xl:min-w-[24rem]" valueClassName="text-xs text-muted whitespace-pre-wrap break-words">{formatAuditDetail(e.detail)}</ResponsiveCell>
               </tr>
             ))}
             {!loading && events.length === 0 && (
@@ -744,8 +777,8 @@ export default function AdminPage({ currentUser }: AdminPageProps) {
   ];
 
   return (
-    <div className="flex-1 overflow-y-auto bg-obsidian">
-      <div className="max-w-6xl mx-auto px-4 py-5 sm:px-6 sm:py-6">
+    <div className="min-w-0 flex-1 overflow-y-auto bg-obsidian">
+      <div className="w-full px-3 py-4 sm:px-5 sm:py-5 xl:px-6 xl:py-6">
         <div className="flex items-center gap-1 mb-6 rounded-xl border border-hairline bg-panel p-1 w-fit max-w-full overflow-x-auto no-scrollbar">
           {tabs.filter(t => isAdmin || !t.adminOnly).map(t => (
             <button
