@@ -14,6 +14,9 @@ import sttRouter from './routes/stt.js';
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
 import { authenticate, requireInternalKey, resolveUserFromToken, seedAdminUser } from './middleware/auth.js';
+import {
+  AiLogEvent, AiLogRecord, buildAiLogRecord, isPersistable, persistAiLog, startAiLogRetention,
+} from './services/aiLog.js';
 
 dotenv.config();
 
@@ -80,8 +83,32 @@ app.get('/api/health', (req, res) => {
 // can never inherit an auth exemption implicitly.
 app.post('/api/logs/:sessionId', requireInternalKey, (req, res) => {
   const { sessionId } = req.params;
-  const { step, message, type, data } = req.body;
-  emitLog(sessionId, { step, message, type, data });
+  const {
+    step, message, type, data, turn_id, tool, provider, model,
+    input_tokens, output_tokens, duration_ms, detail,
+  } = req.body || {};
+
+  // Streamed token deltas stay on the fast path: they are chat content for one
+  // session, never an activity record, and must not touch the database.
+  if (type === 'delta') {
+    io.to(`session:${sessionId}`).emit('log', { timestamp: new Date().toISOString(), step, message, type, data });
+    return res.json({ ok: true });
+  }
+
+  recordAiEvent({
+    sessionId,
+    turnId: turn_id ?? null,
+    step,
+    message,
+    type,
+    tool: tool ?? null,
+    provider: provider ?? null,
+    model: model ?? null,
+    inputTokens: input_tokens ?? 0,
+    outputTokens: output_tokens ?? 0,
+    durationMs: duration_ms ?? null,
+    detail: detail ?? data ?? null,
+  });
   res.json({ ok: true });
 });
 
@@ -149,27 +176,41 @@ io.on('connection', (socket) => {
   });
 });
 
-// Ring buffer of AI-service activity since this process started (i.e. since
-// the last deployment) — backfills the admin portal's live log view.
-const ADMIN_LOG_BUFFER_MAX = 1000;
-const adminLogBuffer: Array<{ sessionId: string; timestamp: string; step: string; message: string; type?: string }> = [];
+// Ring buffer of recent AI activity, kept only so a reconnecting admin client
+// renders instantly. The durable history lives in the AiActivityLog table.
+const ADMIN_LOG_BUFFER_MAX = 500;
+const adminLogBuffer: AiLogRecord[] = [];
 app.locals.adminLogBuffer = adminLogBuffer;
 
-// Helper to emit logs to a session (and mirror to the admin stream)
+/**
+ * Record one AI activity event: resolve the acting user and cost, mirror it to
+ * the session's own log stream, broadcast it to admin viewers (who can then
+ * filter by user id), and persist it.
+ */
+export function recordAiEvent(event: AiLogEvent) {
+  buildAiLogRecord(prisma, event)
+    .then(record => {
+      io.to(`session:${record.sessionId}`).emit('log', {
+        timestamp: record.timestamp,
+        step: record.step,
+        message: record.message,
+        type: record.type,
+      });
+      if (!isPersistable(record)) {
+        io.to('admin:logs').emit('admin-log', record);
+        return;
+      }
+      adminLogBuffer.push(record);
+      if (adminLogBuffer.length > ADMIN_LOG_BUFFER_MAX) adminLogBuffer.shift();
+      io.to('admin:logs').emit('admin-log', record);
+      return persistAiLog(prisma, record);
+    })
+    .catch(err => console.error('[AI-LOG] Failed to record event:', err?.message || err));
+}
+
+/** Back-compat helper for callers that only emit session progress messages. */
 export function emitLog(sessionId: string, log: { step: string; message: string; type?: string; data?: any }) {
-  const entry = {
-    timestamp: new Date().toISOString(),
-    ...log
-  };
-  io.to(`session:${sessionId}`).emit('log', entry);
-  // Streamed token deltas are chat content, not operational activity — keep
-  // them out of the admin stream and its backfill buffer.
-  if (log.type !== 'delta') {
-    const adminEntry = { sessionId, timestamp: entry.timestamp, step: log.step, message: log.message, type: log.type };
-    adminLogBuffer.push(adminEntry);
-    if (adminLogBuffer.length > ADMIN_LOG_BUFFER_MAX) adminLogBuffer.shift();
-    io.to('admin:logs').emit('admin-log', adminEntry);
-  }
+  recordAiEvent({ sessionId, step: log.step, message: log.message, type: log.type, detail: log.data });
 }
 
 // Graceful shutdown
@@ -189,6 +230,7 @@ httpServer.listen(PORT, async () => {
   } catch (err) {
     console.error('[AUTH] Failed to seed admin user:', err);
   }
+  startAiLogRetention(prisma);
 });
 
 export { prisma };

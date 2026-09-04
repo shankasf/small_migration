@@ -7,6 +7,9 @@ interface ChatRequest {
   message: string;
   files?: Record<string, string>;
   history?: Array<{ role: string; content: string }>;
+  /** Identity of the turn, so AI-service activity logs are attributable. */
+  user_id?: string;
+  turn_id?: string;
 }
 
 interface GeneratedFile {

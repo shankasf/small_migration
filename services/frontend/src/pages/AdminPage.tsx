@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Users, BarChart3, ShieldAlert, RefreshCw, UserPlus, Ban, ShieldCheck, AlertTriangle,
-  ScrollText, Activity, Pause, Play, Trash2,
+  ScrollText, Activity, Pause, Play,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { getToken } from '../services/auth';
 import {
   adminGetUsers, adminGetUsageSummary, adminGetAudit, adminGetSecuritySummary,
-  adminGetAiLogs, adminCreateUser, adminUpdateUser, apiErrorMessage,
+  adminGetAiLogs, adminGetAiLogFacets, adminCreateUser, adminUpdateUser, apiErrorMessage,
 } from '../services/api';
+import type { AdminAiLog, AdminAiLogFacets, AdminAiLogPage } from '../services/api';
 import { AdminUser, AuditEvent, SecuritySummary, UsageSummary, User } from '../types';
 import { Button, CenterSpinner, Field, Modal, Stat, StatusChip, Spinner, cx } from '../components/ui';
 
@@ -17,6 +18,9 @@ const num = new Intl.NumberFormat('en-NZ');
 const money = (v: number) => `$${v.toFixed(v >= 100 ? 0 : v >= 1 ? 2 : 4)}`;
 const fmtDate = (iso: string) => new Date(iso).toLocaleString('en-NZ', {
   day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+});
+const fmtClock = (iso: string) => new Date(iso).toLocaleTimeString('en-NZ', {
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
 });
 
 type Tab = 'overview' | 'users' | 'security' | 'audit' | 'ailogs';
@@ -82,14 +86,23 @@ function DailyTokensChart({ daily }: { daily: UsageSummary['daily'] }) {
   );
 }
 
-// Admin tables keep every column and value available. Dense rows become
-// labelled records below desktop width; on wider screens they expand across
-// the full canvas. Wrapping prevents long emails, resource names, and JSON
-// detail payloads from being clipped or ellipsised.
-const thCls = 'sticky top-0 z-10 bg-panel px-2 py-2.5 sm:px-3 xl:px-4 font-mono text-[11px] uppercase tracking-wider text-faint font-medium text-left align-top';
-const tdCls = 'px-2 py-2.5 sm:px-3 xl:px-4 align-top break-words';
+// Admin tables keep every column and every value available. Below desktop
+// width a row becomes a labelled record; from `xl` up the table switches to a
+// fixed layout whose column widths are declared per table, so columns keep
+// steady, readable proportions instead of stretching apart on wide screens.
+// Values always wrap — never truncate — so long emails, resource names and
+// JSON detail payloads stay complete.
+const thCls =
+  'sticky top-0 z-10 border-b border-hairline bg-panel px-4 py-3 first:pl-6 last:pr-6 ' +
+  'text-left align-bottom font-mono text-[11px] font-medium uppercase tracking-wider text-faint';
+const tdCls = 'px-5 py-1.5 align-top break-words xl:px-4 xl:py-3.5 xl:first:pl-6 xl:last:pr-6';
+const tableCls = 'block w-full text-sm xl:table xl:table-fixed';
+const rowCls =
+  'block py-2.5 border-b border-hairline/60 last:border-0 transition-colors ' +
+  'hover:bg-elevated/40 xl:table-row xl:py-0';
 const tablePanelCls = 'panel overflow-auto overscroll-contain';
-const viewportTablePanelCls = 'panel max-h-[calc(100dvh-13rem)] overflow-auto overscroll-contain';
+const viewportTablePanelCls = 'panel max-h-[calc(100dvh-15rem)] overflow-auto overscroll-contain';
+const emptyCellCls = 'block px-6 py-10 text-center text-faint xl:table-cell';
 
 function ResponsiveCell({ label, children, className, valueClassName }: {
   label: string;
@@ -98,7 +111,7 @@ function ResponsiveCell({ label, children, className, valueClassName }: {
   valueClassName?: string;
 }) {
   return (
-    <td className={cx(tdCls, 'grid grid-cols-[7rem_minmax(0,1fr)] gap-3 xl:table-cell', className)}>
+    <td className={cx(tdCls, 'grid grid-cols-[8rem_minmax(0,1fr)] items-baseline gap-3 xl:table-cell', className)}>
       <span className="font-mono text-[10px] font-medium uppercase tracking-wider text-faint xl:hidden">{label}</span>
       <div className={cx('min-w-0', valueClassName)}>{children}</div>
     </td>
@@ -118,6 +131,20 @@ function formatAuditDetail(detail: string | null): string {
   } catch {
     return detail;
   }
+}
+
+// Structured (pretty-printed JSON) payloads read as a code block; one-liners
+// stay inline prose. Either way the full text is rendered and wrapped.
+function AuditDetail({ detail }: { detail: string | null }) {
+  const text = formatAuditDetail(detail);
+  if (!text.includes('\n')) {
+    return <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{text}</div>;
+  }
+  return (
+    <pre className="max-w-full whitespace-pre-wrap break-words rounded-lg border border-hairline/70 bg-obsidian/40 px-3 py-2 font-mono text-[11.5px] leading-relaxed text-muted">
+      {text}
+    </pre>
+  );
 }
 
 function OverviewTab({ days, setDays }: { days: number; setDays: (d: number) => void }) {
@@ -185,54 +212,66 @@ function OverviewTab({ days, setDays }: { days: number; setDays: (d: number) => 
 
       <div className="grid lg:grid-cols-2 gap-6">
         <div className={tablePanelCls}>
-          <div className="eyebrow px-5 pt-4 pb-2">Top users (this month)</div>
-          <table className="w-full min-w-[36rem] text-sm">
+          <div className="eyebrow px-6 pt-5 pb-3">Top users (this month)</div>
+          <table className="w-full min-w-[34rem] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[42%]" />
+              <col className="w-[21%]" />
+              <col className="w-[19%]" />
+              <col className="w-[18%]" />
+            </colgroup>
             <thead>
-              <tr className="border-b border-hairline">
-                <th className={cx(thCls, 'pl-5')}>User</th>
+              <tr>
+                <th className={thCls}>User</th>
                 <th className={cx(thCls, 'text-right')}>Tokens</th>
                 <th className={cx(thCls, 'text-right')}>Cost</th>
-                <th className={cx(thCls, 'text-right', 'pr-5')}>Sessions</th>
+                <th className={cx(thCls, 'text-right')}>Sessions</th>
               </tr>
             </thead>
             <tbody>
               {topUsers.map(u => (
-                <tr key={u.id} className="border-b border-hairline/50 last:border-0">
-                  <td className={cx(tdCls, 'pl-5 text-ink break-all')}>{u.email}</td>
+                <tr key={u.id} className="border-b border-hairline/60 transition-colors last:border-0 hover:bg-elevated/40">
+                  <td className={cx(tdCls, 'text-ink')}>{u.email}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{num.format(u.usage.monthTokens)}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{money(u.usage.monthCostUsd)}</td>
-                  <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted pr-5')}>{u.usage.sessions}</td>
+                  <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{u.usage.sessions}</td>
                 </tr>
               ))}
               {topUsers.length === 0 && (
-                <tr><td colSpan={4} className="px-5 py-6 text-center text-faint">No users yet</td></tr>
+                <tr><td colSpan={4} className="px-6 py-10 text-center text-faint">No users yet</td></tr>
               )}
             </tbody>
           </table>
         </div>
 
         <div className={tablePanelCls}>
-          <div className="eyebrow px-5 pt-4 pb-2">By model</div>
-          <table className="w-full min-w-[36rem] text-sm">
+          <div className="eyebrow px-6 pt-5 pb-3">By model</div>
+          <table className="w-full min-w-[34rem] table-fixed text-sm">
+            <colgroup>
+              <col className="w-[40%]" />
+              <col className="w-[20%]" />
+              <col className="w-[21%]" />
+              <col className="w-[19%]" />
+            </colgroup>
             <thead>
-              <tr className="border-b border-hairline">
-                <th className={cx(thCls, 'pl-5')}>Model</th>
+              <tr>
+                <th className={thCls}>Model</th>
                 <th className={thCls}>Provider</th>
                 <th className={cx(thCls, 'text-right')}>Tokens</th>
-                <th className={cx(thCls, 'text-right', 'pr-5')}>Cost</th>
+                <th className={cx(thCls, 'text-right')}>Cost</th>
               </tr>
             </thead>
             <tbody>
               {summary.byModel.map(m => (
-                <tr key={`${m.provider}/${m.model}`} className="border-b border-hairline/50 last:border-0">
-                  <td className={cx(tdCls, 'pl-5 font-mono text-xs text-brass-bright break-all')}>{m.model}</td>
+                <tr key={`${m.provider}/${m.model}`} className="border-b border-hairline/60 transition-colors last:border-0 hover:bg-elevated/40">
+                  <td className={cx(tdCls, 'font-mono text-xs text-brass-bright')}>{m.model}</td>
                   <td className={cx(tdCls, 'text-muted')}>{m.provider}</td>
                   <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{num.format(m.totalTokens)}</td>
-                  <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted pr-5')}>{money(m.costUsd)}</td>
+                  <td className={cx(tdCls, 'text-right font-mono tabular-nums text-muted')}>{money(m.costUsd)}</td>
                 </tr>
               ))}
               {summary.byModel.length === 0 && (
-                <tr><td colSpan={4} className="px-5 py-6 text-center text-faint">No usage in this window</td></tr>
+                <tr><td colSpan={4} className="px-6 py-10 text-center text-faint">No usage in this window</td></tr>
               )}
             </tbody>
           </table>
@@ -406,25 +445,35 @@ function UsersTab({ currentUser }: { currentUser: User }) {
       </div>
 
       <div className={viewportTablePanelCls}>
-        <table className="block w-full text-sm xl:table xl:min-w-[70rem]">
+        <table className={cx(tableCls, 'xl:min-w-[68rem]')}>
+          <colgroup className="hidden xl:table-column-group">
+            <col className="w-[24%]" />
+            <col className="w-[9%]" />
+            <col className="w-[10%]" />
+            <col className="w-[11%]" />
+            <col className="w-[10%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+          </colgroup>
           <thead className="hidden xl:table-header-group">
-            <tr className="border-b border-hairline">
-              <th className={cx(thCls, 'pl-5')}>User</th>
+            <tr>
+              <th className={thCls}>User</th>
               <th className={thCls}>Role</th>
               <th className={thCls}>Status</th>
               <th className={cx(thCls, 'text-right')}>Month tokens</th>
               <th className={cx(thCls, 'text-right')}>Month cost</th>
               <th className={cx(thCls, 'text-right')}>Caps (d/m)</th>
               <th className={thCls}>Last login</th>
-              <th className={cx(thCls, 'text-right', 'pr-5')}>Actions</th>
+              <th className={cx(thCls, 'text-right')}>Actions</th>
             </tr>
           </thead>
           <tbody className="block xl:table-row-group">
             {users.map(u => (
-              <tr key={u.id} className="block border-b border-hairline/50 last:border-0 hover:bg-elevated/40 transition-colors xl:table-row">
-                <ResponsiveCell label="User" className="pl-5">
-                  <div className="text-ink break-all">{u.email}</div>
-                  {u.name && <div className="text-xs text-faint">{u.name}</div>}
+              <tr key={u.id} className={rowCls}>
+                <ResponsiveCell label="User">
+                  <div className="break-words text-ink">{u.email}</div>
+                  {u.name && <div className="mt-0.5 text-xs text-faint">{u.name}</div>}
                 </ResponsiveCell>
                 <ResponsiveCell label="Role"><StatusChip value={u.role} /></ResponsiveCell>
                 <ResponsiveCell label="Status"><StatusChip value={u.status} /></ResponsiveCell>
@@ -434,8 +483,8 @@ function UsersTab({ currentUser }: { currentUser: User }) {
                   {u.dailyTokenLimit ? num.format(u.dailyTokenLimit) : '∞'} / {u.monthlyTokenLimit ? num.format(u.monthlyTokenLimit) : '∞'}
                 </ResponsiveCell>
                 <ResponsiveCell label="Last login" valueClassName="text-xs text-faint">{u.lastLoginAt ? fmtDate(u.lastLoginAt) : 'never'}</ResponsiveCell>
-                <ResponsiveCell label="Actions" className="pr-5">
-                  <div className="flex justify-end items-center gap-1.5">
+                <ResponsiveCell label="Actions">
+                  <div className="flex flex-wrap items-center gap-1.5 xl:justify-end">
                     <Button variant="ghost" sm onClick={() => setEditing(u)}>Edit</Button>
                     {u.id !== currentUser.id && (u.status === 'active' ? (
                       <button onClick={() => quickSetStatus(u, 'disabled')} title="Disable user" className="p-1.5 rounded-lg text-danger hover:bg-danger/10 transition-colors"><Ban className="w-4 h-4" /></button>
@@ -447,7 +496,7 @@ function UsersTab({ currentUser }: { currentUser: User }) {
               </tr>
             ))}
             {!loading && users.length === 0 && (
-              <tr><td colSpan={8} className="px-5 py-8 text-center text-faint">No users</td></tr>
+              <tr className="block xl:table-row"><td colSpan={8} className={emptyCellCls}>No users</td></tr>
             )}
           </tbody>
         </table>
@@ -515,30 +564,38 @@ function SecurityTab({ days }: { days: number }) {
       )}
 
       <div className={viewportTablePanelCls}>
-        <table className="block w-full text-sm xl:table xl:min-w-[64rem]">
+        <table className={cx(tableCls, 'xl:min-w-[62rem]')}>
+          <colgroup className="hidden xl:table-column-group">
+            <col className="w-[11%]" />
+            <col className="w-[16%]" />
+            <col className="w-[14%]" />
+            <col className="w-[9%]" />
+            <col className="w-[9%]" />
+            <col className="w-[41%]" />
+          </colgroup>
           <thead className="hidden xl:table-header-group">
-            <tr className="border-b border-hairline">
-              <th className={cx(thCls, 'pl-5')}>Time</th>
+            <tr>
+              <th className={thCls}>Time</th>
               <th className={thCls}>User</th>
               <th className={thCls}>Action</th>
               <th className={thCls}>Decision</th>
               <th className={thCls}>Severity</th>
-              <th className={cx(thCls, 'pr-5')}>Detail</th>
+              <th className={thCls}>Detail</th>
             </tr>
           </thead>
           <tbody className="block xl:table-row-group">
             {shown.map(e => (
-              <tr key={e.id} className="block border-b border-hairline/50 last:border-0 hover:bg-elevated/40 transition-colors xl:table-row">
-                <ResponsiveCell label="Time" className="pl-5" valueClassName="font-mono text-xs text-faint xl:whitespace-nowrap">{fmtDate(e.createdAt)}</ResponsiveCell>
-                <ResponsiveCell label="User" valueClassName="text-xs text-muted break-all">{e.user?.email || '—'}</ResponsiveCell>
-                <ResponsiveCell label="Action" valueClassName="font-mono text-xs text-ink break-all">{e.action}</ResponsiveCell>
+              <tr key={e.id} className={rowCls}>
+                <ResponsiveCell label="Time" valueClassName="font-mono text-xs text-faint">{fmtDate(e.createdAt)}</ResponsiveCell>
+                <ResponsiveCell label="User" valueClassName="break-words text-xs text-muted">{e.user?.email || '—'}</ResponsiveCell>
+                <ResponsiveCell label="Action" valueClassName="break-words font-mono text-xs text-ink">{e.action}</ResponsiveCell>
                 <ResponsiveCell label="Decision"><StatusChip value={e.decision} /></ResponsiveCell>
                 <ResponsiveCell label="Severity"><StatusChip value={e.severity} /></ResponsiveCell>
-                <ResponsiveCell label="Detail" className="pr-5 xl:min-w-[22rem]" valueClassName="text-xs text-muted whitespace-pre-wrap break-words">{formatAuditDetail(e.detail)}</ResponsiveCell>
+                <ResponsiveCell label="Detail"><AuditDetail detail={e.detail} /></ResponsiveCell>
               </tr>
             ))}
             {!loading && shown.length === 0 && (
-              <tr><td colSpan={6} className="px-5 py-8 text-center text-faint">No events</td></tr>
+              <tr className="block xl:table-row"><td colSpan={6} className={emptyCellCls}>No events</td></tr>
             )}
           </tbody>
         </table>
@@ -615,35 +672,44 @@ function AuditTab() {
       </div>
 
       <div className={viewportTablePanelCls}>
-        <table className="block w-full text-sm xl:table xl:min-w-[72rem]">
+        <table className={cx(tableCls, 'xl:min-w-[70rem]')}>
+          <colgroup className="hidden xl:table-column-group">
+            <col className="w-[10%]" />
+            <col className="w-[15%]" />
+            <col className="w-[15%]" />
+            <col className="w-[8%]" />
+            <col className="w-[8%]" />
+            <col className="w-[9%]" />
+            <col className="w-[35%]" />
+          </colgroup>
           <thead className="hidden xl:table-header-group">
-            <tr className="border-b border-hairline">
-              <th className={cx(thCls, 'pl-5 w-[7.5rem]')}>Time</th>
-              <th className={cx(thCls, 'w-[11rem]')}>User</th>
-              <th className={cx(thCls, 'w-[9rem]')}>Action</th>
-              <th className={cx(thCls, 'w-[5.5rem]')}>Decision</th>
-              <th className={cx(thCls, 'w-[5.5rem]')}>Severity</th>
-              <th className={cx(thCls, 'w-[7rem]')}>IP</th>
-              <th className={cx(thCls, 'pr-5')}>Detail</th>
+            <tr>
+              <th className={thCls}>Time</th>
+              <th className={thCls}>User</th>
+              <th className={thCls}>Action</th>
+              <th className={thCls}>Decision</th>
+              <th className={thCls}>Severity</th>
+              <th className={thCls}>IP</th>
+              <th className={thCls}>Detail</th>
             </tr>
           </thead>
           <tbody className="block xl:table-row-group">
             {events.map(e => (
-              <tr key={e.id} className="block border-b border-hairline/50 last:border-0 hover:bg-elevated/40 transition-colors xl:table-row">
-                <ResponsiveCell label="Time" className="pl-5" valueClassName="font-mono text-xs text-faint">{fmtDate(e.createdAt)}</ResponsiveCell>
-                <ResponsiveCell label="User" valueClassName="text-xs text-muted break-all">{e.user?.email || '—'}</ResponsiveCell>
-                <ResponsiveCell label="Action" valueClassName="font-mono text-xs text-ink break-all">
+              <tr key={e.id} className={rowCls}>
+                <ResponsiveCell label="Time" valueClassName="font-mono text-xs text-faint">{fmtDate(e.createdAt)}</ResponsiveCell>
+                <ResponsiveCell label="User" valueClassName="break-words text-xs text-muted">{e.user?.email || '—'}</ResponsiveCell>
+                <ResponsiveCell label="Action" valueClassName="break-words font-mono text-xs text-ink">
                   {e.action}
-                  {e.resource && <span className="block text-faint whitespace-pre-wrap break-all">{e.resource}</span>}
+                  {e.resource && <span className="mt-0.5 block whitespace-pre-wrap break-words text-faint">{e.resource}</span>}
                 </ResponsiveCell>
                 <ResponsiveCell label="Decision"><StatusChip value={e.decision} /></ResponsiveCell>
                 <ResponsiveCell label="Severity"><StatusChip value={e.severity} /></ResponsiveCell>
-                <ResponsiveCell label="IP" valueClassName="font-mono text-xs text-faint break-all">{e.ip || '—'}</ResponsiveCell>
-                <ResponsiveCell label="Detail" className="pr-5 xl:min-w-[24rem]" valueClassName="text-xs text-muted whitespace-pre-wrap break-words">{formatAuditDetail(e.detail)}</ResponsiveCell>
+                <ResponsiveCell label="IP" valueClassName="break-words font-mono text-xs text-faint">{e.ip || '—'}</ResponsiveCell>
+                <ResponsiveCell label="Detail"><AuditDetail detail={e.detail} /></ResponsiveCell>
               </tr>
             ))}
             {!loading && events.length === 0 && (
-              <tr><td colSpan={7} className="px-5 py-8 text-center text-faint">No events match these filters</td></tr>
+              <tr className="block xl:table-row"><td colSpan={7} className={emptyCellCls}>No events match these filters</td></tr>
             )}
           </tbody>
         </table>
@@ -655,36 +721,158 @@ function AuditTab() {
 
 // ---------------------------------------------------------------- AI logs (live)
 
-interface AdminLogEntry {
-  sessionId: string;
-  timestamp: string;
-  step: string;
-  message: string;
-  type?: string;
-}
+// Event vocabulary emitted by the agent pipeline. Each row of the log is one
+// of these; the colour carries severity, the chip carries the kind of step.
+const STEP_LABELS: Record<string, string> = {
+  'turn.start': 'Turn start',
+  'guardrail': 'Guardrail',
+  'llm.call': 'Model call',
+  'tool.call': 'Tool call',
+  'tool.result': 'Tool result',
+  'agent.output': 'Output',
+  'turn.complete': 'Turn summary',
+  'error': 'Error',
+};
 
-const logTypeColor = (type?: string) =>
+const stepStyle = (step: string, type: string) =>
+  type === 'error' ? '!border-danger/40 !text-danger'
+  : step === 'llm.call' || step === 'turn.complete' ? '!border-brass/40 !text-brass-bright'
+  : step.startsWith('tool.') ? '!border-signal/40 !text-signal'
+  : step === 'guardrail' ? '!border-warn/40 !text-warn'
+  : step === 'agent.output' ? '!border-success/40 !text-success'
+  : '!border-hairline !text-muted';
+
+const logTextColor = (type: string) =>
   type === 'error' ? 'text-danger'
-  : type === 'success' ? 'text-success'
+  : type === 'success' ? 'text-ink'
   : type === 'thinking' || type === 'progress' ? 'text-faint'
   : 'text-muted';
 
+const shortId = (id?: string | null) => (id ? id.slice(0, 8) : '—');
+
+function prettyDetail(detail: string | null): string | null {
+  if (!detail) return null;
+  try {
+    return JSON.stringify(JSON.parse(detail), null, 2);
+  } catch {
+    return detail;
+  }
+}
+
+/** One activity row; the detail payload (tool args, result, output) expands. */
+function AiLogRow({ log }: { log: AdminAiLog }) {
+  const [open, setOpen] = useState(false);
+  const detail = prettyDetail(log.detail);
+  const hasTokens = log.totalTokens > 0;
+
+  return (
+    <div className="border-b border-hairline/50 last:border-0">
+      <button
+        type="button"
+        onClick={() => detail && setOpen(o => !o)}
+        className={cx(
+          'grid w-full grid-cols-1 items-start gap-x-4 gap-y-1.5 px-6 py-3 text-left transition-colors',
+          'lg:grid-cols-[5.5rem_13rem_8.5rem_7rem_minmax(0,1fr)_7.5rem]',
+          detail ? 'cursor-pointer hover:bg-elevated/40' : 'cursor-default',
+        )}
+      >
+        <span className="font-mono text-[11px] tabular-nums text-faint">{fmtClock(log.timestamp)}</span>
+
+        <span className="min-w-0">
+          <span className="block break-words text-xs text-ink">{log.userEmail || 'unattributed'}</span>
+          <span className="block font-mono text-[10px] text-faint">
+            user {shortId(log.userId)} · turn {shortId(log.turnId)}
+          </span>
+        </span>
+
+        <span className="min-w-0">
+          <span className={cx('chip !py-0.5 !text-[10px] uppercase tracking-wide', stepStyle(log.step, log.type))}>
+            {STEP_LABELS[log.step] || log.step}
+          </span>
+        </span>
+
+        <span className="min-w-0 font-mono text-[11px] text-signal">
+          {log.tool || (log.model ? <span className="text-brass">{log.model}</span> : <span className="text-faint">—</span>)}
+        </span>
+
+        <span className={cx('min-w-0 whitespace-pre-wrap break-words text-xs leading-relaxed', logTextColor(log.type))}>
+          {log.message}
+          {detail && (
+            <span className="ml-2 font-mono text-[10px] text-faint">{open ? '▾ hide detail' : '▸ detail'}</span>
+          )}
+        </span>
+
+        <span className="min-w-0 font-mono text-[11px] tabular-nums lg:text-right">
+          {hasTokens ? (
+            <>
+              <span className="block text-ink">{num.format(log.totalTokens)} tok</span>
+              <span className="block text-[10px] text-faint">
+                {num.format(log.inputTokens)} in / {num.format(log.outputTokens)} out
+              </span>
+              <span className="block text-[10px] text-brass">{money(log.costUsd)}</span>
+            </>
+          ) : log.durationMs != null ? (
+            <span className="block text-faint">{log.durationMs} ms</span>
+          ) : (
+            <span className="block text-faint">—</span>
+          )}
+        </span>
+      </button>
+
+      {open && detail && (
+        <pre className="mx-6 mb-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-hairline/70 bg-obsidian/40 px-3 py-2 font-mono text-[11.5px] leading-relaxed text-muted">
+          {detail}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function AiLogsTab() {
-  const [logs, setLogs] = useState<AdminLogEntry[]>([]);
+  const [logs, setLogs] = useState<AdminAiLog[]>([]);
+  const [facets, setFacets] = useState<AdminAiLogFacets | null>(null);
+  const [totals, setTotals] = useState<AdminAiLogPage['totals'] | null>(null);
   const [connected, setConnected] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Filters. `userId` is the important one: the log is read per user id, so an
+  // admin can follow exactly what one person's turns asked the agent to do.
+  const [userId, setUserId] = useState('');
+  const [step, setStep] = useState('');
+  const [tool, setTool] = useState('');
+  const [days, setDays] = useState(7);
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+
+  const filtersRef = useRef({ userId, step, tool, search });
+  filtersRef.current = { userId, step, tool, search };
   const pausedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { pausedRef.current = paused; }, [paused]);
 
-  // Backfill: everything the AI service logged since the last deployment
-  useEffect(() => {
-    adminGetAiLogs()
-      .then(history => setLogs(prev => (prev.length ? prev : history)))
-      .catch(err => console.error('Failed to load AI log history:', err));
-  }, []);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [page, facetData] = await Promise.all([
+        adminGetAiLogs({ userId, step, tool, q: search, days, limit: 500 }),
+        adminGetAiLogFacets(days),
+      ]);
+      setLogs(page.entries);
+      setTotals(page.totals);
+      setFacets(facetData);
+    } catch (err) {
+      console.error('Failed to load AI activity:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [userId, step, tool, search, days]);
 
+  useEffect(() => { load(); }, [load]);
+
+  // Live tail. Events arriving for a filtered-out user are dropped client-side
+  // so the view keeps meaning what its filters say it means.
   useEffect(() => {
     const socket = io(window.location.origin, {
       path: '/api/socket.io',
@@ -697,9 +885,14 @@ function AiLogsTab() {
       socket.emit('join-admin-logs');
     });
     socket.on('disconnect', () => setConnected(false));
-    socket.on('admin-log', (log: AdminLogEntry) => {
+    socket.on('admin-log', (log: AdminAiLog) => {
       if (pausedRef.current) return;
-      setLogs(prev => [...prev.slice(-499), log]); // keep the last 500 lines
+      const f = filtersRef.current;
+      if (f.userId && log.userId !== f.userId) return;
+      if (f.step && log.step !== f.step) return;
+      if (f.tool && log.tool !== f.tool) return;
+      if (f.search && !`${log.message} ${log.detail || ''}`.toLowerCase().includes(f.search.toLowerCase())) return;
+      setLogs(prev => [...prev.slice(-999), log]);
     });
     return () => {
       socket.emit('leave-admin-logs');
@@ -711,9 +904,8 @@ function AiLogsTab() {
     if (!paused) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, paused]);
 
-  const fmtTime = (iso: string) => new Date(iso).toLocaleTimeString('en-NZ', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
+  const selectCls = 'field !h-8 !py-0 !px-2 !text-xs !w-auto';
+  const selectedUser = facets?.users.find(u => u.userId === userId);
 
   return (
     <div className="space-y-4 animate-fade-up">
@@ -724,37 +916,81 @@ function AiLogsTab() {
             {connected ? 'live' : 'disconnected'}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <select className={selectCls} value={userId} onChange={e => setUserId(e.target.value)}>
+            <option value="">All users</option>
+            {facets?.users.map(u => (
+              <option key={u.userId ?? 'none'} value={u.userId ?? ''}>
+                {u.email} · {num.format(u.totalTokens)} tok
+              </option>
+            ))}
+          </select>
+          <select className={selectCls} value={step} onChange={e => setStep(e.target.value)}>
+            <option value="">All events</option>
+            {facets?.steps.map(s => (
+              <option key={s.step} value={s.step}>{STEP_LABELS[s.step] || s.step} ({s.events})</option>
+            ))}
+          </select>
+          <select className={selectCls} value={tool} onChange={e => setTool(e.target.value)}>
+            <option value="">All tools</option>
+            {facets?.tools.map(t => (
+              <option key={t.tool} value={t.tool}>{t.tool} ({t.calls})</option>
+            ))}
+          </select>
+          <select className={selectCls} value={days} onChange={e => setDays(Number(e.target.value))}>
+            <option value={1}>24 hours</option>
+            <option value={7}>7 days</option>
+            <option value={30}>30 days</option>
+          </select>
+          <input
+            className="field !h-8 !py-0 !px-2 !text-xs w-44"
+            placeholder="Search logs (Enter)…"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') setSearch(searchInput.trim()); }}
+          />
           <button
             onClick={() => setPaused(p => !p)}
-            className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-hairline text-xs text-muted hover:bg-elevated hover:text-ink transition-colors"
+            className="flex h-8 items-center gap-1.5 rounded-md border border-hairline px-3 text-xs text-muted transition-colors hover:bg-elevated hover:text-ink"
           >
-            {paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+            {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button
-            onClick={() => setLogs([])}
-            className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-hairline text-xs text-muted hover:bg-elevated hover:text-danger transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" /> Clear
+          <button onClick={load} className="flex h-8 w-8 items-center justify-center rounded-md border border-hairline text-muted transition-colors hover:bg-elevated hover:text-ink" title="Refresh">
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
 
-      <div className="panel overflow-y-auto max-h-[65vh] p-4 font-mono text-xs leading-relaxed">
-        {logs.length === 0 && (
-          <p className="py-8 text-center font-sans text-faint">
-            Waiting for activity — log lines appear here as the AI service processes user requests.
+      {/* What the current filter covers — the per-user readout when one is picked */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat label={selectedUser ? 'Events (user)' : 'Events'} value={num.format(totals?.events ?? 0)} sub={`last ${days}d`} />
+        <Stat label="Tokens" value={num.format(totals?.totalTokens ?? 0)} sub={`${num.format(totals?.inputTokens ?? 0)} in / ${num.format(totals?.outputTokens ?? 0)} out`} />
+        <Stat label="Cost" value={money(totals?.costUsd ?? 0)} sub={selectedUser ? selectedUser.email : 'all users'} accent />
+        <Stat
+          label="Users active"
+          value={String(facets?.users.filter(u => u.userId).length ?? 0)}
+          sub="with agent activity"
+        />
+      </div>
+
+      <div className={viewportTablePanelCls}>
+        <div className="sticky top-0 z-10 hidden border-b border-hairline bg-panel px-6 py-3 font-mono text-[11px] font-medium uppercase tracking-wider text-faint lg:grid lg:grid-cols-[5.5rem_13rem_8.5rem_7rem_minmax(0,1fr)_7.5rem] lg:gap-4">
+          <span>Time</span>
+          <span>User</span>
+          <span>Event</span>
+          <span>Tool / model</span>
+          <span>Message</span>
+          <span className="text-right">Tokens / cost</span>
+        </div>
+
+        {!loading && logs.length === 0 && (
+          <p className="px-6 py-12 text-center text-sm text-faint">
+            No agent activity for these filters — log lines appear here as users run turns.
           </p>
         )}
-        {logs.map((log, i) => (
-          <div key={i} className="flex gap-3 py-0.5 border-b border-hairline/30 last:border-0">
-            <span className="text-faint whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</span>
-            <span className="text-brass whitespace-nowrap" title={log.sessionId}>{log.sessionId.slice(0, 8)}</span>
-            <span className="text-faint whitespace-nowrap">{log.step}</span>
-            <span className={cx('break-all', logTypeColor(log.type))}>{log.message}</span>
-          </div>
-        ))}
+        {logs.map(log => <AiLogRow key={log.id} log={log} />)}
+        {loading && <div className="flex justify-center py-6"><Spinner /></div>}
         <div ref={bottomRef} />
       </div>
     </div>
@@ -778,8 +1014,8 @@ export default function AdminPage({ currentUser }: AdminPageProps) {
 
   return (
     <div className="min-w-0 flex-1 overflow-y-auto bg-obsidian">
-      <div className="w-full px-3 py-4 sm:px-5 sm:py-5 xl:px-6 xl:py-6">
-        <div className="flex items-center gap-1 mb-6 rounded-xl border border-hairline bg-panel p-1 w-fit max-w-full overflow-x-auto no-scrollbar">
+      <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6 sm:py-6 xl:px-8">
+        <div className="mb-6 flex w-fit max-w-full items-center gap-1 overflow-x-auto rounded-xl border border-hairline bg-panel p-1 no-scrollbar">
           {tabs.filter(t => isAdmin || !t.adminOnly).map(t => (
             <button
               key={t.id}

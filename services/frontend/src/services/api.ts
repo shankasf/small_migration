@@ -209,17 +209,82 @@ export async function adminGetAudit(filters: {
   return response.data;
 }
 
+/**
+ * One observable step of an AI turn: a guardrail decision, a model call with
+ * its own token counts and cost, an agent tool call or its result, the final
+ * output, or the turn summary — attributed to the user who ran the turn.
+ */
 export interface AdminAiLog {
+  id: string;
   sessionId: string;
+  turnId: string | null;
+  userId: string | null;
+  userEmail: string | null;
   timestamp: string;
   step: string;
+  type: string;
   message: string;
-  type?: string;
+  tool: string | null;
+  provider: string | null;
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  durationMs: number | null;
+  detail: string | null;
 }
 
-/** AI-service activity since the last deployment (backend in-memory buffer). */
-export async function adminGetAiLogs(): Promise<AdminAiLog[]> {
-  const response = await api.get('/admin/ailogs');
+export interface AdminAiLogPage {
+  windowDays: number;
+  totals: {
+    events: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    costUsd: number;
+  };
+  entries: AdminAiLog[];
+}
+
+export interface AdminAiLogFacets {
+  windowDays: number;
+  users: Array<{
+    userId: string | null;
+    email: string;
+    name: string | null;
+    events: number;
+    totalTokens: number;
+    costUsd: number;
+  }>;
+  tools: Array<{ tool: string; calls: number }>;
+  steps: Array<{ step: string; events: number }>;
+}
+
+export interface AdminAiLogFilters {
+  userId?: string;
+  sessionId?: string;
+  turnId?: string;
+  step?: string;
+  type?: string;
+  tool?: string;
+  q?: string;
+  days?: number;
+  limit?: number;
+}
+
+/** Durable AI activity history, filterable per user id. */
+export async function adminGetAiLogs(filters: AdminAiLogFilters = {}): Promise<AdminAiLogPage> {
+  const params = Object.fromEntries(
+    Object.entries(filters).filter(([, v]) => v !== '' && v !== undefined && v !== null)
+  );
+  const response = await api.get('/admin/ailogs', { params });
+  return response.data;
+}
+
+/** Users/tools/steps present in the window — drives the log filters. */
+export async function adminGetAiLogFacets(days = 7): Promise<AdminAiLogFacets> {
+  const response = await api.get('/admin/ailogs/facets', { params: { days } });
   return response.data;
 }
 

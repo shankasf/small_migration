@@ -218,10 +218,152 @@ router.get('/usage/summary', requireRole('admin'), async (req: AuthedRequest, re
 
 // ---------- AI service activity (admin + auditor) ----------
 
-// Backfill for the live log view: everything emitted since the backend
-// process started, i.e. since the last deployment (in-memory ring buffer).
-router.get('/ailogs', requireRole('admin', 'auditor'), (req: AuthedRequest, res: Response) => {
-  res.json(req.app.locals.adminLogBuffer ?? []);
+// Durable AI activity history: one row per guardrail decision, model call,
+// tool call/result, final output and turn summary — each attributed to the
+// user whose turn produced it. Filterable by user id so admins can read one
+// user's agent trail rather than the whole firehose.
+router.get('/ailogs', requireRole('admin', 'auditor'), async (req: AuthedRequest, res: Response) => {
+  try {
+    const prisma = getPrisma(req);
+    const limit = Math.min(parseInt(req.query.limit as string) || 200, 1000);
+    const { userId, sessionId, turnId, step, type, tool, q } = req.query as Record<string, string>;
+    const days = Math.min(parseInt(req.query.days as string) || 7, 90);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const where = {
+      createdAt: { gte: since },
+      ...(userId ? { userId } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(turnId ? { turnId } : {}),
+      ...(step ? { step } : {}),
+      ...(type ? { type } : {}),
+      ...(tool ? { tool } : {}),
+      ...(q
+        ? {
+            OR: [
+              { message: { contains: q, mode: 'insensitive' as const } },
+              { detail: { contains: q, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+
+    // Per-model-call rows and the per-turn rollup carry the same tokens, so
+    // summing both would double-count. With no step filter the rollup is the
+    // one that counts; when the caller has asked for a single step there is
+    // nothing to double-count and the filtered set is summed as-is.
+    const totalsWhere = step ? where : { ...where, step: { not: 'llm.call' } };
+
+    const [rows, totals] = await Promise.all([
+      prisma.aiActivityLog.findMany({
+        where,
+        include: { user: { select: { email: true, name: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+      }),
+      prisma.aiActivityLog.aggregate({
+        where: totalsWhere,
+        _sum: { inputTokens: true, outputTokens: true, totalTokens: true, costUsd: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    res.json({
+      windowDays: days,
+      totals: {
+        events: totals._count._all,
+        inputTokens: totals._sum.inputTokens || 0,
+        outputTokens: totals._sum.outputTokens || 0,
+        totalTokens: totals._sum.totalTokens || 0,
+        costUsd: totals._sum.costUsd || 0,
+      },
+      // Oldest-first so the live view can simply append new events.
+      entries: rows.reverse().map(r => ({
+        id: r.id,
+        sessionId: r.sessionId,
+        turnId: r.turnId,
+        userId: r.userId,
+        userEmail: r.user?.email ?? null,
+        timestamp: r.createdAt.toISOString(),
+        step: r.step,
+        type: r.type,
+        message: r.message,
+        tool: r.tool,
+        provider: r.provider,
+        model: r.model,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        totalTokens: r.totalTokens,
+        costUsd: r.costUsd,
+        durationMs: r.durationMs,
+        detail: r.detail,
+      })),
+    });
+  } catch (error) {
+    console.error('Error listing AI activity:', error);
+    res.status(500).json({ error: 'Failed to list AI activity' });
+  }
+});
+
+// Filter facets for the AI log view: who has activity in the window, with
+// their per-user totals, plus the tools and event types actually seen.
+router.get('/ailogs/facets', requireRole('admin', 'auditor'), async (req: AuthedRequest, res: Response) => {
+  try {
+    const prisma = getPrisma(req);
+    const days = Math.min(parseInt(req.query.days as string) || 7, 90);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [byUser, byTool, bySteps] = await Promise.all([
+      // Per-user tokens/cost come from turn rollups only — see the note on
+      // totalsWhere above; the event count still covers every row.
+      prisma.aiActivityLog.groupBy({
+        by: ['userId'],
+        where: { createdAt: { gte: since }, step: { not: 'llm.call' } },
+        _sum: { totalTokens: true, costUsd: true },
+        _count: { _all: true },
+      }),
+      prisma.aiActivityLog.groupBy({
+        by: ['tool'],
+        where: { createdAt: { gte: since }, tool: { not: null } },
+        _count: { _all: true },
+      }),
+      prisma.aiActivityLog.groupBy({
+        by: ['step'],
+        where: { createdAt: { gte: since } },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const userIds = byUser.map(u => u.userId).filter((id): id is string => !!id);
+    const users = userIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, email: true, name: true },
+        })
+      : [];
+    const emailById = new Map(users.map(u => [u.id, u]));
+
+    res.json({
+      windowDays: days,
+      users: byUser
+        .map(u => ({
+          userId: u.userId,
+          email: u.userId ? emailById.get(u.userId)?.email ?? '(deleted user)' : '(unattributed)',
+          name: u.userId ? emailById.get(u.userId)?.name ?? null : null,
+          events: u._count._all,
+          totalTokens: u._sum.totalTokens || 0,
+          costUsd: u._sum.costUsd || 0,
+        }))
+        .sort((a, b) => b.totalTokens - a.totalTokens || b.events - a.events),
+      tools: byTool.map(t => ({ tool: t.tool as string, calls: t._count._all }))
+        .sort((a, b) => b.calls - a.calls),
+      steps: bySteps.map(t => ({ step: t.step, events: t._count._all }))
+        .sort((a, b) => b.events - a.events),
+    });
+  } catch (error) {
+    console.error('Error building AI log facets:', error);
+    res.status(500).json({ error: 'Failed to build AI log facets' });
+  }
 });
 
 // ---------- Audit / security events (admin + auditor) ----------

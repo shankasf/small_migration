@@ -1,9 +1,12 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { sendToAIService } from '../services/aiService.js';
 import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
 import { recordAudit } from '../services/audit.js';
-import { checkTokenCaps, recordUsage } from '../services/usage.js';
+import { checkTokenCaps, computeCostUsd, recordUsage } from '../services/usage.js';
+import { beginTurn } from '../services/aiLog.js';
+import { recordAiEvent } from '../index.js';
 
 const router = Router();
 
@@ -91,25 +94,85 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       content: m.content
     }));
 
-    // Call AI service
-    const aiResponse = await sendToAIService({
-      session_id: sessionId,
-      message,
-      files,
-      history
+    // Open an observability turn: every event the AI service emits from here
+    // on (guardrails, model calls, tool calls, output) is attributed to this
+    // user id and grouped under this turn id.
+    const turnId = randomUUID();
+    beginTurn({ turnId, sessionId, userId: user.id, userEmail: user.email });
+    const turnStartedAt = Date.now();
+    recordAiEvent({
+      sessionId,
+      turnId,
+      step: 'turn.start',
+      type: 'info',
+      message: `Turn started — ${message.length} chars${files ? `, ${Object.keys(files).length} file(s)` : ''}`,
+      detail: {
+        messageChars: message.length,
+        files: files ? Object.keys(files) : [],
+        historyMessages: history.length,
+      },
     });
 
+    // Call AI service
+    let aiResponse;
+    try {
+      aiResponse = await sendToAIService({
+        session_id: sessionId,
+        message,
+        files,
+        history,
+        user_id: user.id,
+        turn_id: turnId,
+      });
+    } catch (aiError) {
+      recordAiEvent({
+        sessionId,
+        turnId,
+        step: 'error',
+        type: 'error',
+        message: `AI service call failed: ${(aiError as Error)?.message || 'unknown error'}`,
+        durationMs: Date.now() - turnStartedAt,
+      });
+      throw aiError;
+    }
+
     // Record token usage + cost for this user (metering for admin analytics/caps)
-    if (aiResponse.usage && (aiResponse.usage.input_tokens || aiResponse.usage.output_tokens)) {
+    const inputTokens = aiResponse.usage?.input_tokens || 0;
+    const outputTokens = aiResponse.usage?.output_tokens || 0;
+    const model = aiResponse.usage?.model || 'unknown';
+    const provider = aiResponse.usage?.provider || 'openai';
+    if (inputTokens || outputTokens) {
       recordUsage(prisma, {
         userId: user.id,
         sessionId,
-        provider: aiResponse.usage.provider || 'openai',
-        model: aiResponse.usage.model || 'unknown',
-        inputTokens: aiResponse.usage.input_tokens || 0,
-        outputTokens: aiResponse.usage.output_tokens || 0,
+        provider,
+        model,
+        inputTokens,
+        outputTokens,
       }).catch(err => console.error('[USAGE] Failed to record usage:', err?.message || err));
     }
+
+    // Turn summary — the authoritative token/cost line for this turn, priced
+    // by the backend's own pricing table rather than by the AI service.
+    recordAiEvent({
+      sessionId,
+      turnId,
+      step: 'turn.complete',
+      type: 'usage',
+      message: `Turn complete — ${(inputTokens + outputTokens).toLocaleString()} tokens, `
+        + `$${computeCostUsd(model, inputTokens, outputTokens).toFixed(4)}, `
+        + `${aiResponse.generated_files?.length || 0} file(s)`,
+      provider,
+      model,
+      inputTokens,
+      outputTokens,
+      durationMs: Date.now() - turnStartedAt,
+      detail: {
+        guardrail: aiResponse.guardrail?.decision || 'allow',
+        generatedFiles: (aiResponse.generated_files || []).map(f => f.name),
+        responseChars: aiResponse.response?.length || 0,
+      },
+    });
 
     // Audit the interaction, carrying the guardrail decision from the AI service
     const guardrail = aiResponse.guardrail;

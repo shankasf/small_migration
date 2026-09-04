@@ -23,6 +23,7 @@ model User {
   sessions          Session[]
   auditEvents       AuditEvent[]
   usageRecords      UsageRecord[]
+  aiActivity        AiActivityLog[]
 }
 
 model AuditEvent {
@@ -58,6 +59,39 @@ model UsageRecord {
   createdAt    DateTime @default(now())
 
   @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+// One row per observable step of an AI turn: guardrail decisions, each model
+// call (with its own token counts and cost), every agent tool call and its
+// result, the final output, and the turn summary. Rows are attributed to the
+// user whose turn produced them, so the admin portal can show activity per
+// user id rather than one undifferentiated firehose. Payload previews are
+// truncated and guardrail-filtered before they are written.
+model AiActivityLog {
+  id           String   @id @default(uuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sessionId    String?
+  turnId       String? // groups every event emitted by one chat turn
+  step         String // turn.start | guardrail | llm.call | tool.call | tool.result | agent.output | turn.complete | error
+  type         String   @default("info") // info | success | progress | tool | usage | error
+  message      String   @db.Text
+  tool         String?
+  provider     String?
+  model        String?
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  totalTokens  Int      @default(0)
+  costUsd      Float    @default(0)
+  durationMs   Int?
+  detail       String?  @db.Text // JSON: tool args/result previews, guardrail findings
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([turnId])
+  @@index([step])
   @@index([createdAt])
 }
 

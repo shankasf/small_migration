@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import settings
-from utils.realtime_logger import RealtimeLogger
+from utils.realtime_logger import RealtimeLogger, ToolSpan, preview
 import guardrails
 from telemetry import (
     get_tracer,
@@ -41,6 +41,11 @@ class ChatRequest(BaseModel):
     message: str
     files: Optional[Dict[str, str]] = None
     history: Optional[List[Dict[str, str]]] = None
+    # Identity of the calling turn. The backend is authoritative for both —
+    # they are echoed on every activity log line so agent work is attributable
+    # to one user id and groupable by turn.
+    user_id: Optional[str] = None
+    turn_id: Optional[str] = None
 
 class GeneratedFile(BaseModel):
     name: str
@@ -160,8 +165,12 @@ def create_tools(session_id: str):
 
     storage = get_session_storage(session_id)
 
+    def _logger() -> Optional[RealtimeLogger]:
+        """The logger for the turn currently running on this session."""
+        return storage.get("_logger")
+
     @function_tool
-    def read_file(file_name: str, content: str) -> str:
+    async def read_file(file_name: str, content: str) -> str:
         """
         Read and store a file for processing.
 
@@ -169,11 +178,13 @@ def create_tools(session_id: str):
             file_name: Name of the file being uploaded.
             content: The content of the file.
         """
-        storage["files"][file_name] = content
-        return f"File '{file_name}' loaded ({len(content)} characters)."
+        async with ToolSpan(_logger(), "read_file", {"file_name": file_name, "content": content}) as span:
+            storage["files"][file_name] = content
+            span.result = f"File '{file_name}' loaded ({len(content)} characters)."
+            return span.result
 
     @function_tool
-    def generate_output(file_name: str, content: str) -> str:
+    async def generate_output(file_name: str, content: str) -> str:
         """
         Save a generated output file and deliver it to the user as a
         downloadable file card attached to your reply.
@@ -187,47 +198,55 @@ def create_tools(session_id: str):
             file_name: Name for the output file (e.g. "stg_contracts.sql").
             content: The complete file content — never a fragment or diff.
         """
-        try:
-            save_output_file(session_id, file_name, content)
-        except ValueError as exc:
-            # Surface the rejection to the agent so it can retry with a plain
-            # file name rather than failing the whole turn.
-            return f"Could not save file: {exc}"
-        storage["outputs"][file_name] = content
-        turn_outputs = storage.setdefault("turn_outputs", [])
-        if file_name not in turn_outputs:
-            turn_outputs.append(file_name)
-        # Never return the server filesystem path: the model has echoed it as a
-        # download "link" in responses, which is a dead URL for the user.
-        return (
-            f"File '{file_name}' saved ({len(content)} characters). It will be "
-            "attached to your reply as a downloadable file card automatically — "
-            "do not write a link, URL, or file path for it."
-        )
+        async with ToolSpan(_logger(), "generate_output", {"file_name": file_name, "content": content}) as span:
+            try:
+                save_output_file(session_id, file_name, content)
+            except ValueError as exc:
+                # Surface the rejection to the agent so it can retry with a plain
+                # file name rather than failing the whole turn.
+                span.result = f"Could not save file: {exc}"
+                return span.result
+            storage["outputs"][file_name] = content
+            turn_outputs = storage.setdefault("turn_outputs", [])
+            if file_name not in turn_outputs:
+                turn_outputs.append(file_name)
+            # Never return the server filesystem path: the model has echoed it as a
+            # download "link" in responses, which is a dead URL for the user.
+            span.result = (
+                f"File '{file_name}' saved ({len(content)} characters). It will be "
+                "attached to your reply as a downloadable file card automatically — "
+                "do not write a link, URL, or file path for it."
+            )
+            return span.result
 
     @function_tool
-    def list_files() -> str:
+    async def list_files() -> str:
         """List all loaded input files and generated outputs."""
-        inputs = list(storage["files"].keys())
-        outputs = list(storage["outputs"].keys())
+        async with ToolSpan(_logger(), "list_files", {}) as span:
+            inputs = list(storage["files"].keys())
+            outputs = list(storage["outputs"].keys())
 
-        result = "Input files: " + (", ".join(inputs) if inputs else "None")
-        result += "\nOutput files: " + (", ".join(outputs) if outputs else "None")
-        return result
+            result = "Input files: " + (", ".join(inputs) if inputs else "None")
+            result += "\nOutput files: " + (", ".join(outputs) if outputs else "None")
+            span.result = result
+            return result
 
     @function_tool
-    def get_file_content(file_name: str) -> str:
+    async def get_file_content(file_name: str) -> str:
         """
         Get the content of a loaded or generated file.
 
         Args:
             file_name: Name of the file to retrieve.
         """
-        if file_name in storage["files"]:
-            return storage["files"][file_name]
-        if file_name in storage["outputs"]:
-            return storage["outputs"][file_name]
-        return f"File '{file_name}' not found."
+        async with ToolSpan(_logger(), "get_file_content", {"file_name": file_name}) as span:
+            if file_name in storage["files"]:
+                span.result = storage["files"][file_name]
+            elif file_name in storage["outputs"]:
+                span.result = storage["outputs"][file_name]
+            else:
+                span.result = f"File '{file_name}' not found."
+            return span.result
 
     return [
         read_file,
@@ -349,6 +368,34 @@ Before presenting output, verify ALL of the following:
 - Use `list_files` to check what's available in the session.
 - Use `generate_output` to save each generated model as a downloadable file — on every turn where you produce or revise SQL, not just the first time."""
 
+async def _log_model_call(logger: RealtimeLogger, response: Any, started: float) -> None:
+    """Emit one llm.call activity event from a completed model response.
+
+    Usage field names differ between SDK versions and between the Responses and
+    chat-completions APIs, so every read is defensive: a missing field costs a
+    detail, never the log line.
+    """
+    try:
+        usage = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0)
+        details = getattr(usage, "output_tokens_details", None)
+        reasoning_tokens = int(getattr(details, "reasoning_tokens", 0) or 0)
+        in_details = getattr(usage, "input_tokens_details", None)
+        cached_tokens = int(getattr(in_details, "cached_tokens", 0) or 0)
+        await logger.llm_call(
+            model=str(getattr(response, "model", settings.model_name)),
+            provider=settings.LLM_PROVIDER,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            reasoning_tokens=reasoning_tokens,
+            cached_tokens=cached_tokens,
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must never break a turn
+        print(f"[USAGE] Could not log model call: {exc}")
+
+
 def get_or_create_agent(session_id: str) -> "Agent":
     """Get cached agent for session, or create a new one"""
     if session_id not in session_agents:
@@ -369,7 +416,11 @@ def get_or_create_agent(session_id: str) -> "Agent":
 async def chat(request: ChatRequest):
     """Process chat message with the agent"""
     storage = get_session_storage(request.session_id)
-    logger = RealtimeLogger(request.session_id)
+    logger = RealtimeLogger(request.session_id, turn_id=request.turn_id, user_id=request.user_id)
+    # Tools are created once per session and cached with the agent, so they read
+    # the current turn's logger off session storage rather than closing over it.
+    storage["_logger"] = logger
+    turn_started = time.monotonic()
 
     try:
         # --- Guardrails inbound (§9): sanitise, injection/deny checks, PII
@@ -379,10 +430,9 @@ async def chat(request: ChatRequest):
         record_guardrail_decision(inbound.decision, stage="inbound")
 
         if inbound.decision == "blocked":
-            await logger.log(
-                step="guardrail",
-                message=f"Request blocked: {', '.join(inbound.reasons)}",
-                log_type="error",
+            await logger.guardrail(
+                "inbound", "blocked", inbound.reasons,
+                [{"type": k, "count": v} for k, v in inbound.findings.items()],
             )
             return ChatResponse(
                 response=guardrails.block_message(inbound.reasons),
@@ -391,10 +441,9 @@ async def chat(request: ChatRequest):
             )
 
         if inbound.decision == "redacted":
-            await logger.log(
-                step="guardrail",
-                message="Sensitive data redacted before model submission",
-                log_type="info",
+            await logger.guardrail(
+                "inbound", "redacted", inbound.reasons,
+                [{"type": k, "count": v} for k, v in inbound.findings.items()],
             )
 
         # Redacted payload is what reaches storage and the model
@@ -460,6 +509,13 @@ async def chat(request: ChatRequest):
                     from openai.types.responses import ResponseTextDeltaEvent
                 except ImportError:
                     ResponseTextDeltaEvent = None
+                # Each completed model call carries its own usage block. Logging
+                # it per call (rather than only the run total) is what makes the
+                # activity log answer "which call cost what".
+                try:
+                    from openai.types.responses import ResponseCompletedEvent
+                except ImportError:
+                    ResponseCompletedEvent = None
 
                 result = Runner.run_streamed(agent, messages)
                 stream_buffer = ""
@@ -474,6 +530,7 @@ async def chat(request: ChatRequest):
                     last_flush = time.monotonic()
                     await logger.log(step="stream", message=chunk, log_type="delta")
 
+                call_started = time.monotonic()
                 async for event in result.stream_events():
                     if (
                         ResponseTextDeltaEvent is not None
@@ -484,6 +541,13 @@ async def chat(request: ChatRequest):
                         stream_buffer += event.data.delta
                         if len(stream_buffer) >= 400 or time.monotonic() - last_flush >= 0.4:
                             await flush_stream()
+                    elif (
+                        ResponseCompletedEvent is not None
+                        and event.type == "raw_response_event"
+                        and isinstance(event.data, ResponseCompletedEvent)
+                    ):
+                        await _log_model_call(logger, event.data.response, call_started)
+                        call_started = time.monotonic()
                 await flush_stream()
                 response_text = result.final_output
 
@@ -495,11 +559,21 @@ async def chat(request: ChatRequest):
                 except Exception as usage_err:
                     print(f"[USAGE] Could not extract token usage: {usage_err}")
 
+                await logger.agent_output(
+                    response_text or "",
+                    duration_ms=int((time.monotonic() - turn_started) * 1000),
+                )
                 await logger.complete("Response ready")
             else:
                 response_text = f"Received: {safe_message}\nFiles: {list(safe_files.keys()) if safe_files else 'None'}"
         except Exception as e:
-            await logger.error(f"AI processing failed: {str(e)}")
+            await logger.log(
+                step="error",
+                message=f"AI processing failed: {e}",
+                log_type="error",
+                duration_ms=int((time.monotonic() - turn_started) * 1000),
+                detail={"error": type(e).__name__, "message": preview(str(e))},
+            )
             raise HTTPException(status_code=500, detail=str(e))
         finally:
             if span_cm is not None:
@@ -525,10 +599,9 @@ async def chat(request: ChatRequest):
         record_guardrail_decision(outbound.decision, stage="outbound")
         response_text = outbound.text
         if outbound.decision == "redacted":
-            await logger.log(
-                step="guardrail",
-                message="Sensitive data redacted from model output",
-                log_type="info",
+            await logger.guardrail(
+                "outbound", "redacted", outbound.reasons,
+                [{"type": k, "count": v} for k, v in outbound.findings.items()],
             )
 
         # Return every file written this turn — new files and revisions alike
@@ -570,6 +643,8 @@ async def chat(request: ChatRequest):
             ),
         )
     finally:
+        if storage.get("_logger") is logger:
+            storage.pop("_logger", None)
         await logger.close()
 
 @router.post("/reset/{session_id}")
