@@ -83,20 +83,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with: { node-version: '22' }
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: '3.12' }
 
-      # Both services audit clean, so the gate is set at HIGH rather than
+      # Node dependencies are gated by Trivy reading package-lock.json rather
+      # than by `npm audit`.
+      #
+      # npm falls back to the registry's legacy full-tree audit endpoint
+      # whenever a dependency resolves outside the registry — services/backend
+      # pins xlsx to the SheetJS CDN tarball, because the registry copy is
+      # abandoned at 0.18.5 with an unfixed advisory. npm has now retired that
+      # endpoint ("This endpoint is being retired. Use the bulk advisory
+      # endpoint instead"), and it answers 400, so `npm audit` cannot gate this
+      # repo at all. Trivy resolves the same lockfile against its own database,
+      # so the gate no longer depends on a registry endpoint — and it is the
+      # scanner already gating our images in deploy.yml.
+      #
+      # Both services scan clean, so the gate stays at HIGH rather than
       # critical. If this starts failing, fix the dependency — do not lower
       # the threshold back.
-      - name: npm audit — backend
-        working-directory: services/backend
-        run: npm audit --audit-level=high
-      - name: npm audit — frontend
-        working-directory: services/frontend
-        run: npm audit --audit-level=high
+      - name: Trivy — backend dependencies
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: services/backend
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Trivy — frontend dependencies
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: services/frontend
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
 
       - name: pip-audit — ai-service
         run: |
