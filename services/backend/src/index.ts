@@ -13,6 +13,7 @@ import filesRouter from './routes/files.js';
 import sttRouter from './routes/stt.js';
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
+import { integrationsRouter, integrationCallbackRouter } from './routes/integrations.js';
 import { authenticate, requireInternalKey, resolveUserFromToken, seedAdminUser } from './middleware/auth.js';
 import {
   AiLogEvent, AiLogRecord, buildAiLogRecord, isPersistable, persistAiLog, startAiLogRetention,
@@ -112,6 +113,11 @@ app.post('/api/logs/:sessionId', requireInternalKey, (req, res) => {
   res.json({ ok: true });
 });
 
+// OAuth providers redirect here without the SPA bearer token. The callback is
+// protected by a short-lived, single-use state value created on an authenticated
+// request; no other integration route is public.
+app.use('/api/integrations', integrationCallbackRouter);
+
 // Authentication — every route below this line requires a valid user token
 app.use(authenticate(prisma));
 
@@ -122,6 +128,7 @@ app.use('/api/sessions', sessionsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/files', filesRouter);
 app.use('/api/stt', sttRouter);
+app.use('/api/integrations', integrationsRouter);
 
 // Error handler
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {

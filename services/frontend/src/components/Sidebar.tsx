@@ -10,6 +10,7 @@ import {
   Clock,
   Paperclip,
   Settings,
+  ShieldCheck,
   LogOut,
   Loader2,
 } from 'lucide-react';
@@ -36,6 +37,7 @@ interface SidebarProps {
   user?: User;
   onLogout?: () => void;
   onOpenAdmin?: () => void;
+  onOpenSettings?: () => void;
   /** Sessions with a generation running in the background */
   pendingSessions?: Record<string, boolean>;
   /** Sessions whose generation finished while the user was elsewhere */
@@ -53,6 +55,7 @@ const Sidebar = memo(function Sidebar({
   user,
   onLogout,
   onOpenAdmin,
+  onOpenSettings,
   pendingSessions = {},
   unseenSessions = {},
 }: SidebarProps) {
@@ -149,13 +152,22 @@ const Sidebar = memo(function Sidebar({
               {initials(user.name, user.email)}
             </span>
           )}
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              title="Settings"
+              className="rounded-md p-1.5 text-faint transition-colors hover:bg-elevated hover:text-ink"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+          )}
           {onOpenAdmin && (
             <button
               onClick={onOpenAdmin}
               title="Admin portal"
               className="rounded-md p-1.5 text-faint transition-colors hover:bg-elevated hover:text-ink"
             >
-              <Settings className="h-4 w-4" />
+              <ShieldCheck className="h-4 w-4" />
             </button>
           )}
           {onLogout && (
@@ -307,13 +319,22 @@ const Sidebar = memo(function Sidebar({
                 {user.role}
               </div>
             </div>
+            {onOpenSettings && (
+              <button
+                onClick={onOpenSettings}
+                title="Settings"
+                className="rounded-md p-1.5 text-faint transition-colors hover:bg-elevated hover:text-ink"
+              >
+                <Settings className="h-4 w-4" />
+              </button>
+            )}
             {onOpenAdmin && (
               <button
                 onClick={onOpenAdmin}
                 title="Admin portal"
                 className="rounded-md p-1.5 text-faint transition-colors hover:bg-elevated hover:text-ink"
               >
-                <Settings className="h-4 w-4" />
+                <ShieldCheck className="h-4 w-4" />
               </button>
             )}
             {onLogout && (

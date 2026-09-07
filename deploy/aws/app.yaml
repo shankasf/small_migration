@@ -261,6 +261,7 @@ Resources:
             - { Name: PORT, Value: '3001' }
             - { Name: AI_SERVICE_URL, Value: 'http://ai-service:8084' }
             - { Name: CORS_ORIGIN, Value: !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}'] }
+            - { Name: PUBLIC_APP_URL, Value: !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}'] }
             - { Name: AUTH_MODE, Value: !Ref AuthMode }
             - { Name: OIDC_ISSUER, Value: !ImportValue circini-OidcIssuer }
             - { Name: OIDC_AUDIENCE, Value: !ImportValue circini-SpaClientId }
@@ -273,6 +274,11 @@ Resources:
             - { Name: DATABASE_URL, ValueFrom: !ImportValue circini-SecretDatabaseUrl }
             - { Name: JWT_SECRET, ValueFrom: !ImportValue circini-SecretJwt }
             - { Name: INTERNAL_API_KEY, ValueFrom: !ImportValue circini-SecretInternalApiKey }
+            - { Name: INTEGRATION_ENCRYPTION_KEY, ValueFrom: !ImportValue circini-SecretIntegrationEncryption }
+            - { Name: GITHUB_CLIENT_ID, ValueFrom: !Sub ['${Arn}:clientId::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
+            - { Name: GITHUB_CLIENT_SECRET, ValueFrom: !Sub ['${Arn}:clientSecret::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
+            - { Name: GITLAB_CLIENT_ID, ValueFrom: !Sub ['${Arn}:clientId::', { Arn: !ImportValue circini-SecretGitLabOAuth }] }
+            - { Name: GITLAB_CLIENT_SECRET, ValueFrom: !Sub ['${Arn}:clientSecret::', { Arn: !ImportValue circini-SecretGitLabOAuth }] }
             - { Name: SEED_ADMIN_EMAIL, ValueFrom: !Sub ['${Arn}:email::', { Arn: !ImportValue circini-SecretSeedAdmin }] }
             - { Name: SEED_ADMIN_PASSWORD, ValueFrom: !Sub ['${Arn}:password::', { Arn: !ImportValue circini-SecretSeedAdmin }] }
           LogConfiguration:

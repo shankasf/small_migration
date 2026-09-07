@@ -83,6 +83,37 @@ Resources:
         PasswordLength: 48
         ExcludePunctuation: true
 
+  IntegrationEncryptionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/integration-encryption-key
+      Description: AES-256 key material for user integration credentials
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  GitHubOAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/github-oauth
+      Description: GitHub OAuth application credentials for repository integrations
+      GenerateSecretString:
+        SecretStringTemplate: '{"clientId":""}'
+        GenerateStringKey: clientSecret
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  GitLabOAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/gitlab-oauth
+      Description: GitLab OAuth application credentials for repository integrations
+      GenerateSecretString:
+        SecretStringTemplate: '{"clientId":""}'
+        GenerateStringKey: clientSecret
+        PasswordLength: 48
+        ExcludePunctuation: true
+
   SeedAdminSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -114,6 +145,15 @@ Outputs:
   InternalApiKeySecretArn:
     Value: !Ref InternalApiKeySecret
     Export: { Name: circini-SecretInternalApiKey }
+  IntegrationEncryptionSecretArn:
+    Value: !Ref IntegrationEncryptionSecret
+    Export: { Name: circini-SecretIntegrationEncryption }
+  GitHubOAuthSecretArn:
+    Value: !Ref GitHubOAuthSecret
+    Export: { Name: circini-SecretGitHubOAuth }
+  GitLabOAuthSecretArn:
+    Value: !Ref GitLabOAuthSecret
+    Export: { Name: circini-SecretGitLabOAuth }
   SeedAdminSecretArn:
     Value: !Ref SeedAdminSecret
     Export: { Name: circini-SecretSeedAdmin }

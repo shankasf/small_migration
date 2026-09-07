@@ -219,6 +219,11 @@ spec:
                 configMapKeyRef:
                   name: migration-agent-config
                   key: CORS_ORIGIN
+            - name: PUBLIC_APP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: migration-agent-config
+                  key: CORS_ORIGIN
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -236,6 +241,36 @@ spec:
                 secretKeyRef:
                   name: migration-agent-secret
                   key: INTERNAL_API_KEY
+            - name: INTEGRATION_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: INTEGRATION_ENCRYPTION_KEY
+                  optional: true
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: GITHUB_CLIENT_ID
+                  optional: true
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: GITHUB_CLIENT_SECRET
+                  optional: true
+            - name: GITLAB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: GITLAB_CLIENT_ID
+                  optional: true
+            - name: GITLAB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: migration-agent-secret
+                  key: GITLAB_CLIENT_SECRET
+                  optional: true
             - name: SEED_ADMIN_EMAIL
               valueFrom:
                 secretKeyRef:

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary } from '../types';
+import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary, Integration, IntegrationProvider } from '../types';
 import { getToken, clearAuth, refreshIdToken } from './auth';
 
 const API_BASE = '/api';
@@ -157,6 +157,43 @@ export async function transcribeAudio(audioBlob: Blob): Promise<{ text: string }
 export async function healthCheck(): Promise<{ status: string }> {
   const response = await api.get('/health');
   return response.data;
+}
+
+// Integrations
+export async function getIntegrations(): Promise<Integration[]> {
+  const response = await api.get('/integrations');
+  return response.data.integrations;
+}
+
+export async function connectOAuthIntegration(provider: 'github' | 'gitlab'): Promise<{ authorizeUrl: string }> {
+  const response = await api.post(`/integrations/${provider}/connect`);
+  return response.data;
+}
+
+export async function connectSnowflake(data: {
+  account: string;
+  username: string;
+  privateKey: string;
+  privateKeyPass?: string;
+  warehouse?: string;
+  database?: string;
+  role?: string;
+}): Promise<Integration> {
+  const response = await api.post('/integrations/snowflake/connect', data);
+  return response.data.integration;
+}
+
+export async function connectDbt(data: {
+  accountId: string;
+  token: string;
+  host?: string;
+}): Promise<Integration> {
+  const response = await api.post('/integrations/dbt/connect', data);
+  return response.data.integration;
+}
+
+export async function disconnectIntegration(provider: IntegrationProvider): Promise<void> {
+  await api.delete(`/integrations/${provider}`);
 }
 
 // ---------- Admin portal ----------

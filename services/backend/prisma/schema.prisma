@@ -24,6 +24,44 @@ model User {
   auditEvents       AuditEvent[]
   usageRecords      UsageRecord[]
   aiActivity        AiActivityLog[]
+  integrations      Integration[]
+  integrationStates IntegrationOAuthState[]
+}
+
+// Per-user external system connection. Secret material is encrypted by the
+// backend before it reaches PostgreSQL; only non-sensitive metadata is exposed
+// through the API.
+model Integration {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider         String   // github | gitlab | snowflake | dbt
+  status           String   @default("connected")
+  displayName      String?
+  metadata         Json?
+  encryptedSecrets String   @db.Text
+  connectedAt      DateTime @default(now())
+  lastVerifiedAt   DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([userId, provider])
+  @@index([userId])
+}
+
+// Short-lived state for OAuth authorization-code + PKCE callbacks. Rows are
+// single-use and never contain provider access tokens.
+model IntegrationOAuthState {
+  state        String   @id
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String
+  codeVerifier String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([userId, provider])
 }
 
 model AuditEvent {

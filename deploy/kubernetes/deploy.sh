@@ -41,6 +41,11 @@ kubectl create secret generic migration-agent-secret \
     --namespace=migration-agent \
     --from-literal=DATABASE_URL="${DATABASE_URL}" \
     --from-literal=OPENAI_API_KEY="${OPENAI_API_KEY}" \
+    --from-literal=INTEGRATION_ENCRYPTION_KEY="${INTEGRATION_ENCRYPTION_KEY:-}" \
+    --from-literal=GITHUB_CLIENT_ID="${GITHUB_CLIENT_ID:-}" \
+    --from-literal=GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}" \
+    --from-literal=GITLAB_CLIENT_ID="${GITLAB_CLIENT_ID:-}" \
+    --from-literal=GITLAB_CLIENT_SECRET="${GITLAB_CLIENT_SECRET:-}" \
     --dry-run=client -o yaml \
     | kubectl apply --server-side --force-conflicts -f -
 

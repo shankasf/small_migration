@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect, KeyboardEvent } from 'react';
-import { ArrowUp, Paperclip, X, Mic, Square } from 'lucide-react';
+import { ArrowUp, Check, ChevronRight, FilePlus2, Mic, Plus, Square, X } from 'lucide-react';
 import * as api from '../services/api';
+import { Integration, IntegrationProvider } from '../types';
+import { INTEGRATION_PROVIDERS } from '../integrationCatalog';
 
 const MAX_FILES = 10;
 
@@ -11,6 +13,8 @@ interface ChatInputProps {
   /** Prefill the composer from an external action (e.g. a starter card).
    *  nonce forces re-application even when the same text is picked twice. */
   prefill?: { text: string; nonce: number };
+  integrations?: Integration[];
+  onOpenIntegrations?: (provider?: IntegrationProvider) => void;
 }
 
 export default function ChatInput({
@@ -18,17 +22,37 @@ export default function ChatInput({
   disabled = false,
   placeholder = 'Ask anything',
   prefill,
+  integrations = [],
+  onOpenIntegrations,
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   // Ref mirrors selectedFiles to avoid stale closures during rapid re-renders
   const filesRef = useRef<File[]>([]);
+
+  useEffect(() => {
+    if (!plusMenuOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!plusMenuRef.current?.contains(event.target as Node)) setPlusMenuOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setPlusMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [plusMenuOpen]);
 
   const handleSend = () => {
     const files = filesRef.current;
@@ -180,7 +204,7 @@ export default function ChatInput({
   const canSend = (message.trim() || selectedFiles.length > 0) && !disabled;
 
   return (
-    <div className="bg-obsidian px-4 py-3">
+    <div className="relative z-30 bg-obsidian px-4 py-3">
       <div className="max-w-3xl mx-auto">
         {/* Selected files */}
         {selectedFiles.length > 0 && (
@@ -212,19 +236,6 @@ export default function ChatInput({
             disabled ? 'opacity-60' : ''
           }`}
         >
-          {/* Attach button */}
-          <button
-            onClick={() => !disabled && fileInputRef.current?.click()}
-            disabled={disabled}
-            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-hairline bg-elevated transition-colors ${
-              disabled
-                ? 'text-faint cursor-not-allowed'
-                : 'text-ink hover:border-brass/50 hover:text-brass'
-            }`}
-            title={`Attach files (${selectedFiles.length}/${MAX_FILES})`}
-          >
-            <Paperclip className="h-5 w-5" />
-          </button>
           <input
             ref={fileInputRef}
             type="file"
@@ -247,6 +258,84 @@ export default function ChatInput({
             className="max-h-40 min-h-[40px] flex-1 resize-none self-center bg-transparent px-2 py-2 text-[15px] text-ink placeholder:text-faint focus:outline-none"
             style={{ boxShadow: 'none' }}
           />
+
+          {/* Add menu — files and connected data tools live in one predictable place. */}
+          <div className="relative shrink-0" ref={plusMenuRef}>
+            <button
+              type="button"
+              onClick={() => !disabled && setPlusMenuOpen(open => !open)}
+              disabled={disabled}
+              className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
+                disabled
+                  ? 'cursor-not-allowed border-hairline bg-elevated text-faint'
+                  : plusMenuOpen
+                    ? 'border-brass/50 bg-brass/10 text-brass'
+                    : 'border-hairline bg-elevated text-ink hover:border-brass/50 hover:text-brass'
+              }`}
+              title="Add files or connect a service"
+              aria-label="Add files or connect a service"
+              aria-expanded={plusMenuOpen}
+            >
+              <Plus className={`h-5 w-5 transition-transform ${plusMenuOpen ? 'rotate-45' : ''}`} />
+            </button>
+
+            {plusMenuOpen && (
+              <div className="absolute bottom-full right-0 z-40 mb-3 w-[min(21rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-hairline bg-panel shadow-console animate-fade-up">
+                <div className="border-b border-hairline px-4 py-3">
+                  <p className="text-sm font-600 text-ink">Add context</p>
+                  <p className="mt-0.5 text-xs text-faint">Upload files or use a connected workspace</p>
+                </div>
+
+                <div className="p-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlusMenuOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                    className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-elevated"
+                  >
+                    <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brass/10 text-brass"><FilePlus2 className="h-4 w-4" /></span>
+                    <span className="min-w-0 flex-1"><span className="block text-sm font-500 text-ink">Add files</span><span className="block text-[11px] text-faint">SQL, CSV, Excel, YAML and more</span></span>
+                    <span className="font-mono text-[10px] text-faint">{selectedFiles.length}/{MAX_FILES}</span>
+                  </button>
+                </div>
+
+                <div className="border-t border-hairline px-3 pb-2 pt-3">
+                  <div className="mb-1 flex items-center justify-between px-2">
+                    <span className="eyebrow">Integrations</span>
+                    <button type="button" onClick={() => { setPlusMenuOpen(false); onOpenIntegrations?.(); }} className="text-[11px] font-500 text-brass hover:text-brass-bright">Manage</button>
+                  </div>
+                  {INTEGRATION_PROVIDERS.map(provider => {
+                    const connection = integrations.find(item => item.provider === provider.id);
+                    const connected = connection?.status === 'connected';
+                    const Icon = provider.icon;
+                    return (
+                      <button
+                        key={provider.id}
+                        type="button"
+                        onClick={() => { setPlusMenuOpen(false); onOpenIntegrations?.(provider.id); }}
+                        className="group flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-elevated"
+                      >
+                        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${provider.surface} ${provider.accent}`}><Icon className="h-4 w-4" /></span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[13px] font-500 text-ink">{provider.name}</span>
+                          <span className={`flex items-center gap-1.5 text-[10px] ${connected ? 'text-success' : 'text-faint'}`}>
+                            {connected && <Check className="h-3 w-3" />}{connected ? (connection?.displayName || 'Connected') : 'Not connected'}
+                          </span>
+                        </span>
+                        {connected ? (
+                          <span className="rounded-md border border-success/20 bg-success/10 px-2 py-1 text-[10px] font-600 text-success">Connected</span>
+                        ) : (
+                          <span className="flex items-center gap-0.5 text-[11px] font-600 text-brass transition-colors group-hover:text-brass-bright">Connect <ChevronRight className="h-3 w-3" /></span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Mic button */}
           <button

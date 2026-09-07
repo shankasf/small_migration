@@ -48,6 +48,21 @@ aws secretsmanager put-secret-value --secret-id circini/openai-api-key --secret-
 
 `circini/database-url` embeds the RDS endpoint + master password (resolved at
 deploy time — re-deploy `circini-data` if the password rotates).
+`circini/integration-encryption-key` protects per-user Snowflake, dbt, GitHub,
+and GitLab credentials before they are persisted. After registering the OAuth
+apps with callback URLs `https://<AppDomain>/api/integrations/github/callback`
+and `https://<AppDomain>/api/integrations/gitlab/callback`, populate their
+Secrets Manager records:
+
+```bash
+aws secretsmanager put-secret-value --secret-id circini/github-oauth \
+  --secret-string '{"clientId":"...","clientSecret":"..."}'
+aws secretsmanager put-secret-value --secret-id circini/gitlab-oauth \
+  --secret-string '{"clientId":"...","clientSecret":"..."}'
+```
+
+Until those values are supplied, the UI reports the providers as requiring
+administrator setup rather than presenting a non-functional Connect action.
 
 ## CI/CD (GitHub Actions → ECR + CloudFormation)
 

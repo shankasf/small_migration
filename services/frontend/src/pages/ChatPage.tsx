@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { ArrowUpRight } from 'lucide-react';
-import { Session, Message, UploadedFile, GeneratedOutput } from '../types';
+import { Session, Message, UploadedFile, GeneratedOutput, Integration, IntegrationProvider } from '../types';
 import ChatArea from '../components/ChatArea';
 import ChatInput from '../components/ChatInput';
 import { LogEntry } from '../hooks/useRealtimeLogs';
@@ -41,6 +41,8 @@ interface ChatPageProps {
   realtimeLogs?: LogEntry[];
   onViewFile?: (fileId: string) => void;
   onDownloadFile?: (fileId: string) => void;
+  integrations?: Integration[];
+  onOpenIntegrations?: (provider?: IntegrationProvider) => void;
 }
 
 function WelcomeHero({
@@ -97,6 +99,8 @@ const ChatPage = memo(function ChatPage({
   realtimeLogs = [],
   onViewFile,
   onDownloadFile,
+  integrations = [],
+  onOpenIntegrations,
 }: ChatPageProps) {
   const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: '', nonce: 0 });
   const pick = (prompt: string) => setPrefill({ text: prompt, nonce: Date.now() });
@@ -112,7 +116,7 @@ const ChatPage = memo(function ChatPage({
             onPick={pick}
           />
           <div className="w-full max-w-xl">
-            <ChatInput onSend={onSend} disabled={false} placeholder="Ask anything..." prefill={prefill} />
+            <ChatInput onSend={onSend} disabled={false} placeholder="Ask anything..." prefill={prefill} integrations={integrations} onOpenIntegrations={onOpenIntegrations} />
           </div>
         </div>
       </div>
@@ -185,6 +189,8 @@ const ChatPage = memo(function ChatPage({
         disabled={isLoading || isUploading}
         placeholder={isUploading ? 'Please wait, uploading files...' : 'Ask anything...'}
         prefill={prefill}
+        integrations={integrations}
+        onOpenIntegrations={onOpenIntegrations}
       />
     </div>
   );

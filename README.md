@@ -66,6 +66,9 @@ alone.
 - **AI Migration Agent**: Analyzes template and mapping documents, then generates Snowflake-compatible DBT SQL models using the OpenAI Agents SDK
 - **Realtime Logs**: Live status updates streamed from the AI service to the frontend via Socket.IO during processing
 - **File Downloads**: Export generated SQL output files directly from chat messages
+- **Workspace Integrations**: Connect GitHub/GitLab with OAuth, Snowflake with
+  key-pair authentication, and dbt Cloud with a scoped service token; connection
+  credentials are encrypted server-side and never returned to the browser
 - **Session TTL**: In-memory agent sessions auto-evict after 1 hour of inactivity (max 50 concurrent)
 - **File Re-hydration**: Session files are automatically reloaded from the database when resuming a conversation
 - **Access Control**: Email/password or Microsoft Entra ID sign-in, three roles, per-user token budgets
@@ -166,6 +169,7 @@ flowchart TD
 ### Secrets
 
 `DATABASE_URL`, `OPENAI_API_KEY`, `JWT_SECRET`, `INTERNAL_API_KEY`,
+`INTEGRATION_ENCRYPTION_KEY`, external OAuth client secrets,
 `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` live in the
 `migration-agent-secret` Kubernetes Secret and reach pods via `secretKeyRef` —
 never baked into images or manifests. `.env` is gitignored and no longer mounted
@@ -429,6 +433,13 @@ DATABASE_URL=postgresql://user:password@localhost:5432/migration_agent?schema=pu
 AI_SERVICE_URL=http://localhost:8084
 PORT=3001
 CORS_ORIGIN=http://localhost:5173
+PUBLIC_APP_URL=http://localhost:5173
+INTEGRATION_ENCRYPTION_KEY=<random value of at least 32 characters>
+# Optional OAuth connections
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+GITLAB_CLIENT_ID=
+GITLAB_CLIENT_SECRET=
 ```
 
 **AI Service** (`services/ai-service/.env`):
@@ -505,6 +516,9 @@ cd services/frontend && npm run dev
 | DELETE | /api/sessions/:id | user (owner/admin) | Delete session |
 | POST | /api/chat/:id/messages | user (write) | Send message (proxies to AI) |
 | POST | /api/files/:id/upload | user (write) | Upload files to session |
+| GET | /api/integrations | user | List the current user's connection states |
+| POST | /api/integrations/:provider/connect | user (write) | Start or validate a connection |
+| DELETE | /api/integrations/:provider | user (write) | Disconnect a provider |
 | GET | /api/files/output/:id/download | user (owner/admin) | Download generated output |
 | POST | /api/stt | user (write) | Transcribe recorded audio |
 | GET | /api/admin/users | `admin` | List users |
@@ -588,4 +602,3 @@ fails, it runs `kubectl rollout undo` and re-verifies before reporting failure.
 deploy/kubernetes/bootstrap.sh            # namespace + scoped deploy ServiceAccount
 deploy/kubernetes/runner-kubeconfig.sh    # kubeconfig for the CD runner
 ```
-

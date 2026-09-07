@@ -80,6 +80,18 @@ export interface User {
   createdAt: string;
 }
 
+export type IntegrationProvider = 'github' | 'gitlab' | 'snowflake' | 'dbt';
+
+export interface Integration {
+  provider: IntegrationProvider;
+  status: 'connected' | 'disconnected';
+  configured: boolean;
+  displayName: string | null;
+  metadata: Record<string, unknown>;
+  connectedAt: string | null;
+  lastVerifiedAt: string | null;
+}
+
 export interface AdminUser extends User {
   usage: {
     totalTokens: number;

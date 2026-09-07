@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation, useNavigate, matchPath } from 'react-router-dom';
-import { LogOut, Menu, MessageSquare, CheckCircle2, AlertTriangle, X } from 'lucide-react';
+import { LogOut, Menu, MessageSquare, CheckCircle2, AlertTriangle, X, ShieldCheck } from 'lucide-react';
 import { Wordmark } from './components/Brand';
 import ThemeToggle from './components/ThemeToggle';
 import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
 import LoginPage from './pages/LoginPage';
 import AdminPage from './pages/AdminPage';
+import SettingsPage from './pages/SettingsPage';
 import FilePreviewModal from './components/FilePreviewModal';
-import { Session, Message, UploadedFile, GeneratedOutput, User } from './types';
+import { Session, Message, UploadedFile, GeneratedOutput, User, Integration, IntegrationProvider } from './types';
 import * as api from './services/api';
 import { getToken, getStoredUser, fetchMe, logout } from './services/auth';
 import { AuthConfig, fetchAuthConfig, completeLogin } from './services/oidc';
@@ -71,6 +72,7 @@ function App() {
   const navigate = useNavigate();
   const routeSessionId = matchPath('/chats/:sessionId', location.pathname)?.params.sessionId;
   const isAdminRoute = location.pathname === '/admin';
+  const isSettingsRoute = location.pathname === '/settings';
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -89,6 +91,8 @@ function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<{ filename: string; content: string } | null>(null);
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [integrationsLoading, setIntegrationsLoading] = useState(false);
 
   // Real-time logs from WebSocket (path: /api/socket.io)
   const { logs: realtimeLogs, clearLogs } = useRealtimeLogs(activeSession?.id || null, !!user);
@@ -148,6 +152,17 @@ function App() {
     }
   }, []);
 
+  const loadIntegrations = useCallback(async () => {
+    setIntegrationsLoading(true);
+    try {
+      setIntegrations(await api.getIntegrations());
+    } catch (error) {
+      console.error('Failed to load integrations:', error);
+    } finally {
+      setIntegrationsLoading(false);
+    }
+  }, []);
+
   // Load sessions once authenticated (auditors have no chat access).
   // Declared after loadSessions: referencing it earlier only worked because
   // React defers the effect callback past the const initialisation.
@@ -155,7 +170,8 @@ function App() {
     if (user && user.role !== 'auditor') {
       loadSessions();
     }
-  }, [user, loadSessions]);
+    if (user) loadIntegrations();
+  }, [user, loadSessions, loadIntegrations]);
 
   // Throws on failure so the route effect can redirect away from dead links
   const loadSession = useCallback(async (sessionId: string) => {
@@ -484,21 +500,27 @@ function App() {
     setSidebarOpen(prev => !prev);
   }, []);
 
+  const openIntegrations = useCallback((provider?: IntegrationProvider) => {
+    const params = new URLSearchParams({ tab: 'integrations' });
+    if (provider) params.set('connect', provider);
+    navigate(`/settings?${params.toString()}`);
+  }, [navigate]);
+
   // Keep the URL consistent with role-based access: analysts can't sit on
   // /admin, auditors always land on it, unknown paths normalize to /
   useEffect(() => {
     if (!user) return;
     if (isAdminRoute && user.role !== 'admin' && user.role !== 'auditor') {
       navigate('/', { replace: true });
-    } else if (user.role === 'auditor' && !isAdminRoute) {
+    } else if (user.role === 'auditor' && !isAdminRoute && !isSettingsRoute) {
       navigate('/admin', { replace: true });
     } else if (
-      !isAdminRoute && !routeSessionId &&
+      !isAdminRoute && !isSettingsRoute && !routeSessionId &&
       location.pathname !== '/' && location.pathname !== '/auth/callback'
     ) {
       navigate('/', { replace: true });
     }
-  }, [user, isAdminRoute, routeSessionId, location.pathname, navigate]);
+  }, [user, isAdminRoute, isSettingsRoute, routeSessionId, location.pathname, navigate]);
 
   // ---- Auth gate ----
   if (oidcExchanging) {
@@ -516,7 +538,7 @@ function App() {
 
   const isAdmin = user.role === 'admin';
   const isAuditor = user.role === 'auditor';
-  const activeView = isAuditor || (isAdminRoute && isAdmin) ? 'admin' : 'chat';
+  const activeView = isSettingsRoute ? 'settings' : isAuditor || (isAdminRoute && isAdmin) ? 'admin' : 'chat';
   // Loading is per-thread: only show the typing indicator for the thread the
   // user is actually viewing, even while others generate in the background
   const isLoading = !!(activeSession && pendingSessions[activeSession.id]);
@@ -537,7 +559,7 @@ function App() {
           )}
           <Wordmark />
         </div>
-        {activeView === 'admin' && (
+        {activeView !== 'chat' && (
           <div className="flex items-center gap-2.5">
             {!isAuditor && (
               <button
@@ -545,6 +567,14 @@ function App() {
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-hairline text-xs font-medium text-muted transition-colors hover:bg-elevated hover:text-ink"
               >
                 <MessageSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Back to chat</span><span className="sm:hidden">Chat</span>
+              </button>
+            )}
+            {isAuditor && activeView === 'settings' && (
+              <button
+                onClick={() => navigate('/admin')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-hairline text-xs font-medium text-muted transition-colors hover:bg-elevated hover:text-ink"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" /> Admin
               </button>
             )}
             <span className="chip !py-0.5 uppercase tracking-wide !border-brass/40 !text-brass-bright hidden sm:inline-flex">{user.role}</span>
@@ -557,7 +587,14 @@ function App() {
       </header>
 
       <div className="flex flex-1 min-h-0">
-        {activeView === 'admin' ? (
+        {activeView === 'settings' ? (
+          <SettingsPage
+            currentUser={user}
+            integrations={integrations}
+            isLoading={integrationsLoading}
+            onRefresh={loadIntegrations}
+          />
+        ) : activeView === 'admin' ? (
           <AdminPage currentUser={user} />
         ) : (
           <>
@@ -574,6 +611,7 @@ function App() {
                 user={user}
                 onLogout={handleLogout}
                 onOpenAdmin={isAdmin ? () => navigate('/admin') : undefined}
+                onOpenSettings={() => navigate('/settings')}
                 pendingSessions={pendingSessions}
                 unseenSessions={unseenSessions}
               />
@@ -597,6 +635,7 @@ function App() {
                     user={user}
                     onLogout={handleLogout}
                     onOpenAdmin={isAdmin ? () => { navigate('/admin'); setMobileNavOpen(false); } : undefined}
+                    onOpenSettings={() => { navigate('/settings'); setMobileNavOpen(false); }}
                     pendingSessions={pendingSessions}
                     unseenSessions={unseenSessions}
                   />
@@ -618,6 +657,8 @@ function App() {
               realtimeLogs={realtimeLogs}
               onViewFile={handleViewFile}
               onDownloadFile={handleDownloadFile}
+              integrations={integrations}
+              onOpenIntegrations={openIntegrations}
             />
           </>
         )}
