@@ -122,7 +122,13 @@ jobs:
           aws cloudformation deploy --stack-name circini-network \
             --template-file deploy/aws/network.yaml --no-fail-on-empty-changeset
           aws cloudformation deploy --stack-name circini-data \
-            --template-file deploy/aws/data.yaml --no-fail-on-empty-changeset
+            --template-file deploy/aws/data.yaml --no-fail-on-empty-changeset || {
+              aws cloudformation describe-stack-events --stack-name circini-data \
+                --max-items 30 \
+                --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`].[Timestamp,LogicalResourceId,ResourceType,ResourceStatusReason]' \
+                --output table
+              exit 1
+            }
           aws cloudformation deploy --stack-name circini-cognito \
             --template-file deploy/aws/cognito.yaml --no-fail-on-empty-changeset \
             --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
