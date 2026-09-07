@@ -199,7 +199,7 @@ privateRouter.post('/:provider/connect', requireWriteAccess, async (req: AuthedR
       });
       return res.json({ authorizeUrl: authorize.toString() });
     } catch (error) {
-      console.error(`Failed to start ${providerName} OAuth:`, error);
+      console.error('Failed to start integration OAuth:', providerName, error);
       return res.status(500).json({ error: 'Failed to start authorization' });
     }
   }
@@ -315,7 +315,7 @@ privateRouter.delete('/:provider', requireWriteAccess, async (req: AuthedRequest
     });
     res.status(204).send();
   } catch (error) {
-    console.error(`Failed to disconnect ${providerName}:`, error);
+    console.error('Failed to disconnect integration:', providerName, error);
     res.status(500).json({ error: 'Failed to disconnect integration' });
   }
 });
@@ -404,7 +404,7 @@ callbackRouter.get('/:provider/callback', async (req: Request, res: Response) =>
     destination.searchParams.set('result', 'connected');
     return res.redirect(destination.toString());
   } catch (error) {
-    console.error(`${provider} OAuth callback failed:`, axios.isAxiosError(error) ? error.response?.status : error);
+    console.error('Integration OAuth callback failed:', provider, axios.isAxiosError(error) ? error.response?.status : error);
     destination.searchParams.set('result', 'error');
     return res.redirect(destination.toString());
   }

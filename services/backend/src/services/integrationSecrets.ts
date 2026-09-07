@@ -44,8 +44,17 @@ export function decryptIntegrationSecrets(value: string): Record<string, unknown
   if (version !== 'v1' || !ivText || !tagText || !ciphertextText) {
     throw new Error('Unsupported encrypted integration credential');
   }
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(ivText, 'base64url'));
-  decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+  const authenticationTag = Buffer.from(tagText, 'base64url');
+  if (authenticationTag.length !== 16) {
+    throw new Error('Invalid integration credential authentication tag');
+  }
+  const decipher = createDecipheriv(
+    'aes-256-gcm',
+    encryptionKey(),
+    Buffer.from(ivText, 'base64url'),
+    { authTagLength: 16 }
+  );
+  decipher.setAuthTag(authenticationTag);
   const plaintext = Buffer.concat([
     decipher.update(Buffer.from(ciphertextText, 'base64url')),
     decipher.final(),
