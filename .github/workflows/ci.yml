@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   # github.workflow differs when this is called by deploy.yml, so the standalone
