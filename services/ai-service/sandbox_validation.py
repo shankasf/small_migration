@@ -4,7 +4,7 @@ import sqlite3
 import re
 import sys
 from validation import parse_model
-from sqlglot import ErrorLevel
+from sqlglot import ErrorLevel, exp
 
 
 def run_fixture(content: str, fixture: dict) -> dict:
@@ -25,7 +25,11 @@ def run_fixture(content: str, fixture: dict) -> dict:
                 raise ValueError('Invalid fixture shape')
             if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k) or v not in ('TEXT', 'INTEGER', 'REAL') for k, v in columns.items()):
                 raise ValueError('Invalid fixture columns')
-            db.execute(f'CREATE TABLE "{name}" (' + ','.join(f'"{k}" {v}' for k,v in columns.items()) + ')')
+            schema = exp.Schema(this=exp.Table(this=exp.to_identifier(name, quoted=True)), expressions=[
+                exp.ColumnDef(this=exp.to_identifier(k, quoted=True), kind=exp.DataType.build(v))
+                for k, v in columns.items()
+            ])
+            db.execute(exp.Create(this=schema, kind='TABLE').sql(dialect='sqlite'))
             db.executemany(f'INSERT INTO "{name}" VALUES (' + ','.join('?' for _ in columns) + ')', table['rows'])
         db.commit()
         functions = {'abs', 'coalesce', 'count', 'ifnull', 'length', 'lower', 'ltrim', 'max', 'min', 'nullif', 'replace', 'round', 'rtrim', 'substr', 'substring', 'sum', 'trim', 'upper'}
