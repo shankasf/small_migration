@@ -97,3 +97,27 @@ def test_full_private_key_body_is_redacted():
 
 def test_encoded_pii_is_blocked_instead_of_reaching_model():
     assert guardrails.screen_payload('contact private%40example.com')['guardrail']['decision'] == 'blocked'
+
+
+def test_fixture_endpoint_runs_bounded_subprocess():
+    from routes.migration import fixture_test, FixtureRequest
+    fixture = {'tables': {'accounts': {'columns': {'id':'INTEGER'}, 'rows': [[1]]}},
+               'expected_columns': ['id'], 'expected_rows': [[1]]}
+    report = asyncio.run(fixture_test(FixtureRequest(content='select id from accounts', fixture=fixture)))
+    assert report['fixture_test']['status'] == 'passed'
+    assert report['target_database_test'] == 'required'
+
+
+def test_revocation_cancels_active_agent_task(monkeypatch):
+    import routes.migration as route
+    async def waiting(_request):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(route, '_chat', waiting)
+    async def scenario():
+        task = asyncio.create_task(route.chat(ChatRequest(session_id='cancel-test', user_id='user-test', message='hello')))
+        await asyncio.sleep(0)
+        result = await route.cancel_user_runs('user-test')
+        assert result['cancelled'] == 1
+        assert task.cancelled()
+        assert 'cancel-test' not in route._active_sessions
+    asyncio.run(scenario())
