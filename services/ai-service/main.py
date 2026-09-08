@@ -4,6 +4,8 @@ Wraps the existing agent logic with a REST API
 """
 
 import os
+import secrets
+os.environ["OPENAI_AGENTS_DISABLE_TRACING"] = "1"
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -27,6 +29,9 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("INTERNAL_API_KEY must be set (shared secret with the backend)")
     print(f"AI Service starting on port {settings.PORT}")
     configure_llm()
+    import json
+    from llm import security_status
+    print(json.dumps({"event": "security.configuration", **security_status()}, sort_keys=True))
     print(f"Using model: {settings.model_name} (provider={settings.LLM_PROVIDER})")
     print(f"Guardrails: {'enabled' if settings.GUARDRAILS_ENABLED else 'DISABLED'} | "
           f"PHI mode: {'B (redact)' if settings.PHI_MODE else 'A (metadata-only, block health PII)'}")
@@ -66,7 +71,7 @@ async def internal_auth(request: Request, call_next):
     if request.url.path not in ("/", "/ai/health"):
         if not settings.INTERNAL_API_KEY:
             return JSONResponse(status_code=503, content={"detail": "Internal service auth is not configured"})
-        if request.headers.get("x-internal-key") != settings.INTERNAL_API_KEY:
+        if not secrets.compare_digest(request.headers.get("x-internal-key", ""), settings.INTERNAL_API_KEY):
             return JSONResponse(status_code=401, content={"detail": "Invalid internal key"})
     return await call_next(request)
 

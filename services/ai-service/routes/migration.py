@@ -26,7 +26,8 @@ from telemetry import (
 
 # Try to import the agents library
 try:
-    from agents import Agent, Runner, function_tool, ModelSettings
+    from agents import Agent, Runner, function_tool, ModelSettings, RunConfig, set_tracing_disabled
+    set_tracing_disabled(True)
     from openai.types.shared import Reasoning
     AGENTS_AVAILABLE = True
 except ImportError:
@@ -51,6 +52,7 @@ class GeneratedFile(BaseModel):
     name: str
     path: str
     content: str
+    validation: Dict[str, Any] = {}
 
 class UsageInfo(BaseModel):
     provider: str = "openai"
@@ -179,6 +181,10 @@ def create_tools(session_id: str):
             content: The content of the file.
         """
         async with ToolSpan(_logger(), "read_file", {"file_name": file_name, "content": content}) as span:
+            checked = guardrails.screen_payload("", {file_name: content})
+            if checked["guardrail"]["decision"] == "blocked":
+                return "File rejected by policy"
+            content = checked["files"][file_name]
             storage["files"][file_name] = content
             span.result = f"File '{file_name}' loaded ({len(content)} characters)."
             return span.result
@@ -200,7 +206,15 @@ def create_tools(session_id: str):
         """
         async with ToolSpan(_logger(), "generate_output", {"file_name": file_name, "content": content}) as span:
             try:
-                save_output_file(session_id, file_name, content)
+                from validation import validate_output
+                if guardrails.check_inbound("", {file_name: ""}).decision == "blocked":
+                    return "Output filename rejected by policy"
+                content = guardrails.check_outbound(content).text
+                report = validate_output(file_name, content)
+                if report["status"] == "rejected":
+                    return "Output validation failed: " + "; ".join(report["errors"])
+                # The database is the durable artefact store. Avoid a second raw disk copy.
+                _safe_join(settings.OUTPUT_DIR, file_name)
             except ValueError as exc:
                 # Surface the rejection to the agent so it can retry with a plain
                 # file name rather than failing the whole turn.
@@ -408,13 +422,37 @@ def get_or_create_agent(session_id: str) -> "Agent":
             model_settings=ModelSettings(
                 reasoning=Reasoning(effort="low"),
                 max_tokens=16000,
+                store=False,
             )
         )
     return session_agents[session_id]
 
+import asyncio
+_active_sessions: set[str] = set()
+_active_users: Dict[str, set] = {}
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+    if request.session_id in _active_sessions:
+        raise HTTPException(status_code=409, detail="A request is already running in this session")
+    _active_sessions.add(request.session_id)
+    task = asyncio.current_task()
+    if request.user_id:
+        _active_users.setdefault(request.user_id, set()).add(task)
+    try:
+        return await _chat(request)
+    finally:
+        _active_sessions.discard(request.session_id)
+        if request.user_id:
+            tasks = _active_users.get(request.user_id, set())
+            tasks.discard(task)
+            if not tasks:
+                _active_users.pop(request.user_id, None)
+
+async def _chat(request: ChatRequest):
     """Process chat message with the agent"""
+    if not _SAFE_SESSION_ID.fullmatch(request.session_id):
+        raise HTTPException(status_code=400, detail="Invalid session id")
     storage = get_session_storage(request.session_id)
     logger = RealtimeLogger(request.session_id, turn_id=request.turn_id, user_id=request.user_id)
     # Tools are created once per session and cached with the agent, so they read
@@ -426,7 +464,17 @@ async def chat(request: ChatRequest):
         # --- Guardrails inbound (§9): sanitise, injection/deny checks, PII
         # detection, then block (Mode A) or redact before any model egress ---
         await logger.thinking("Running guardrail checks...")
-        inbound = guardrails.check_inbound(request.message, request.files)
+        screened = guardrails.screen_payload(request.message, request.files, request.history)
+        inbound = guardrails.check_inbound(screened["message"], screened["files"])
+        if screened["guardrail"]["decision"] == "blocked":
+            inbound.decision = "blocked"
+            inbound.reasons = screened["guardrail"]["reasons"]
+        elif screened["guardrail"]["decision"] == "redacted":
+            inbound.decision = "redacted"
+            inbound.reasons = screened["guardrail"]["reasons"]
+        inbound.findings = {item["type"]: item["count"] for item in screened["guardrail"]["findings"]}
+        inbound.data_class = screened["guardrail"]["data_class"]
+        request.history = screened["history"]
         record_guardrail_decision(inbound.decision, stage="inbound")
 
         if inbound.decision == "blocked":
@@ -450,6 +498,8 @@ async def chat(request: ChatRequest):
         safe_message = inbound.text
         safe_files = getattr(inbound, "redacted_files", request.files or {})
 
+        storage["files"] = {}
+        storage["outputs"] = {}
         # Bug 7 fix: Hydrate session storage from request files if storage is empty
         # (handles pod restart — files come from DB via backend)
         if safe_files:
@@ -517,7 +567,7 @@ async def chat(request: ChatRequest):
                 except ImportError:
                     ResponseCompletedEvent = None
 
-                result = Runner.run_streamed(agent, messages)
+                result = Runner.run_streamed(agent, messages, run_config=RunConfig(tracing_disabled=True, trace_include_sensitive_data=False))
                 stream_buffer = ""
                 last_flush = time.monotonic()
 
@@ -539,8 +589,10 @@ async def chat(request: ChatRequest):
                         and event.data.delta
                     ):
                         stream_buffer += event.data.delta
-                        if len(stream_buffer) >= 400 or time.monotonic() - last_flush >= 0.4:
-                            await flush_stream()
+                        # Buffer the complete response; identifiers can span deltas.
+                        if len(stream_buffer) > settings.MAX_INPUT_CHARS:
+                            result.cancel()
+                            raise ValueError("Model response exceeds output limit")
                     elif (
                         ResponseCompletedEvent is not None
                         and event.type == "raw_response_event"
@@ -569,12 +621,12 @@ async def chat(request: ChatRequest):
         except Exception as e:
             await logger.log(
                 step="error",
-                message=f"AI processing failed: {e}",
+                message="AI processing failed",
                 log_type="error",
                 duration_ms=int((time.monotonic() - turn_started) * 1000),
-                detail={"error": type(e).__name__, "message": preview(str(e))},
+                detail={"error": type(e).__name__},
             )
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="AI processing failed")
         finally:
             if span_cm is not None:
                 try:
@@ -616,7 +668,8 @@ async def chat(request: ChatRequest):
             generated_files.append(GeneratedFile(
                 name=filename,
                 path=filepath,
-                content=filtered.text
+                content=filtered.text,
+                validation=__import__("validation").validate_output(filename, filtered.text),
             ))
 
         # Combined guardrail verdict for audit: blocked > redacted > allow
@@ -650,6 +703,15 @@ async def chat(request: ChatRequest):
 @router.post("/reset/{session_id}")
 async def reset_session(session_id: str):
     """Reset session storage and cached agent"""
+    if not _SAFE_SESSION_ID.fullmatch(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session id")
+    if session_id in _active_sessions:
+        raise HTTPException(status_code=409, detail="Session is busy; retry deletion after the turn completes")
+    import shutil
+    folder = (settings.OUTPUT_DIR / session_id).resolve()
+    if folder.parent == settings.OUTPUT_DIR.resolve() and folder.exists():
+        shutil.rmtree(folder)
+    session_last_access.pop(session_id, None)
     if session_id in session_storage:
         del session_storage[session_id]
     if session_id in session_agents:
@@ -664,3 +726,65 @@ async def get_status(session_id: str):
         "files_uploaded": list(storage["files"].keys()),
         "outputs_generated": list(storage["outputs"].keys())
     }
+
+
+class PolicyRequest(BaseModel):
+    message: str = ""
+    files: Optional[Dict[str, str]] = None
+    history: Optional[List[Dict[str, str]]] = None
+
+
+@router.post("/policy/check")
+async def policy_check(request: PolicyRequest):
+    return guardrails.screen_payload(request.message, request.files, request.history)
+
+
+@router.get("/security/status")
+async def policy_status():
+    from llm import security_status
+    return security_status()
+
+class FixtureRequest(BaseModel):
+    content: str
+    fixture: Dict[str, Any]
+
+
+@router.post('/validation/test')
+async def fixture_test(request: FixtureRequest):
+    import asyncio
+    import json
+    import sys
+    from validation import validate_output
+    encoded_fixture = json.dumps(request.fixture)
+    checked = guardrails.screen_payload(request.content, {'fixture.json': encoded_fixture})
+    if checked['guardrail']['decision'] != 'allow':
+        raise HTTPException(status_code=422, detail='Use synthetic, non-sensitive fixtures only')
+    report = validate_output('model.sql', request.content)
+    if report['status'] == 'rejected':
+        return report
+    if len(encoded_fixture) > 200000:
+        raise HTTPException(status_code=413, detail='Fixture exceeds size limit')
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, str(Path(__file__).resolve().parent.parent / 'sandbox_validation.py'),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        env={'PATH': os.defpath},
+    )
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(json.dumps(request.model_dump()).encode()), timeout=10)
+        report['fixture_test'] = json.loads(output)
+    except (asyncio.TimeoutError, ValueError):
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        report['fixture_test'] = {'status': 'failed', 'reason': 'Validation exceeded execution limits'}
+    return report
+
+
+@router.post('/cancel/user/{user_id}')
+async def cancel_user_runs(user_id: str):
+    tasks = list(_active_users.get(user_id, set()))
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return {'cancelled': len(tasks)}

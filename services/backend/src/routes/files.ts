@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
+import { screenPayload, testOutput } from '../services/aiService.js';
 import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
 import { recordAudit } from '../services/audit.js';
 
@@ -72,7 +73,7 @@ function parseFileContent(buffer: Buffer, filename: string): string {
 
       return content;
     } catch (error) {
-      console.error('Error parsing Excel file:', error);
+      console.error('Error parsing Excel file:', error instanceof Error ? error.name : 'unknown');
       return buffer.toString('utf-8');
     }
   }
@@ -97,7 +98,7 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
   console.log(`[UPLOAD] Content-Type: ${req.headers['content-type']}`);
   console.log(`[UPLOAD] Content-Length: ${req.headers['content-length']}`);
   next();
-}, upload.array('files', 10), async (req: AuthedRequest, res: Response) => {
+}, upload.array('files', 10), async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const { sessionId } = req.params;
@@ -105,7 +106,6 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
 
     console.log(`[UPLOAD] Multer parsed ${files?.length || 0} files for session ${sessionId}`);
     if (files) {
-      files.forEach((f, i) => console.log(`[UPLOAD]   file[${i}]: ${f.originalname} (${f.size} bytes, ${f.mimetype})`));
     }
 
     if (!files || files.length === 0) {
@@ -123,7 +123,7 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
       return res.status(404).json({ error: 'Session not found' });
     }
     if (!canAccessSession(req.user!, session)) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: req.user!.id, action: 'file.upload', resource: sessionId,
         decision: 'deny', severity: 'warning', ip: req.ip
       });
@@ -134,7 +134,7 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
     for (const file of files) {
       const rejection = validateUpload(file.originalname, file.buffer);
       if (rejection) {
-        recordAudit(prisma, {
+        await recordAudit(prisma, {
           userId: req.user!.id, action: 'guardrail.file_rejected', resource: sessionId,
           decision: 'blocked', severity: 'warning',
           detail: JSON.stringify({ filename: file.originalname, reason: rejection }),
@@ -150,11 +150,11 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
     const parsed = files.map(file => {
       const content = parseFileContent(file.buffer, file.originalname);
       const category = categorizeFile(file.originalname);
-      console.log(`[UPLOAD] Parsed ${file.originalname} -> category=${category}, content length=${content.length}`);
       return { content, category, originalname: file.originalname };
     });
 
     console.log('[UPLOAD] Upserting files to database...');
+    const screened = await screenPayload('', Object.fromEntries(parsed.map(f => [f.originalname, f.content])));
     const uploadedFiles = await Promise.all(
       parsed.map(({ content, category, originalname }) =>
         prisma.uploadedFile.upsert({
@@ -163,13 +163,13 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
           },
           update: {
             filename: originalname,
-            content,
+            content: screened.files[originalname],
           },
           create: {
             sessionId,
             filename: originalname,
             category,
-            content,
+            content: screened.files[originalname],
           },
           select: { id: true, filename: true, category: true },
         })
@@ -177,15 +177,14 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
     );
 
     console.log(`[UPLOAD] Successfully saved ${uploadedFiles.length} files`);
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id, action: 'file.upload', resource: sessionId,
       detail: JSON.stringify({ files: uploadedFiles.map(f => f.filename) }),
       ip: req.ip
     });
     res.status(201).json({ files: uploadedFiles });
   } catch (error) {
-    console.error('[UPLOAD] Error uploading files:', error);
-    res.status(500).json({ error: 'Failed to upload files' });
+    next(error);
   }
 });
 
@@ -215,7 +214,7 @@ router.get('/:sessionId', async (req: AuthedRequest, res: Response) => {
 
     res.json(files);
   } catch (error) {
-    console.error('Error getting files:', error);
+    console.error('Error getting files:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get files' });
   }
 });
@@ -241,13 +240,13 @@ router.delete('/:fileId', requireWriteAccess, async (req: AuthedRequest, res: Re
       where: { id: fileId }
     });
 
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id, action: 'file.delete', resource: fileId,
       detail: JSON.stringify({ filename: file.filename }), ip: req.ip
     });
     res.status(204).send();
   } catch (error) {
-    console.error('Error deleting file:', error);
+    console.error('Error deleting file:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to delete file' });
   }
 });
@@ -272,7 +271,7 @@ router.get('/uploaded/:fileId/content', async (req: AuthedRequest, res: Response
 
     res.json({ content: file.content, filename: file.filename });
   } catch (error) {
-    console.error('Error getting file content:', error);
+    console.error('Error getting file content:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get file content' });
   }
 });
@@ -295,7 +294,7 @@ router.get('/uploaded/:fileId/download', async (req: AuthedRequest, res: Respons
       return res.status(403).json({ error: 'You do not have access to this file' });
     }
 
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id, action: 'file.download', resource: fileId,
       detail: JSON.stringify({ filename: file.filename }), ip: req.ip
     });
@@ -303,7 +302,7 @@ router.get('/uploaded/:fileId/download', async (req: AuthedRequest, res: Respons
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
     res.send(file.content);
   } catch (error) {
-    console.error('Error downloading file:', error);
+    console.error('Error downloading file:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to download file' });
   }
 });
@@ -326,17 +325,38 @@ router.get('/output/:outputId/download', async (req: AuthedRequest, res: Respons
       return res.status(403).json({ error: 'You do not have access to this output' });
     }
 
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id, action: 'output.download', resource: outputId,
       detail: JSON.stringify({ filename: output.filename }), ip: req.ip
     });
     res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('X-Artifact-Status', 'draft-review-required');
     res.setHeader('Content-Disposition', `attachment; filename="${output.filename}"`);
     res.send(output.content);
   } catch (error) {
-    console.error('Error downloading output:', error);
+    console.error('Error downloading output:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to download output' });
   }
+});
+
+router.post('/output/:outputId/test', requireWriteAccess, async (req: AuthedRequest, res: Response, next) => {
+  try {
+    const prisma = getPrisma(req);
+    const output = await prisma.generatedOutput.findUnique({where: {id: req.params.outputId}, include: {session: true}});
+    if (!output || !canAccessSession(req.user!, output.session)) return res.status(403).json({error: 'Output unavailable'});
+    const validation = await testOutput(output.content, req.body.fixture);
+    await prisma.generatedOutput.update({where: {id: output.id}, data: {validation}});
+    await recordAudit(prisma, {userId: req.user!.id, action: 'output.fixture_test', resource: output.id});
+    res.json(validation);
+  } catch (error) { next(error); }
+});
+
+router.get('/output/:outputId/validation', async (req: AuthedRequest, res: Response, next) => {
+  try {
+    const output = await getPrisma(req).generatedOutput.findUnique({where: {id: req.params.outputId}, include: {session: true}});
+    if (!output || !canAccessSession(req.user!, output.session)) return res.status(403).json({error: 'Output unavailable'});
+    res.json(output.validation || {status: 'draft', static_checks: 'required', human_approval: 'required'});
+  } catch (error) { next(error); }
 });
 
 export default router;

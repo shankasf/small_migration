@@ -33,6 +33,7 @@ def preview(value: Any, limit: int = PREVIEW_MAX_CHARS) -> str:
     if value is None:
         return ""
     text = value if isinstance(value, str) else json.dumps(value, default=str)
+    text = guardrails.check_outbound(text).text
     truncated = len(text) > limit
     if truncated:
         text = f"{text[:limit]}\n… [truncated, {len(text)} characters total]"

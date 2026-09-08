@@ -1,0 +1,51 @@
+# Security hardening — 8 September 2026
+
+Status: implementation and local verification; not a production deployment or certification record. Historical architecture documents describe desired controls and must not be used as evidence that Azure, zero retention, sovereignty or accreditation is enabled.
+
+## Implemented boundaries
+
+- `ai-service/guardrails.py` exposes one screening pipeline. The backend calls it before storing prompts, uploads and session titles; the AI service independently rechecks message history, file names and file contents before generation. Rejections return HTTP 422 without persisting the submitted content. An unavailable scanner fails closed. Recognisers are heuristic; metadata-only handling is not a promise to detect every identifier or clinical narrative.
+- Configuration cannot disable guardrails. PHI mode and external voice transcription prevent startup if requested; the transcription routes refuse requests. Azure selection requires an exact approved HTTPS resource hostname, model deployment, declared processing region and approval reference. These declarations do not prove a provider contract or network configuration. `/api/admin/security/configuration` reports actual settings and pending evidence.
+- SDK tracing is explicitly disabled globally and per run. Model requests set `store=false`. Neither setting proves provider-wide zero retention; the applicable provider agreement and abuse-monitoring controls still require verification. See [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
+- Model text is buffered before filtering, rather than releasing fragments that could split identifiers. Generated file content is filtered before it enters the durable store. The agent no longer creates a second output copy on disk. Tool names remain limited to session file operations; there are no production deployment or query-execution tools.
+- HTTP ownership checks apply to sessions, input files, outputs and fixture validation. WebSocket joins and every outgoing session event repeat authentication and ownership checks. Admin/auditor live logs require their roles. Revocation disables the account, records a token cutoff, disconnects sockets and requests cancellation of active AI work. A provider request already sent cannot be recalled. Local role overrides cannot be overwritten by older SSO claims. Cognito tokens are configured for five minutes; external IdP-only changes are not instantaneous—use the application revoke endpoint as part of offboarding.
+- Mutations require an audit intent record before the handler. Audit events are awaited and have a metadata allowlist. AWS defines a private encrypted S3 archive with indefinite Object Lock legal holds; the backend role can append but cannot remove entries. Audit sink failure stops new mutations. Rejected requests remain rejected if their audit write fails, and emit an audit-failure alarm signal. Full prompts remain visible to administrators only as their screened stored versions; AI activity previews are still content-bearing and must be treated accordingly.
+- OAuth scopes default to profile-read only. Connections do not give the LLM provider credentials. OAuth callbacks recheck current user status and revocation time. Integration encryption supports a previous key during controlled rotation; `dist/operations/rotateIntegrationKey.js` rewrites and verifies ciphertext before the previous key is removed. Existing grants must be revoked/reconnected to reduce historical scopes.
+
+## Retention and deletion
+
+Owner-approved policy: chats, uploads, outputs, AI activity, usage and audit records have no automatic expiry. The former AI activity purge and the newly proposed retention sweeper have been removed; legacy TTL environment variables cannot re-enable them. CloudWatch logs have no expiry. The in-memory agent cache can still be evicted to bound memory use; durable database records remain available for rehydration.
+
+The S3 audit archive has no lifecycle expiry. Every object version is written with an indefinite Object Lock legal hold. The backend can append and place holds; the bucket policy denies releasing holds. A separately authorised AWS administrator could change that policy, so this is not a claim that no account authority can ever change retention. See [AWS Object Lock](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html).
+
+Explicit user-requested session/file deletion is a separate existing application action, not an automatic expiry policy. RDS automated backup history remains seven days and stack-deletion/manual snapshots remain retained; that backup recovery window does not expire primary application records. Historical data already deleted before this change is not recreated.
+
+## Validation and production approval
+
+Each SQL artefact receives a SHA-256 hash, static Snowflake parser checks and an explicit draft status. Only one query is permitted; modifying statements, hooks and unsupported macros/functions are rejected. The small supported dbt template subset is parsed as literals, never executed. A parser is not an actual Snowflake/dbt compiler.
+
+`POST /api/files/output/:id/test` accepts a synthetic fixture: `tables` maps simple table names to `columns` (TEXT/INTEGER/REAL) and `rows`; `expected_columns` and `expected_rows` define the mapping assertions. Tests run in a bounded, separate SQLite process with no provider credentials, no extensions, read-only query authorization and execution limits. This verifies only those fixtures under SQLite. Unsupported features fail rather than receive a passing label. `GET /api/files/output/:id/validation` returns the result. All downloads remain drafts.
+
+Before production use, the migration owner must attach an actual target Snowflake/dbt compile/test report, mapping completeness and nullability checks, reconciliation counts and a rollback plan, all tied to the artefact hash. A second authorised reviewer signs off through the organisation's deployment/change-control system. No API in this application can mark or execute an artefact as production-approved. Copying SQL outside the application is governed by target-system access controls.
+
+## Monitoring, incident response and vulnerability management
+
+AWS templates define CloudWatch alarms for critical security events, durable audit failures and backend unavailability, with an SNS topic. A topic with no confirmed subscribers does not deliver alerts. The owner must add a monitored recipient, confirm it and exercise a synthetic alarm. Collector sidecars and OTLP configuration exist; verify actual X-Ray/CloudWatch arrival after deployment. Record detection time, delivery time and acknowledgement. Do not put prompts, credentials or PHI into test alerts.
+
+For a suspected breach: revoke the affected application accounts and IdP sessions; suspend affected integrations at their providers; preserve audit artefacts; rotate exposed secrets; record timeline, scope and containment; involve the privacy/security owner for notification decisions; remediate and retest before reopening access. Do not destroy evidence while investigating. For a failed migration, stop the external deployment and apply its pre-approved database recovery plan—the assistant cannot perform this rollback.
+
+Run daily CI scans and triage findings under `SECURITY.md`. Before each release, verify source/secret/dependency scans and built-image scans for the exact image; the legacy existing-image redeploy path skips fresh scans and must only use a previously verified image. An independent penetration test must cover: HTTP and socket IDOR, SSO claim tampering/linking, disabled accounts and existing sockets, upload types and decompression limits, prompt injection across history/files/names/encodings, chunked output, logging/trace egress, audit outages, OAuth state/revocation, fixture sandbox escape and resource exhaustion, and explicit deletion races.
+
+## Backup recovery drill
+
+The infrastructure operator must restore a recent RDS backup into a separate private database/security group with no production writers, restrict credentials and outbound access, then verify schema version, representative row counts and referential integrity using authorised test accounts. Measure elapsed recovery time and the newest recovered timestamp; set and approve RTO/RPO from those results. Remove only the drill resources after recording evidence. A successful local database test is not an RDS restore drill. `scripts/collect-security-evidence.py` inventories live infrastructure without printing secrets.
+
+## Release sequence and evidence still required
+
+1. Review the diff and pass Python, backend integration, frontend build/lint, SAST, secret and dependency/image checks. Apply the IAM template update through the approved AWS administrator before the app stack needs its new S3/SNS/CloudWatch permissions.
+2. The pipeline applies additive columns with the old schema task before replacing application tasks. Ordinary schema-sync then checks the full schema. No destructive column migration is introduced here.
+3. Verify that no application or CloudWatch expiry job remains, and that new audit objects carry legal holds with no lifecycle expiry. Indefinite application retention is the owner-approved policy.
+4. Deploy through the pipeline; verify authenticated ownership, revocation, policy rejection and archive writes against the exact deployed image. Confirm an alert subscriber and delivery, and perform the restore drill.
+5. Supply the approved Azure resource/deployment, processing region and provider/network/retention evidence if switching providers. Implement and assess the approved transcription path separately before enabling voice. PHI remains disabled pending independent assessment and organisational approval.
+
+Unresolved external evidence: named incident/privacy owners and contacts; alert recipient and delivery test; backup recovery evidence; target Azure configuration and contract/network evidence; independent penetration test and retest; measured backup recovery; per-migration target database validation and human sign-off. None is represented as complete by the code or this document.

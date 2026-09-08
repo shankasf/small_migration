@@ -1,26 +1,27 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
-import { sendToAIService } from '../services/aiService.js';
+import { screenPayload, sendToAIService } from '../services/aiService.js';
 import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
 import { recordAudit } from '../services/audit.js';
 import { checkTokenCaps, computeCostUsd, recordUsage } from '../services/usage.js';
 import { beginTurn } from '../services/aiLog.js';
-import { recordAiEvent } from '../index.js';
+
 
 const router = Router();
 
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
 
 // Send message to session
-router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
+router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
+    const recordAiEvent = req.app.locals.recordAiEvent;
     const { sessionId } = req.params;
-    const { message } = req.body;
+    let { message } = req.body;
     const user = req.user!;
 
-    if (!message) {
+    if (typeof message !== "string" || !message.trim()) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
@@ -43,7 +44,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       return res.status(404).json({ error: 'Session not found' });
     }
     if (!canAccessSession(user, session)) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: user.id, action: 'chat.message', resource: sessionId,
         decision: 'deny', severity: 'warning', ip: req.ip
       });
@@ -53,7 +54,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     // Enforce per-user token caps set by an admin
     const caps = await checkTokenCaps(prisma, user);
     if (!caps.allowed) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: user.id, action: 'chat.message', resource: sessionId,
         decision: 'deny', severity: 'warning',
         detail: JSON.stringify({ reason: caps.reason }), ip: req.ip
@@ -61,6 +62,12 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       return res.status(429).json({ error: caps.reason });
     }
 
+    const screened = await screenPayload(message,
+      Object.fromEntries(session.files.map(f => [f.filename, f.content])),
+      [...session.messages].reverse().map(m => ({ role: m.role, content: m.content })));
+    message = screened.message;
+
+    // Save only screened content. A rejected request never becomes history.
     // Save user message
     const userMessage = await prisma.message.create({
       data: {
@@ -79,7 +86,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       const fileMap: Record<string, string> = {};
       for (const file of session.files) {
         if (file.content) {
-          fileMap[file.filename] = file.content;
+          fileMap[file.filename] = screened.files[file.filename];
         }
       }
       if (Object.keys(fileMap).length > 0) {
@@ -89,10 +96,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     }
 
     // Prepare conversation history
-    const history = session.messages.map(m => ({
-      role: m.role,
-      content: m.content
-    }));
+    const history = screened.history;
 
     // Open an observability turn: every event the AI service emits from here
     // on (guardrails, model calls, tool calls, output) is attributed to this
@@ -176,7 +180,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
 
     // Audit the interaction, carrying the guardrail decision from the AI service
     const guardrail = aiResponse.guardrail;
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: user.id,
       action: guardrail?.decision === 'blocked' ? 'guardrail.block' : 'chat.message',
       resource: sessionId,
@@ -216,6 +220,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
               filepath: file.path,
               fileType: file.name.endsWith('.sql') ? 'sql' : 'txt',
               content: file.content || '',
+              validation: file.validation || {},
             },
             select: {
               id: true, sessionId: true, messageId: true, filename: true,
@@ -253,8 +258,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       guardrail: aiResponse.guardrail
     });
   } catch (error) {
-    console.error('Error processing message:', error);
-    res.status(500).json({ error: 'Failed to process message' });
+    next(error);
   }
 });
 
@@ -279,7 +283,7 @@ router.get('/:sessionId/messages', async (req: AuthedRequest, res: Response) => 
 
     res.json(messages);
   } catch (error) {
-    console.error('Error getting messages:', error);
+    console.error('Error getting messages:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get messages' });
   }
 });

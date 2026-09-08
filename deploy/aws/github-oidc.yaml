@@ -106,11 +106,22 @@ Resources:
                   - secretsmanager:PutSecretValue
                   - secretsmanager:TagResource
                   - logs:*
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
                   - servicediscovery:*
                   - application-autoscaling:*
                   - kms:CreateGrant
                   - kms:Describe*
                 Resource: '*'
+              - Effect: Allow
+                Action: ['s3:CreateBucket', 's3:GetBucket*', 's3:PutBucket*', 's3:GetEncryptionConfiguration', 's3:PutEncryptionConfiguration', 's3:GetLifecycleConfiguration', 's3:PutLifecycleConfiguration']
+                Resource: !Sub 'arn:aws:s3:::circini-audit-${AWS::AccountId}-${AWS::Region}'
+              - Effect: Allow
+                Action: ['sns:CreateTopic', 'sns:GetTopicAttributes', 'sns:SetTopicAttributes', 'sns:TagResource', 'sns:UntagResource', 'sns:ListTagsForResource']
+                Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:circini-security-alerts'
               # Manage and pass ONLY the circini-* task/execution roles the app
               # stack defines. iam:PassRole is scoped so a compromised pipeline
               # cannot hand an arbitrary role to ECS or CloudFormation.

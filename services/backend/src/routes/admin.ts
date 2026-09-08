@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AuthedRequest, requireRole } from '../middleware/auth.js';
+import { retentionPolicy } from '../services/retention.js';
+import { securityStatus, cancelUserRuns } from '../services/aiService.js';
 import { recordAudit } from '../services/audit.js';
 
 const router = Router();
@@ -57,7 +59,7 @@ router.get('/users', requireRole('admin'), async (req: AuthedRequest, res: Respo
       }))
     );
   } catch (error) {
-    console.error('Error listing users:', error);
+    console.error('Error listing users:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to list users' });
   }
 });
@@ -86,7 +88,7 @@ router.post('/users', requireRole('admin'), async (req: AuthedRequest, res: Resp
       },
     });
 
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id,
       action: 'admin.user_create',
       resource: user.id,
@@ -98,7 +100,7 @@ router.post('/users', requireRole('admin'), async (req: AuthedRequest, res: Resp
     if (error?.code === 'P2002') {
       return res.status(409).json({ error: 'A user with that email already exists' });
     }
-    console.error('Error creating user:', error);
+    console.error('Error creating user:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to create user' });
   }
 });
@@ -125,7 +127,8 @@ router.patch('/users/:id', requireRole('admin'), async (req: AuthedRequest, res:
     }
 
     const data: any = {};
-    if (role !== undefined) data.role = role;
+    if (role !== undefined) { data.role = role; data.roleManagedLocally = true; }
+    if (role !== undefined || status !== undefined || password) data.tokensValidAfter = new Date();
     if (status !== undefined) data.status = status;
     if (name !== undefined) data.name = name;
     if (dailyTokenLimit !== undefined) data.dailyTokenLimit = dailyTokenLimit;
@@ -133,8 +136,10 @@ router.patch('/users/:id', requireRole('admin'), async (req: AuthedRequest, res:
     if (password) data.passwordHash = await bcrypt.hash(String(password), 12);
 
     const user = await prisma.user.update({ where: { id }, data });
+    req.app.locals.io?.in(`user:${id}`).disconnectSockets(true);
+    if (data.tokensValidAfter) await cancelUserRuns(id);
 
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id,
       action: 'admin.user_update',
       resource: id,
@@ -149,9 +154,21 @@ router.patch('/users/:id', requireRole('admin'), async (req: AuthedRequest, res:
     });
     res.json(publicUser(user));
   } catch (error) {
-    console.error('Error updating user:', error);
+    console.error('Error updating user:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to update user' });
   }
+});
+
+router.post('/users/:id/revoke', requireRole('admin'), async (req: AuthedRequest, res: Response, next) => {
+  try {
+    if (req.params.id === req.user!.id) return res.status(400).json({error: 'Use sign out for your own session'});
+    const prisma = getPrisma(req);
+    await prisma.user.update({ where: { id: req.params.id }, data: { tokensValidAfter: new Date(), status: 'disabled' } });
+    req.app.locals.io?.in(`user:${req.params.id}`).disconnectSockets(true);
+    await cancelUserRuns(req.params.id);
+    await recordAudit(prisma, { userId: req.user!.id, action: 'admin.access_revoked', resource: req.params.id, severity: 'critical' });
+    res.json({ok: true});
+  } catch (error) { next(error); }
 });
 
 // ---------- Usage analytics (admin only) ----------
@@ -211,7 +228,7 @@ router.get('/usage/summary', requireRole('admin'), async (req: AuthedRequest, re
       daily: Array.from(daily.entries()).map(([date, v]) => ({ date, ...v })),
     });
   } catch (error) {
-    console.error('Error building usage summary:', error);
+    console.error('Error building usage summary:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to build usage summary' });
   }
 });
@@ -300,7 +317,7 @@ router.get('/ailogs', requireRole('admin', 'auditor'), async (req: AuthedRequest
       })),
     });
   } catch (error) {
-    console.error('Error listing AI activity:', error);
+    console.error('Error listing AI activity:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to list AI activity' });
   }
 });
@@ -361,7 +378,7 @@ router.get('/ailogs/facets', requireRole('admin', 'auditor'), async (req: Authed
         .sort((a, b) => b.events - a.events),
     });
   } catch (error) {
-    console.error('Error building AI log facets:', error);
+    console.error('Error building AI log facets:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to build AI log facets' });
   }
 });
@@ -386,7 +403,7 @@ router.get('/audit', requireRole('admin', 'auditor'), async (req: AuthedRequest,
       take: limit,
     });
 
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id,
       action: 'audit.view',
       detail: JSON.stringify({ filters: { userId, action, decision, severity }, limit }),
@@ -394,7 +411,7 @@ router.get('/audit', requireRole('admin', 'auditor'), async (req: AuthedRequest,
     });
     res.json(events);
   } catch (error) {
-    console.error('Error listing audit events:', error);
+    console.error('Error listing audit events:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to list audit events' });
   }
 });
@@ -426,9 +443,18 @@ router.get('/security/summary', requireRole('admin', 'auditor'), async (req: Aut
       recent,
     });
   } catch (error) {
-    console.error('Error building security summary:', error);
+    console.error('Error building security summary:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to build security summary' });
   }
 });
 
+router.get('/security/configuration', requireRole('admin', 'auditor'), async (_req, res, next) => {
+  try { res.json({ ...await securityStatus(),
+    retention: retentionPolicy,
+    immutableAuditConfigured: !!process.env.AUDIT_ARCHIVE_BUCKET,
+    alertDeliveryVerified: false,
+    independentPenTest: 'pending',
+    targetDatabaseValidation: 'required for each artefact',
+  }); } catch (error) { next(error); }
+});
 export default router;

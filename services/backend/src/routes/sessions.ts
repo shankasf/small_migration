@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { AuthedRequest, canAccessSession, requireRole, requireWriteAccess } from '../middleware/auth.js';
+import { screenPayload, resetAISession } from '../services/aiService.js';
 import { recordAudit } from '../services/audit.js';
 
 const router = Router();
@@ -9,19 +10,19 @@ const router = Router();
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
 
 // Create new session (owned by the caller)
-router.post('/', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
+router.post('/', requireWriteAccess, async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const { name } = req.body;
 
     const session = await prisma.session.create({
       data: {
-        name: name || 'New Chat',
+        name: (await screenPayload(typeof name === 'string' ? name : 'New Chat')).message,
         ownerUserId: req.user!.id
       }
     });
 
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id,
       action: 'session.create',
       resource: session.id,
@@ -29,14 +30,13 @@ router.post('/', requireWriteAccess, async (req: AuthedRequest, res: Response) =
     });
     res.status(201).json(session);
   } catch (error) {
-    console.error('Error creating session:', error);
-    res.status(500).json({ error: 'Failed to create session' });
+    next(error);
   }
 });
 
 // List sessions with cursor-based pagination.
 // Admins see all sessions; analysts see only their own (row-level scoping).
-router.get('/', requireRole('admin', 'analyst'), async (req: AuthedRequest, res: Response) => {
+router.get('/', requireRole('admin', 'analyst'), async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
@@ -68,13 +68,13 @@ router.get('/', requireRole('admin', 'analyst'), async (req: AuthedRequest, res:
 
     res.json({ sessions: results, nextCursor });
   } catch (error) {
-    console.error('Error listing sessions:', error);
+    console.error('Error listing sessions:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to list sessions' });
   }
 });
 
 // Get single session with messages
-router.get('/:id', async (req: AuthedRequest, res: Response) => {
+router.get('/:id', async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
@@ -100,7 +100,7 @@ router.get('/:id', async (req: AuthedRequest, res: Response) => {
       return res.status(404).json({ error: 'Session not found' });
     }
     if (!canAccessSession(req.user!, session)) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: req.user!.id,
         action: 'session.access',
         resource: id,
@@ -113,13 +113,13 @@ router.get('/:id', async (req: AuthedRequest, res: Response) => {
 
     res.json(session);
   } catch (error) {
-    console.error('Error getting session:', error);
+    console.error('Error getting session:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get session' });
   }
 });
 
 // Update session name
-router.patch('/:id', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
+router.patch('/:id', requireWriteAccess, async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
@@ -130,7 +130,7 @@ router.patch('/:id', requireWriteAccess, async (req: AuthedRequest, res: Respons
       return res.status(404).json({ error: 'Session not found' });
     }
     if (!canAccessSession(req.user!, existing)) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: req.user!.id, action: 'session.update', resource: id,
         decision: 'deny', severity: 'warning', ip: req.ip
       });
@@ -139,19 +139,18 @@ router.patch('/:id', requireWriteAccess, async (req: AuthedRequest, res: Respons
 
     const session = await prisma.session.update({
       where: { id },
-      data: { name }
+      data: { name: (await screenPayload(typeof name === "string" ? name : "New Chat")).message }
     });
 
-    recordAudit(prisma, { userId: req.user!.id, action: 'session.update', resource: id, ip: req.ip });
+    await recordAudit(prisma, { userId: req.user!.id, action: 'session.update', resource: id, ip: req.ip });
     res.json(session);
   } catch (error) {
-    console.error('Error updating session:', error);
-    res.status(500).json({ error: 'Failed to update session' });
+    next(error);
   }
 });
 
 // Delete session
-router.delete('/:id', requireWriteAccess, async (req: AuthedRequest, res: Response) => {
+router.delete('/:id', requireWriteAccess, async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
@@ -161,27 +160,30 @@ router.delete('/:id', requireWriteAccess, async (req: AuthedRequest, res: Respon
       return res.status(404).json({ error: 'Session not found' });
     }
     if (!canAccessSession(req.user!, existing)) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: req.user!.id, action: 'session.delete', resource: id,
         decision: 'deny', severity: 'warning', ip: req.ip
       });
       return res.status(403).json({ error: 'You do not have access to this session' });
     }
 
+    await resetAISession(id);
+    req.app.locals.io?.in(`session:${id}`).disconnectSockets(true);
+    await prisma.aiActivityLog.deleteMany({ where: { sessionId: id } });
     await prisma.session.delete({
       where: { id }
     });
 
-    recordAudit(prisma, { userId: req.user!.id, action: 'session.delete', resource: id, ip: req.ip });
+    await recordAudit(prisma, { userId: req.user!.id, action: 'session.delete', resource: id, ip: req.ip });
     res.status(204).send();
   } catch (error) {
-    console.error('Error deleting session:', error);
+    console.error('Error deleting session:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to delete session' });
   }
 });
 
 // Get session outputs
-router.get('/:id/outputs', async (req: AuthedRequest, res: Response) => {
+router.get('/:id/outputs', async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const { id } = req.params;
@@ -202,7 +204,7 @@ router.get('/:id/outputs', async (req: AuthedRequest, res: Response) => {
 
     res.json(outputs);
   } catch (error) {
-    console.error('Error getting outputs:', error);
+    console.error('Error getting outputs:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get outputs' });
   }
 });

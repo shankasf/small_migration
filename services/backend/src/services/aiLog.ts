@@ -212,24 +212,4 @@ export async function persistAiLog(prisma: PrismaClient, record: AiLogRecord): P
   }
 }
 
-/**
- * Retention: activity logs carry prompt/result previews, so they are pruned on
- * a schedule rather than kept forever. Window is config, not code.
- */
-export function startAiLogRetention(prisma: PrismaClient) {
-  const days = Math.max(1, parseInt(process.env.AI_LOG_RETENTION_DAYS || '30', 10) || 30);
-  const prune = async () => {
-    try {
-      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-      const { count } = await prisma.aiActivityLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
-      if (count > 0) console.log(`[AI-LOG] Pruned ${count} activity rows older than ${days}d`);
-    } catch (err) {
-      console.error('[AI-LOG] Retention sweep failed:', (err as Error)?.message || err);
-    }
-  };
-  // First sweep a minute after boot, then daily.
-  const initial = setTimeout(prune, 60_000);
-  const daily = setInterval(prune, 24 * 60 * 60 * 1000);
-  initial.unref?.();
-  daily.unref?.();
-}
+// AI activity records have no expiry. Retained indefinitely by owner policy.

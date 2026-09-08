@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  schedule:
+    - cron: "23 4 * * *"
   pull_request:
   push:
     branches: [main]
@@ -39,6 +41,32 @@ jobs:
         run: npx tsc --noEmit
       - name: Build
         run: npm run build
+
+  backend-security:
+    name: Backend security integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-test-password
+          POSTGRES_DB: migration_security_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22' }
+      - run: npm ci
+        working-directory: services/backend
+      - run: npx prisma generate
+        working-directory: services/backend
+      - name: Exercise storage, isolation, revocation and retention boundaries
+        run: scripts/test-security.sh
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:synthetic-test-password@127.0.0.1:5432/migration_security_test
 
   frontend:
     name: Frontend — typecheck and lint
@@ -109,7 +137,7 @@ jobs:
           scan-ref: services/backend
           scanners: vuln
           severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          ignore-unfixed: false
           exit-code: '1'
 
       - name: Trivy — frontend dependencies
@@ -119,7 +147,7 @@ jobs:
           scan-ref: services/frontend
           scanners: vuln
           severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          ignore-unfixed: false
           exit-code: '1'
 
       - name: pip-audit — ai-service

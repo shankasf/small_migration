@@ -50,7 +50,7 @@ router.post('/login', async (req: Request, res: Response) => {
       : false;
 
     if (!user || !passwordOk) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: user?.id,
         action: 'auth.login',
         decision: 'deny',
@@ -61,7 +61,7 @@ router.post('/login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     if (user.status === 'disabled') {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: user.id,
         action: 'auth.login',
         decision: 'deny',
@@ -73,12 +73,12 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-    recordAudit(prisma, { userId: user.id, action: 'auth.login', ip: req.ip });
+    await recordAudit(prisma, { userId: user.id, action: 'auth.login', ip: req.ip });
 
     const token = await issueToken(user);
     res.json({ token, user: publicUser(user) });
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('Login error:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Login failed' });
   }
 });
@@ -106,7 +106,7 @@ router.post('/change-password', async (req: AuthedRequest, res: Response) => {
       ? await bcrypt.compare(String(currentPassword), user.passwordHash)
       : false;
     if (!ok) {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: user.id,
         action: 'auth.change_password',
         decision: 'deny',
@@ -118,12 +118,13 @@ router.post('/change-password', async (req: AuthedRequest, res: Response) => {
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash: await bcrypt.hash(String(newPassword), 12) },
+      data: { passwordHash: await bcrypt.hash(String(newPassword), 12), tokensValidAfter: new Date() },
     });
-    recordAudit(prisma, { userId: user.id, action: 'auth.change_password', ip: req.ip });
+    req.app.locals.io?.in(`user:${user.id}`).disconnectSockets(true);
+    await recordAudit(prisma, { userId: user.id, action: 'auth.change_password', ip: req.ip });
     res.json({ ok: true });
   } catch (error) {
-    console.error('Change password error:', error);
+    console.error('Change password error:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to change password' });
   }
 });

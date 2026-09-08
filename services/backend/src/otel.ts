@@ -31,7 +31,11 @@ if (enabled) {
       ? { traceExporter: new OTLPTraceExporter({ url: `${otlpEndpoint.replace(/\/$/, '')}/v1/traces` }) }
       : {}),
     instrumentations: [
-      new HttpInstrumentation(),
+      new HttpInstrumentation({
+        // OAuth callbacks contain short-lived authorization codes in their query.
+        ignoreIncomingRequestHook: req => !!req.url?.includes('/callback'),
+        ignoreOutgoingRequestHook: req => String(req.path || '').includes('?'),
+      }),
       new ExpressInstrumentation(),
     ],
   });

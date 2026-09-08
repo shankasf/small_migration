@@ -138,7 +138,7 @@ privateRouter.get('/', async (req: AuthedRequest, res: Response) => {
       integrations: PROVIDERS.map(provider => integrationView(provider, byProvider.get(provider))),
     });
   } catch (error) {
-    console.error('Failed to list integrations:', error);
+    console.error('Failed to list integrations:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to load integrations' });
   }
 });
@@ -187,11 +187,11 @@ privateRouter.post('/:provider/connect', requireWriteAccess, async (req: AuthedR
       authorize.searchParams.set(
         'scope',
         providerName === 'github'
-          ? (process.env.GITHUB_OAUTH_SCOPES || 'read:user repo')
-          : (process.env.GITLAB_OAUTH_SCOPES || 'read_user read_api read_repository')
+          ? (process.env.GITHUB_OAUTH_SCOPES || 'read:user')
+          : (process.env.GITLAB_OAUTH_SCOPES || 'read_user')
       );
 
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: req.user!.id,
         action: 'integration.connect_started',
         resource: providerName,
@@ -231,7 +231,7 @@ privateRouter.post('/:provider/connect', requireWriteAccess, async (req: AuthedR
         { accountId, host },
         { token },
       );
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: req.user!.id,
         action: 'integration.connected',
         resource: 'dbt',
@@ -287,7 +287,7 @@ privateRouter.post('/:provider/connect', requireWriteAccess, async (req: AuthedR
       { account, username, warehouse: warehouse || null, database: database || null, role: role || null },
       { privateKey, privateKeyPass: privateKeyPass || null },
     );
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id,
       action: 'integration.connected',
       resource: 'snowflake',
@@ -307,7 +307,7 @@ privateRouter.delete('/:provider', requireWriteAccess, async (req: AuthedRequest
   try {
     const prisma = getPrisma(req);
     await prisma.integration.deleteMany({ where: { userId: req.user!.id, provider: providerName } });
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: req.user!.id,
       action: 'integration.disconnected',
       resource: providerName,
@@ -315,7 +315,7 @@ privateRouter.delete('/:provider', requireWriteAccess, async (req: AuthedRequest
     });
     res.status(204).send();
   } catch (error) {
-    console.error('Failed to disconnect integration:', providerName, error);
+    console.error('Failed to disconnect integration:', providerName);
     res.status(500).json({ error: 'Failed to disconnect integration' });
   }
 });
@@ -343,6 +343,12 @@ callbackRouter.get('/:provider/callback', async (req: Request, res: Response) =>
       return res.redirect(destination.toString());
     }
     await prisma.integrationOAuthState.delete({ where: { state: stateValue } });
+    const user = await prisma.user.findUnique({where: {id: oauthState.userId}});
+    if (!user || user.status !== 'active' || user.role === 'auditor'
+        || (user.tokensValidAfter && oauthState.createdAt <= user.tokensValidAfter)) {
+      destination.searchParams.set('result', 'expired');
+      return res.redirect(destination.toString());
+    }
 
     const prefix = provider.toUpperCase();
     const tokenUrl = provider === 'github'
@@ -394,7 +400,7 @@ callbackRouter.get('/:provider/callback', async (req: Request, res: Response) =>
         expiresIn: tokenResponse.data?.expires_in || null,
       },
     );
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: oauthState.userId,
       action: 'integration.connected',
       resource: provider,

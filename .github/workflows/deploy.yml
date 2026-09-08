@@ -78,7 +78,7 @@ jobs:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_PREFIX }}-${{ matrix.service }}:${{ steps.tag.outputs.tag }}
           severity: CRITICAL
           exit-code: '1'
-          ignore-unfixed: true
+          ignore-unfixed: false
 
   deploy:
     name: Deploy to AWS
@@ -139,6 +139,9 @@ jobs:
             --template-file deploy/aws/cognito.yaml --no-fail-on-empty-changeset \
             --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
 
+      - name: Apply additive security schema before replacing tasks
+        run: python3 scripts/preflight-security-schema.py
+
       - name: Deploy app stack
         run: |
           set -euo pipefail
@@ -151,7 +154,13 @@ jobs:
               AuthMode="${{ vars.AUTH_MODE || 'oidc' }}" \
               CertificateArn="${{ vars.CERTIFICATE_ARN }}" \
               AppDomain="${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}" \
-              OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-5.6-sol' }}"
+              OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-5.6-sol' }}" \
+              LlmProvider="${{ vars.LLM_PROVIDER || 'openai' }}" \
+              ApprovedLlmHost="${{ vars.APPROVED_LLM_HOST || 'api.openai.com' }}" \
+              ProcessingRegion="${{ vars.PROCESSING_REGION || 'unverified' }}" \
+              ProviderApprovalReference="${{ vars.PROVIDER_APPROVAL_REFERENCE }}" \
+              AzureEndpoint="${{ vars.AZURE_OPENAI_ENDPOINT }}" \
+              AzureDeployment="${{ vars.AZURE_OPENAI_DEPLOYMENT }}"
 
       # Fargate has no init containers, so schema convergence runs as a one-off
       # task, then the backend is restarted to seed against the live schema.

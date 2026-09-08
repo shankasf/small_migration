@@ -15,6 +15,8 @@ model User {
   entraOid          String?       @unique
   role              String        @default("analyst") // admin | analyst | auditor
   status            String        @default("active") // active | restricted | disabled
+  tokensValidAfter  DateTime?
+  roleManagedLocally Boolean       @default(false)
   dailyTokenLimit   Int?
   monthlyTokenLimit Int?
   lastLoginAt       DateTime?
@@ -182,7 +184,8 @@ model GeneratedOutput {
   messageId String?  // null on rows created before message linking existed
   message   Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
   filename  String
-  filepath  String   // Path on PersistentVolume
+  validation Json?
+  filepath  String   // Logical output reference; content is held in PostgreSQL
   fileType  String   // "sql" | "txt"
   content   String   @db.Text
   createdAt DateTime @default(now())

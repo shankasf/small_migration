@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import { PrismaClient, User } from '@prisma/client';
 import * as jose from 'jose';
-import { recordAudit } from '../services/audit.js';
+import { recordDeniedAudit as recordAudit } from '../services/audit.js';
 
 export type Role = 'admin' | 'analyst' | 'auditor';
 
@@ -18,7 +19,7 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '12h';
 if (JWT_SECRET.length < 32) {
   throw new Error('JWT_SECRET must be set to a random value of at least 32 characters');
 }
-if (AUTH_MODE === 'entra' && !process.env.ENTRA_TENANT_ID) {
+if (AUTH_MODE === 'entra' && (!process.env.ENTRA_TENANT_ID || !process.env.ENTRA_AUDIENCE)) {
   throw new Error('AUTH_MODE=entra requires ENTRA_TENANT_ID');
 }
 // Fail closed on every var the mode depends on: a missing audience would
@@ -75,10 +76,10 @@ export async function issueToken(user: User): Promise<string> {
     .sign(secretKey());
 }
 
-async function verifyLocalToken(token: string): Promise<{ userId: string } | null> {
+async function verifyLocalToken(token: string): Promise<{ userId: string; issuedAt: number } | null> {
   try {
-    const { payload } = await jose.jwtVerify(token, secretKey(), { issuer: 'circini-backend' });
-    return payload.sub ? { userId: payload.sub } : null;
+    const { payload } = await jose.jwtVerify(token, secretKey(), { issuer: 'circini-backend', algorithms: ['HS256'] });
+    return payload.sub && payload.iat ? { userId: payload.sub, issuedAt: payload.iat } : null;
   } catch {
     return null;
   }
@@ -117,11 +118,14 @@ async function verifyEntraToken(prisma: PrismaClient, token: string): Promise<Us
       }
     }
 
-    return await prisma.user.upsert({
-      where: { entraOid: oid },
-      update: { email, name, role, lastLoginAt: new Date() },
-      create: { entraOid: oid, email, name, role },
-    });
+    const existing = await prisma.user.findUnique({ where: { entraOid: oid } });
+    if (existing) {
+      if (!tokenIsCurrent(existing, payload.iat)) return null;
+      return await prisma.user.update({ where: { id: existing.id }, data: {
+        email, name, ...(!existing.roleManagedLocally ? { role } : {}), lastLoginAt: new Date(),
+      } });
+    }
+    return await prisma.user.create({ data: { entraOid: oid, email, name, role } });
   } catch {
     return null;
   }
@@ -178,9 +182,10 @@ async function verifyOidcToken(prisma: PrismaClient, token: string): Promise<Use
       if (byEmail && byEmail.entraOid == null) existing = byEmail;
     }
     if (existing) {
+      if (!tokenIsCurrent(existing, payload.iat)) return null;
       return await prisma.user.update({
         where: { id: existing.id },
-        data: { entraOid: sub, email, name, role, lastLoginAt: new Date() },
+        data: { entraOid: sub, email, name, ...(!existing.roleManagedLocally ? { role } : {}), lastLoginAt: new Date() },
       });
     }
     return await prisma.user.create({ data: { entraOid: sub, email, name, role } });
@@ -199,7 +204,8 @@ export function requireInternalKey(req: Request, res: Response, next: NextFuncti
   if (!configured) {
     return res.status(503).json({ error: 'Internal service auth is not configured' });
   }
-  if (req.headers['x-internal-key'] !== configured) {
+  const supplied = typeof req.headers['x-internal-key'] === 'string' ? req.headers['x-internal-key'] : '';
+  if (Buffer.byteLength(supplied) !== Buffer.byteLength(configured) || !timingSafeEqual(Buffer.from(supplied), Buffer.from(configured))) {
     return res.status(401).json({ error: 'Invalid internal key' });
   }
   next();
@@ -218,7 +224,8 @@ export async function resolveUserFromToken(
   if (AUTH_MODE === 'oidc') return await verifyOidcToken(prisma, token);
   const decoded = await verifyLocalToken(token);
   if (!decoded) return null;
-  return await prisma.user.findUnique({ where: { id: decoded.userId } });
+  const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+  return user && tokenIsCurrent(user, decoded.issuedAt) ? user : null;
 }
 
 export function authenticate(prisma: PrismaClient) {
@@ -235,13 +242,13 @@ export function authenticate(prisma: PrismaClient) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    const user = await resolveUserFromToken(prisma, token);
+    const user = await resolveUserFromToken(prisma, token).catch(() => null);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     if (user.status === 'disabled') {
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: user.id,
         action: 'auth.denied',
         decision: 'deny',
@@ -259,11 +266,11 @@ export function authenticate(prisma: PrismaClient) {
 
 /** Role gate. Usage: router.get('/x', requireRole('admin', 'auditor'), handler) */
 export function requireRole(...roles: Role[]) {
-  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     const user = req.user;
     if (!user || !roles.includes(user.role as Role)) {
       const prisma: PrismaClient = req.app.locals.prisma;
-      recordAudit(prisma, {
+      await recordAudit(prisma, {
         userId: user?.id,
         action: 'authz.denied',
         resource: req.path,
@@ -282,12 +289,12 @@ export function requireRole(...roles: Role[]) {
  * Writes (chat, uploads, session mutation) are denied for restricted accounts
  * and for auditors (read-only role).
  */
-export function requireWriteAccess(req: AuthedRequest, res: Response, next: NextFunction) {
+export async function requireWriteAccess(req: AuthedRequest, res: Response, next: NextFunction) {
   const user = req.user;
   if (!user) return res.status(401).json({ error: 'Authentication required' });
   if (user.role === 'auditor' || user.status === 'restricted') {
     const prisma: PrismaClient = req.app.locals.prisma;
-    recordAudit(prisma, {
+    await recordAudit(prisma, {
       userId: user.id,
       action: 'authz.denied',
       resource: req.path,
@@ -348,4 +355,10 @@ export async function seedAdminUser(prisma: PrismaClient) {
     },
   });
   console.log(`[AUTH] Seeded initial admin user: ${email} (change the password immediately)`);
+}
+
+
+export function tokenIsCurrent(user: { tokensValidAfter: Date | null }, issuedAt?: number): boolean {
+  return typeof issuedAt === 'number' && Number.isFinite(issuedAt)
+    && (!user.tokensValidAfter || issuedAt * 1000 > user.tokensValidAfter.getTime());
 }

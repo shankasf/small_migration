@@ -1,5 +1,7 @@
 # Circini Migration Agent
 
+> Security status (8 September 2026): see [the implemented controls and outstanding evidence](docs/SECURITY_HARDENING.md). PHI and voice remain unavailable; Azure residency/retention and compliance approvals are not established. Older diagrams and verification dates below are historical design/deployment records, not current assurance evidence. The new controls require a validated pipeline release before they apply in production.
+
 AI-powered DBT/SQL data migration assistant with a ChatGPT-like interface for analyzing mapping documents and generating Snowflake-compatible DBT models.
 
 ## Tech Stack

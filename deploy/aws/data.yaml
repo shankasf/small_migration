@@ -126,6 +126,13 @@ Resources:
 
   # Placeholder - set the real key with:
   #   aws secretsmanager put-secret-value --secret-id circini/openai-api-key --secret-string sk-...
+  AzureOpenAiApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/azure-openai-api-key
+      Description: Populate only with the approved Azure resource key before selecting Azure
+      SecretString: REPLACE_ME
+
   OpenAiApiKeySecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -133,6 +140,9 @@ Resources:
       SecretString: REPLACE_ME
 
 Outputs:
+  AzureOpenAiApiKeySecretArn:
+    Value: !Ref AzureOpenAiApiKeySecret
+    Export: { Name: circini-SecretAzureOpenAi }
   DbEndpoint:
     Value: !GetAtt Database.Endpoint.Address
     Export: { Name: circini-DbEndpoint }

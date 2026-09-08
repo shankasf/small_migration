@@ -340,7 +340,7 @@ export default function ChatInput({
           {/* Mic button */}
           <button
             onClick={handleMicClick}
-            disabled={disabled || isTranscribing}
+            disabled={true}
             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors ${
               isTranscribing
                 ? 'bg-raised text-faint cursor-not-allowed'
@@ -350,7 +350,7 @@ export default function ChatInput({
                     ? 'bg-raised text-faint cursor-not-allowed'
                     : 'bg-raised text-muted hover:text-ink'
             }`}
-            title={isRecording ? 'Stop recording' : 'Voice input'}
+            title="Voice is unavailable until an approved transcription service is configured" aria-label="Voice input unavailable"
           >
             {isRecording ? (
               <Square className="h-4 w-4" fill="currentColor" />
@@ -372,7 +372,7 @@ export default function ChatInput({
 
         {/* Helper text */}
         <p className="text-[11px] text-faint text-center mt-3 tracking-wide">
-          Circini migration agent can make mistakes, please verify responses manually.
+          Use metadata and synthetic examples only. Do not upload personal or patient data. Generated SQL is a draft and requires review and testing.
         </p>
       </div>
     </div>

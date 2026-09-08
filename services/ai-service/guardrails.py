@@ -14,6 +14,9 @@ the production/CnA build if richer NER is required.
 """
 
 import re
+import html
+import unicodedata
+from urllib.parse import unquote
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -49,7 +52,7 @@ DOB_PATTERN = re.compile(
 SECRET_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)")),
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}\b")),
 ]
@@ -148,20 +151,38 @@ def check_inbound(message: str, files: Optional[Dict[str, str]] = None) -> Guard
     files = files or {}
 
     if not settings.GUARDRAILS_ENABLED:
-        result.text = message
-        result.redacted_files = files  # type: ignore[attr-defined]
+        result.decision = "blocked"
+        result.reasons = ["security_configuration_invalid"]
+        result.redacted_files = {}
+        return result
+
+    if any(len(t) > settings.MAX_INPUT_CHARS for t in [message, *files.keys(), *files.values()]):
+        result.decision = "blocked"
+        result.reasons = ["input_too_large"]
+        result.redacted_files = {}
         return result
 
     message = _sanitize(message)
     files = {name: _sanitize(content) for name, content in files.items()}
-    combined = message + "\n" + "\n".join(files.values())
+    combined = message + "\n" + "\n".join(files.keys()) + "\n" + "\n".join(files.values())
+    # Normalize common obfuscations for detection, preserving original SQL text.
+    detection = unicodedata.normalize("NFKC", html.unescape(unquote(combined)))
+    detection = "".join(c for c in detection if unicodedata.category(c) != "Cf")
+
+    original_findings: Dict[str, int] = {}
+    normalized_findings: Dict[str, int] = {}
+    _redact(combined, original_findings)
+    _redact(detection, normalized_findings)
+    if normalized_findings != original_findings:
+        result.decision = "blocked"
+        result.reasons.append("encoded_sensitive_content")
 
     # 1. Prompt-injection detection across the message AND uploaded file
     #    content. Scanning the message alone would miss the primary vector for
     #    this product: instructions hidden inside a mapping or template
     #    document, which the agent reads as part of normal operation.
     for pattern in INJECTION_PATTERNS:
-        if pattern.search(combined):
+        if pattern.search(detection):
             result.decision = "blocked"
             result.reasons.append("prompt_injection")
             result.findings["injection_in_file"] = 1 if not pattern.search(message) else 0
@@ -170,12 +191,19 @@ def check_inbound(message: str, files: Optional[Dict[str, str]] = None) -> Guard
     # 2. Restricted / out-of-scope request patterns — same reasoning: a denied
     #    instruction smuggled into an attachment must not bypass the check.
     for label, pattern in DENY_PATTERNS:
-        if pattern.search(combined):
+        if pattern.search(detection):
             result.decision = "blocked"
             result.reasons.append(f"restricted_pattern:{label}")
 
+    # Filenames are metadata too. Reject instead of renaming and risking collisions.
+    for name in files:
+        findings = {}
+        if _redact(name, findings) != name:
+            result.decision = "blocked"
+            result.reasons.append("sensitive_filename")
+
     # 3. Health PII policy: Mode A blocks outright, Mode B redacts
-    health = _detect_health_pii(combined)
+    health = _detect_health_pii(detection)
     if health:
         result.data_class = "health-pii"
         result.findings.update(health)
@@ -206,7 +234,9 @@ def check_inbound(message: str, files: Optional[Dict[str, str]] = None) -> Guard
 def check_outbound(text: str) -> GuardrailResult:
     """Outbound content filter on model output (PII + secrets)."""
     result = GuardrailResult(text=text)
-    if not settings.GUARDRAILS_ENABLED or not text:
+    if not settings.GUARDRAILS_ENABLED:
+        return GuardrailResult(decision="blocked", text="[Content unavailable: security configuration invalid]", reasons=["security_configuration_invalid"])
+    if not text:
         return result
 
     findings: Dict[str, int] = {}
@@ -235,3 +265,28 @@ def block_message(reasons: List[str]) -> str:
         parts.append(BLOCK_MESSAGES.get(key, f"policy violation ({reason})"))
     detail = "; ".join(dict.fromkeys(parts)) or "policy violation"
     return f"⚠️ Request blocked by guardrails: {detail}. This decision has been logged."
+
+
+def screen_payload(message: str, files=None, history=None) -> dict:
+    """Single policy boundary used before persistence and before model egress."""
+    result = check_inbound(message, files)
+    safe_history = []
+    for item in history or []:
+        if item.get("role") not in ("user", "assistant"):
+            result.decision = "blocked"
+            result.reasons.append("invalid_history_role")
+            break
+        previous = check_inbound(item.get("content", ""))
+        if previous.decision == "blocked":
+            result.decision = "blocked"
+            result.reasons.append("unsafe_conversation_history")
+            break
+        if previous.decision == "redacted" and result.decision == "allow":
+            result.decision = "redacted"
+        safe_history.append({"role": item["role"], "content": previous.text})
+    blocked = result.decision == "blocked"
+    return {"message": "" if blocked else result.text,
+            "files": {} if blocked else getattr(result, "redacted_files", {}),
+            "history": [] if blocked else safe_history,
+            "guardrail": result.as_dict(),
+            "error": block_message(result.reasons) if blocked else None}
