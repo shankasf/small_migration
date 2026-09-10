@@ -80,7 +80,7 @@ The `circini/github-oauth` JSON secret must contain `appId`, `slug`, `clientId`,
 `clientSecret`, `privateKey` (the complete PEM), and `webhookSecret`. All fields
 are strings. The PEM is not the client secret. Never commit these credentials.
 To bootstrap through the existing OIDC deployment pipeline, save that JSON as
-the masked repository secret `GITHUB_APP_BOOTSTRAP_JSON`. The deployment
+the masked repository secret `CIRCINI_GITHUB_APP_BOOTSTRAP_JSON`. The deployment
 validates app identity, read-only permissions, and client credentials before
 updating Secrets Manager and replacing backend tasks. Delete the temporary
 Actions secret after a successful deployment; subsequent releases read AWS.

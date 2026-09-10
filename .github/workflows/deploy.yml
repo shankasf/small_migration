@@ -142,7 +142,7 @@ jobs:
 
       - name: Validate and configure GitHub App
         env:
-          GITHUB_APP_BOOTSTRAP_JSON: ${{ secrets.GITHUB_APP_BOOTSTRAP_JSON }}
+          GITHUB_APP_BOOTSTRAP_JSON: ${{ secrets.CIRCINI_GITHUB_APP_BOOTSTRAP_JSON }}
         run: node scripts/configure-github-app.mjs
 
       - name: Deploy app stack
@@ -198,3 +198,6 @@ jobs:
           curl -fsS -o /dev/null "$BASE/"
           curl -fsS "$BASE/api/health" | grep -q '"status":"ok"'
           echo "smoke test passed"
+
+      - name: Verify live GitHub integration
+        run: python3 scripts/verify-github-production.py
