@@ -1,0 +1,1391 @@
+openapi: 3.0.3
+info:
+  title: Circini API — API keys, chats and files
+  version: 1.0.0
+  description: API-key access to the migration application. Paste only the cmk_ secret in Swagger Authorize;
+    HTTP bearer authentication adds the Bearer prefix. API keys act as their admin owner and are not scoped
+    read-only tokens. Key-management operations instead require an admin signed-in session. This specification
+    covers key management and the primary chat/file workflow. Source verified against application release
+    6db2702.
+servers:
+- url: https://migration.callsphere.site
+  description: Production AWS application
+- url: http://localhost:3001
+  description: Local backend
+tags:
+- name: Identity
+- name: API keys
+- name: Sessions
+- name: Chat
+- name: Files
+- name: File library
+security:
+- ApiKeyBearer: []
+paths:
+  /api/health:
+    get:
+      tags:
+      - Identity
+      operationId: health
+      summary: Check service health
+      description: Check service health
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                required:
+                - status
+                - timestamp
+      security: []
+  /api/auth/me:
+    get:
+      tags:
+      - Identity
+      operationId: currentUser
+      summary: Get the current credential owner
+      description: API keys act as their owner. This endpoint returns the current user record without
+        passwordHash.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+  /api/api-keys:
+    get:
+      tags:
+      - API keys
+      operationId: listApiKeys
+      summary: List all API-key metadata
+      description: Requires an admin signed-in session. API keys are rejected with 403. Admins see metadata
+        for all keys; existing secret values cannot be retrieved.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKey'
+                  expiryDays:
+                    type: array
+                    items:
+                      type: integer
+                required:
+                - keys
+                - expiryDays
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      security:
+      - AdminSession: []
+    post:
+      tags:
+      - API keys
+      operationId: createApiKey
+      summary: Create a key for the signed-in admin
+      description: Requires an admin session, not an API key. Up to 10 unrevoked, unexpired keys per owner.
+        Names are trimmed; the trimmed value must be nonempty and at most 80 characters. Keys are stored
+        as SHA-256 hashes.
+      responses:
+        '201':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    $ref: '#/components/schemas/ApiKey'
+                  secret:
+                    type: string
+                    writeOnly: false
+                    description: The complete cmk_ credential, returned only by this creation response.
+                      Save it now; it is never returned again.
+                required:
+                - key
+                - secret
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '409':
+          $ref: '#/components/responses/409'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 80
+                  example: GitHub migration automation
+                expiresInDays:
+                  type: integer
+                  enum:
+                  - 30
+                  - 90
+                  - 180
+                  - 365
+                  default: 90
+              required:
+              - name
+      security:
+      - AdminSession: []
+  /api/api-keys/{keyId}:
+    delete:
+      tags:
+      - API keys
+      operationId: revokeApiKey
+      summary: Revoke a key
+      description: Requires an admin session. Any admin can revoke a key. Repeating revocation of an existing
+        record returns 204; an unknown record returns 404.
+      responses:
+        '204':
+          description: Completed; no response body
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: keyId
+        in: path
+        required: true
+        description: API-key record UUID, not the secret.
+        schema:
+          type: string
+          format: uuid
+      security:
+      - AdminSession: []
+  /api/sessions:
+    get:
+      tags:
+      - Sessions
+      operationId: listSessions
+      summary: List accessible chats
+      description: Admin API keys list all sessions, including other owners. Analysts using a session
+        token list only their own. File-library discovery remains owner-only even for admins.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SessionListItem'
+                  nextCursor:
+                    type: string
+                    format: uuid
+                    nullable: true
+                required:
+                - sessions
+                - nextCursor
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        description: Page size; use a positive integer.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      - name: cursor
+        in: query
+        required: false
+        description: The nextCursor value from the previous page.
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags:
+      - Sessions
+      operationId: createSession
+      summary: Create a chat
+      description: Creates a session owned by the current credential owner. Omitted name becomes New Chat.
+        Restricted accounts cannot write.
+      responses:
+        '201':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '422':
+          $ref: '#/components/responses/422'
+        '503':
+          $ref: '#/components/responses/503'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: API migration test
+  /api/sessions/{sessionId}:
+    get:
+      tags:
+      - Sessions
+      operationId: getSession
+      summary: Get a chat with messages and files
+      description: Requires source-session ownership or admin access. Write operations also reject restricted
+        accounts.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDetail'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: sessionId
+        in: path
+        required: true
+        description: Session UUID.
+        schema:
+          type: string
+          format: uuid
+    patch:
+      tags:
+      - Sessions
+      operationId: renameSession
+      summary: Rename a chat
+      description: Requires source-session ownership or admin access. Write operations also reject restricted
+        accounts.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: sessionId
+        in: path
+        required: true
+        description: Session UUID.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+              required:
+              - name
+    delete:
+      tags:
+      - Sessions
+      operationId: deleteSession
+      summary: Delete a chat
+      description: Requires source-session ownership or admin access. Deletion removes the chat and its
+        stored files/outputs and resets its AI cache.
+      responses:
+        '204':
+          description: Completed; no response body
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: sessionId
+        in: path
+        required: true
+        description: Session UUID.
+        schema:
+          type: string
+          format: uuid
+  /api/sessions/{sessionId}/outputs:
+    get:
+      tags:
+      - Files
+      operationId: listOutputs
+      summary: List generated output versions
+      description: Returns output metadata in chronological order. Each output ID identifies a saved generated
+        revision.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Output'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: sessionId
+        in: path
+        required: true
+        description: Session UUID.
+        schema:
+          type: string
+          format: uuid
+  /api/chat/{sessionId}/messages:
+    get:
+      tags:
+      - Chat
+      operationId: listMessages
+      summary: Read saved chat messages
+      description: Read saved chat messages
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: sessionId
+        in: path
+        required: true
+        description: Session UUID.
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags:
+      - Chat
+      operationId: sendMessage
+      summary: Send a message with optional exact file references
+      description: Waits for the AI turn to finish. Full saved chat history is restored; this does not
+        mean unlimited model context. Explicit references are ownership-checked, stored with the message
+        and restored on subsequent turns. Selecting a new version of the same source/chat/type/filename
+        replaces the previously active version. Guardrails may redact content or return a blocked reply;
+        inspect guardrail.decision. A lost response does not prove the turn was unprocessed; inspect saved
+        messages before retrying.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResult'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '429':
+          $ref: '#/components/responses/429'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: sessionId
+        in: path
+        required: true
+        description: Session UUID.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                  minLength: 1
+                  example: Read the selected SQL and explain its purpose.
+                fileRefs:
+                  type: array
+                  maxItems: 10
+                  items:
+                    type: string
+                    format: uuid
+                  default: []
+                  description: Immutable FileAsset IDs returned by the file library; not UploadedFile
+                    or GeneratedOutput IDs.
+              required:
+              - message
+  /api/files/{sessionId}/upload:
+    post:
+      tags:
+      - Files
+      operationId: uploadFiles
+      summary: Upload one to ten files to a chat
+      description: 'Maximum 10 MiB per file. Allowed extensions: xlsx, xls, csv, tsv, json, yaml, yml,
+        xml, md, txt, sql, py, js, ts, log, ddl, env. Content and signatures are validated and screened.
+        Spreadsheet content is extracted to text. Reuploading the same normalized filename updates the
+        current upload and preserves immutable library snapshots.'
+      responses:
+        '201':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UploadedFile'
+                required:
+                - files
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: sessionId
+        in: path
+        required: true
+        description: Session UUID.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  items:
+                    type: string
+                    format: binary
+              required:
+              - files
+  /api/files/{id}:
+    get:
+      tags:
+      - Files
+      operationId: listUploadedFiles
+      summary: List a chat’s uploaded files
+      description: List a chat’s uploaded files
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UploadedFile'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: Session UUID for this GET operation.
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags:
+      - Files
+      operationId: deleteUploadedFile
+      summary: Delete an uploaded file and its snapshots
+      description: Deletes the current upload and its library versions/chunks. Historical references retain
+        labels but their asset becomes unavailable.
+      responses:
+        '204':
+          description: Completed; no response body
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: UploadedFile UUID for this DELETE operation; not a session or library asset UUID.
+        schema:
+          type: string
+          format: uuid
+  /api/files/uploaded/{fileId}/content:
+    get:
+      tags:
+      - Files
+      operationId: getUploadedContent
+      summary: Read the current uploaded content
+      description: Read the current uploaded content
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileContent'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        description: UploadedFile UUID.
+        schema:
+          type: string
+          format: uuid
+  /api/files/uploaded/{fileId}/download:
+    get:
+      tags:
+      - Files
+      operationId: downloadUpload
+      summary: Download the current uploaded content
+      description: 'Returns stored text as a download. For spreadsheets this is extracted text, not the
+        original binary workbook. Generated outputs carry X-Artifact-Status: draft-review-required.'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: fileId
+        in: path
+        required: true
+        description: Source file record UUID.
+        schema:
+          type: string
+          format: uuid
+  /api/files/output/{outputId}/download:
+    get:
+      tags:
+      - Files
+      operationId: downloadOutput
+      summary: Download a saved generated output
+      description: 'Returns stored text as a download. For spreadsheets this is extracted text, not the
+        original binary workbook. Generated outputs carry X-Artifact-Status: draft-review-required.'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: outputId
+        in: path
+        required: true
+        description: Source file record UUID.
+        schema:
+          type: string
+          format: uuid
+  /api/files/library:
+    get:
+      tags:
+      - File library
+      operationId: searchFileLibrary
+      summary: Search your uploads and generated versions
+      description: Always scoped to the current owner, including admin API keys. Combines keyword and
+        semantic matches; semanticAvailable=false means query embedding was unavailable and keyword-only
+        results are returned. Empty query lists files without requiring query embeddings. Read indexStatus
+        for per-file readiness. Preview and select the intended immutable ID before attaching it.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LibraryFile'
+                  hasMore:
+                    type: boolean
+                  semanticAvailable:
+                    type: boolean
+                  filters:
+                    type: object
+                    properties:
+                      kind:
+                        type: string
+                        enum:
+                        - upload
+                        - output
+                      from:
+                        type: string
+                        format: date-time
+                      to:
+                        type: string
+                        format: date-time
+                      extension:
+                        type: string
+                required:
+                - files
+                - hasMore
+                - semanticAvailable
+                - filters
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: q
+        in: query
+        required: false
+        description: Filename, keywords, or meaning; source/date/SQL cues infer filters. Today/yesterday
+          use UTC.
+        schema:
+          type: string
+          maxLength: 500
+          example: find customer SQL I generated yesterday
+      - name: kind
+        in: query
+        required: false
+        description: Explicit source filter overrides the inferred kind.
+        schema:
+          type: string
+          enum:
+          - upload
+          - output
+      - name: from
+        in: query
+        required: false
+        description: Inclusive lower creation-time bound.
+        schema:
+          type: string
+          format: date-time
+      - name: to
+        in: query
+        required: false
+        description: Exclusive upper creation-time bound; must be later than from.
+        schema:
+          type: string
+          format: date-time
+      - name: offset
+        in: query
+        required: false
+        description: Offset into results; each page returns up to 20 versions.
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          default: 0
+  /api/files/library/{assetId}/content:
+    get:
+      tags:
+      - File library
+      operationId: previewLibraryFile
+      summary: Preview an exact file version
+      description: Owner-only, even for admins. A missing or foreign asset returns 403; malformed ID returns
+        400. Returns the exact stored text for this version.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryContent'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: assetId
+        in: path
+        required: true
+        description: Immutable FileAsset UUID from search results.
+        schema:
+          type: string
+          format: uuid
+  /api/files/library/{assetId}/download:
+    get:
+      tags:
+      - File library
+      operationId: downloadLibraryFile
+      summary: Download an exact file version
+      description: Owner-only, even for admins. A missing or foreign asset returns 403; malformed ID returns
+        400. Returns the exact stored text for this version.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: assetId
+        in: path
+        required: true
+        description: Immutable FileAsset UUID from search results.
+        schema:
+          type: string
+          format: uuid
+components:
+  securitySchemes:
+    ApiKeyBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: cmk_ API key
+      description: Paste the complete cmk_ key without adding Bearer. Obtain it once from Settings > API
+        Keys while signed in as admin. Invalid, expired, revoked or inactive-owner keys return 401.
+    AdminSession:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Admin signed-in session token. Required only for key management; a cmk_ API key cannot
+        manage keys. Production uses its configured SSO login, not local password login.
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+      - error
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum:
+          - admin
+          - analyst
+          - auditor
+        status:
+          type: string
+          enum:
+          - active
+          - restricted
+          - disabled
+      required:
+      - id
+      - email
+      - role
+      - status
+    ApiKey:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        prefix:
+          type: string
+        status:
+          type: string
+          enum:
+          - active
+          - expired
+          - revoked
+          - inactive
+        owner:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+            name:
+              type: string
+              nullable: true
+          required:
+          - id
+          - email
+          - name
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - id
+      - name
+      - prefix
+      - status
+      - owner
+      - createdAt
+      - expiresAt
+      - lastUsedAt
+      - revokedAt
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ownerUserId:
+          type: string
+          format: uuid
+          nullable: true
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - name
+      - createdAt
+      - updatedAt
+    FileReference:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        messageId:
+          type: string
+          format: uuid
+        assetId:
+          type: string
+          format: uuid
+          nullable: true
+        filename:
+          type: string
+        version:
+          type: integer
+        kind:
+          type: string
+          enum:
+          - upload
+          - output
+        sourceSessionId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - assetId
+      - filename
+      - version
+      - kind
+      - sourceSessionId
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        fileRefs:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileReference'
+      required:
+      - id
+      - sessionId
+      - role
+      - content
+      - createdAt
+    UploadedFile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        category:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - filename
+      - category
+      - createdAt
+    Output:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        messageId:
+          type: string
+          format: uuid
+          nullable: true
+        filename:
+          type: string
+        filepath:
+          type: string
+        fileType:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+      - id
+      - sessionId
+      - filename
+      - filepath
+      - fileType
+      - createdAt
+    LibraryFile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum:
+          - upload
+          - output
+        filename:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        summary:
+          type: string
+        excerpt:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        sourceSessionId:
+          type: string
+          format: uuid
+        sourceSessionName:
+          type: string
+        indexStatus:
+          type: string
+          enum:
+          - pending
+          - indexing
+          - retry
+          - ready
+      required:
+      - id
+      - kind
+      - filename
+      - version
+      - summary
+      - excerpt
+      - sourceSessionId
+      - sourceSessionName
+      - createdAt
+      - indexStatus
+    FileContent:
+      type: object
+      properties:
+        filename:
+          type: string
+        content:
+          type: string
+      required:
+      - filename
+      - content
+    LibraryContent:
+      type: object
+      properties:
+        filename:
+          type: string
+        content:
+          type: string
+        version:
+          type: integer
+      required:
+      - filename
+      - content
+      - version
+    Guardrail:
+      type: object
+      properties:
+        decision:
+          type: string
+        reasons:
+          type: array
+          items:
+            type: string
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        data_class:
+          type: string
+    SessionDetail:
+      allOf:
+      - $ref: '#/components/schemas/Session'
+      - type: object
+        properties:
+          messages:
+            type: array
+            items:
+              $ref: '#/components/schemas/Message'
+          files:
+            type: array
+            items:
+              $ref: '#/components/schemas/UploadedFile'
+          outputs:
+            type: array
+            items:
+              $ref: '#/components/schemas/Output'
+        required:
+        - messages
+        - files
+        - outputs
+    SessionListItem:
+      allOf:
+      - $ref: '#/components/schemas/Session'
+      - type: object
+        properties:
+          messages:
+            type: array
+            items:
+              $ref: '#/components/schemas/Message'
+          _count:
+            type: object
+            properties:
+              messages:
+                type: integer
+              files:
+                type: integer
+              outputs:
+                type: integer
+            required:
+            - messages
+            - files
+            - outputs
+        required:
+        - messages
+        - _count
+    ChatResult:
+      type: object
+      properties:
+        userMessage:
+          $ref: '#/components/schemas/Message'
+        assistantMessage:
+          $ref: '#/components/schemas/Message'
+        generated_files:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              path:
+                type: string
+              content:
+                type: string
+              validation:
+                type: object
+                additionalProperties: true
+            required:
+            - name
+            - path
+            - content
+        savedOutputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Output'
+        updatedSession:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            updatedAt:
+              type: string
+              format: date-time
+          required:
+          - id
+          - name
+          - updatedAt
+        guardrail:
+          $ref: '#/components/schemas/Guardrail'
+      required:
+      - userMessage
+      - assistantMessage
+      - generated_files
+      - savedOutputs
+      - updatedSession
+  responses:
+    '400':
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '401':
+      description: Missing, expired, revoked or invalid credential
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '403':
+      description: Insufficient permissions, restricted account, or unavailable selected file
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '404':
+      description: Record not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '409':
+      description: Conflict, including the active API-key limit
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '429':
+      description: User token usage cap reached
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '500':
+      description: Server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '503':
+      description: Required service or durable audit unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '422':
+      description: Content blocked by policy
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              guardrail:
+                $ref: '#/components/schemas/Guardrail'
+            required:
+            - error

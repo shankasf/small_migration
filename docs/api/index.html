@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Circini API documentation</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui.css">
+  <style>body{margin:0;background:#fafafa}.notice{padding:16px 24px;font:14px/1.5 system-ui;background:#eef2ff}.notice a{color:#26388a}</style>
+</head>
+<body>
+  <div class="notice">Circini API · Paste your key in <strong>Authorize</strong> without the Bearer prefix.
+    Key management requires an admin session. <a href="./README.md">Setup and browser CORS notes</a> · <a href="./openapi.yaml">OpenAPI YAML</a></div>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: './openapi.yaml', dom_id: '#swagger-ui', deepLinking: true,
+      persistAuthorization: false, validatorUrl: null, queryConfigEnabled: false,
+      displayRequestDuration: true, docExpansion: 'list',
+      presets: [SwaggerUIBundle.presets.apis]
+    });
+  </script>
+</body>
+</html>

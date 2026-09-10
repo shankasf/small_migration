@@ -528,6 +528,10 @@ cd services/frontend && npm run dev
 
 ## API Endpoints
 
+See the [Swagger / OpenAPI guide](docs/api/README.md) for API-key authentication,
+key management, chat/file request schemas, and an interactive local viewer.
+The [OpenAPI YAML](docs/api/openapi.yaml) can be imported into Swagger UI or Postman.
+
 ### Backend (port 3001)
 
 | Method | Endpoint | Auth | Description |
