@@ -126,9 +126,18 @@ router.patch('/users/:id', requireRole('admin'), async (req: AuthedRequest, res:
       return res.status(400).json({ error: 'Password must be at least 10 characters' });
     }
 
+    const existing = await prisma.user.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'User not found' });
+
     const data: any = {};
     if (role !== undefined) { data.role = role; data.roleManagedLocally = true; }
-    if (role !== undefined || status !== undefined || password) data.tokensValidAfter = new Date();
+    // Only a real access change cuts off sessions and API keys. The edit dialog
+    // always resends role and status, so saving it to change a token limit must
+    // not sign the user out or disable their keys.
+    const accessChanged = (role !== undefined && role !== existing.role)
+      || (status !== undefined && status !== existing.status)
+      || Boolean(password);
+    if (accessChanged) data.tokensValidAfter = new Date();
     if (status !== undefined) data.status = status;
     if (name !== undefined) data.name = name;
     if (dailyTokenLimit !== undefined) data.dailyTokenLimit = dailyTokenLimit;

@@ -129,9 +129,9 @@ curl -H "Authorization: Bearer $CIRCINI_API_KEY" https://migration.callsphere.si
 
 A key acts as the admin who created it on every REST and WebSocket route. It
 expires after 30, 90, 180 or 365 days and stops working as soon as it is
-revoked, or its admin is demoted, disabled or has their access revoked — that
-includes any role or status save in the admin portal, which records a token
-cutoff. A request made with a key cannot list, create or revoke keys, and every
+revoked, or when its admin's role or status changes, their password is reset or
+their access is revoked. Editing anything else, such as token limits, leaves it
+working. A request made with a key cannot list, create or revoke keys, and every
 mutation it makes is audited with `type: api_key`.
 
 ### Chat request lifecycle

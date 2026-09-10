@@ -181,6 +181,17 @@ test('API keys stop working when their admin is demoted or has access revoked', 
     assert.equal((await request('/api/sessions', secret)).status, 401);
   }
 });
+test('saving a user without changing role or status keeps their sessions and API keys', async () => {
+  const adminToken = await issueToken(admin);
+  const holder = await prisma.user.create({data:{email:'edited-admin@example.test', role:'admin'}});
+  const holderToken = await issueToken(holder);
+  const {secret} = (await createApiKey(holderToken)).body!;
+  const save = (body: object) => request(`/api/admin/users/${holder.id}`, adminToken, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  assert.equal((await save({role:'admin', status:'active', dailyTokenLimit:5000})).status, 200);
+  for (const credential of [holderToken, secret]) assert.equal((await request('/api/sessions', credential)).status, 200);
+  assert.equal((await save({role:'admin', status:'restricted', dailyTokenLimit:5000})).status, 200);
+  for (const credential of [holderToken, secret]) assert.equal((await request('/api/sessions', credential)).status, 401);
+});
 
 after(async () => {
   for (const s of sockets) s.disconnect();
