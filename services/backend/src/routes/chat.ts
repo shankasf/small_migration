@@ -28,14 +28,13 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     // Verify session exists and determine if this is the first message
     const isFirstMessage = await prisma.message.count({ where: { sessionId } }) === 0;
 
-    // Always load full file content so AI service gets files even if uploaded mid-conversation
+    // Load the full saved conversation and files for every turn.
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       include: {
         files: true,
         messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 20
+          orderBy: { createdAt: 'asc' }
         }
       }
     });
@@ -64,7 +63,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
 
     const screened = await screenPayload(message,
       Object.fromEntries(session.files.map(f => [f.filename, f.content])),
-      [...session.messages].reverse().map(m => ({ role: m.role, content: m.content })));
+      session.messages.map(m => ({ role: m.role, content: m.content })));
     message = screened.message;
 
     // Save only screened content. A rejected request never becomes history.
@@ -76,9 +75,6 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
         content: message
       }
     });
-
-    // Reverse messages from desc to chronological order
-    session.messages.reverse();
 
     // Always send files to AI service so it has them even if uploaded mid-conversation
     let files: Record<string, string> | undefined;
