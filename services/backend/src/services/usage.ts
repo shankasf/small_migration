@@ -19,6 +19,7 @@ interface ModelPrice {
  * shape) when the provider price list changes — config, not code.
  */
 const DEFAULT_PRICING: Record<string, ModelPrice> = {
+  'gpt-6-astra': { input: 10, output: 50 },
   'gpt-5.2': { input: 1.25, output: 10 },
   'gpt-5.1': { input: 1.25, output: 10 },
   'gpt-4o': { input: 2.5, output: 10 },

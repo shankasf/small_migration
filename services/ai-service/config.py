@@ -22,7 +22,7 @@ class Settings:
 
     # OpenAI (LLM_PROVIDER=openai)
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-5.2")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-6-astra")
 
     # Azure OpenAI (LLM_PROVIDER=azure) — point these at the client's tenant
     AZURE_OPENAI_ENDPOINT: str = os.getenv("AZURE_OPENAI_ENDPOINT", "")

@@ -148,6 +148,14 @@ jobs:
       - name: Apply additive security schema before replacing tasks
         run: python3 scripts/preflight-security-schema.py
 
+      # A model the OpenAI account cannot use would break every chat turn, so
+      # check it with the production key before any task is replaced.
+      - name: Confirm the OpenAI account can use the configured model
+        if: ${{ (vars.LLM_PROVIDER || 'openai') == 'openai' }}
+        env:
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-6-astra' }}
+        run: python3 scripts/preflight-openai-model.py
+
       - name: Deploy app stack
         run: |
           set -euo pipefail
@@ -160,7 +168,7 @@ jobs:
               AuthMode="${{ vars.AUTH_MODE || 'oidc' }}" \
               CertificateArn="${{ vars.CERTIFICATE_ARN }}" \
               AppDomain="${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}" \
-              OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-5.6-sol' }}" \
+              OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-6-astra' }}" \
               LlmProvider="${{ vars.LLM_PROVIDER || 'openai' }}" \
               ApprovedLlmHost="${{ vars.APPROVED_LLM_HOST || 'api.openai.com' }}" \
               ProcessingRegion="${{ vars.PROCESSING_REGION || 'unverified' }}" \

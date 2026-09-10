@@ -117,7 +117,7 @@ gh variable set AWS_DEPLOY_ROLE_ARN --body "$ROLE"
 gh variable set AWS_REGION        --body ap-southeast-2
 gh variable set APP_DOMAIN        --body migration.callsphere.site
 gh variable set AUTH_MODE         --body oidc
-gh variable set OPENAI_MODEL      --body gpt-5.6-sol
+gh variable set OPENAI_MODEL      --body gpt-6-astra
 gh variable set CERTIFICATE_ARN   --body <acm-cert-arn>   # from `aws acm list-certificates`
 ```
 

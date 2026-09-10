@@ -261,7 +261,7 @@ environment change, not a code change. What exists today:
 
 | Host | Status |
 |---|---|
-| OpenAI (direct) | ✅ In use live (`gpt-5.2-2025-12-11`) |
+| OpenAI (direct) | ✅ In use live (`gpt-6-astra`) |
 | Azure OpenAI / AI Foundry | ⚠️ Implemented, never exercised against a real tenant |
 | AWS Bedrock | ❌ Not built |
 | Google Vertex AI | ❌ Not built |
@@ -469,7 +469,7 @@ GITLAB_CLIENT_SECRET=
 
 ```
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5.2
+OPENAI_MODEL=gpt-6-astra
 PORT=8084
 OUTPUT_DIR=/path/to/output
 BACKEND_URL=http://localhost:3001

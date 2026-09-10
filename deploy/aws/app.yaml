@@ -16,7 +16,7 @@ Parameters:
     AllowedValues: [local, oidc, entra]
   OpenAiModel:
     Type: String
-    Default: gpt-5.6-sol
+    Default: gpt-6-astra
   LlmProvider:
     Type: String
     Default: openai
