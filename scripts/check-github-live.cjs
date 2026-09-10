@@ -1,6 +1,6 @@
 // Executed inside a short-lived task using the deployed backend image/secrets.
 const assert = require('node:assert/strict');
-const { createHmac } = require('node:crypto');
+const { createHmac, randomBytes, timingSafeEqual } = require('node:crypto');
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const { githubAppConfigured, githubAppJwt, githubGet } = require('./dist/services/githubApp.js');
@@ -19,13 +19,24 @@ let server, pendingState;
 
   // Exercise the deployed connection handler with the real account/database.
   // This validates initiation; personal GitHub consent remains the user's step.
+  const verificationToken = randomBytes(32).toString('hex');
+  // This loopback-only, one-off harness has no cookies or ambient credentials.
+  // Every request requires an unguessable bearer token generated in this process.
+  // nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage
   const harness = express();
   harness.locals.prisma = prisma;
-  harness.use((req, _res, next) => { req.user = user; next(); });
+  harness.use((req, res, next) => {
+    const actual = Buffer.from(req.headers.authorization || '');
+    const expected = Buffer.from(`Bearer ${verificationToken}`);
+    if (req.headers.origin || actual.length !== expected.length || !timingSafeEqual(actual, expected)) return res.sendStatus(401);
+    req.user = user; next();
+  });
   harness.use('/api/integrations', githubRouter);
   server = harness.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/integrations/github/connect`, { method: 'POST' });
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/integrations/github/connect`, {
+    method: 'POST', headers: { Authorization: `Bearer ${verificationToken}` },
+  });
   assert.equal(response.status, 200, 'Connection initiation failed');
   const authorization = new URL((await response.json()).authorizeUrl);
   pendingState = authorization.searchParams.get('state');
