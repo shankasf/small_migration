@@ -21,9 +21,13 @@ COPY . .
 
 # Output directory — mounted over by the outputs PVC in Kubernetes. The pod
 # sets fsGroup so the mounted volume is group-writable by this user.
+# perl-base is an essential Debian package, but nothing in this image runs Perl.
+# Removing it last drops Perl CVEs Debian has not fixed (CVE-2026-13221,
+# CVE-2026-42496, CVE-2026-8376), which the deploy's image scan blocks on.
 RUN mkdir -p /data/outputs \
  && useradd --system --uid 10001 --create-home appuser \
- && chown -R appuser:appuser /app /data/outputs
+ && chown -R appuser:appuser /app /data/outputs \
+ && dpkg --purge --force-remove-essential --force-depends perl-base
 USER appuser
 
 EXPOSE 8084

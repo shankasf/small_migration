@@ -2,16 +2,17 @@
 # Source is baked in — nothing is mounted from the host at runtime.
 
 # ---- build stage -----------------------------------------------------------
-FROM node:22-slim AS builder
+FROM node:22-trixie-slim AS builder
 
 WORKDIR /app
 
 # apt-get upgrade picks up security fixes published after the base image was
 # built (e.g. the GnuTLS auth-bypass fix); without it the image ships whatever
-# the base tag froze.
+# the base tag froze. Same Debian release as the runtime stage, so the Prisma
+# engines generated here match the OpenSSL they run against.
 RUN apt-get update \
  && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends openssl libssl3 ca-certificates \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  # The base image bundles an npm whose vendored tar carries a critical
  # advisory. Upgrading npm replaces that vendored copy.
@@ -32,16 +33,19 @@ COPY . .
 RUN npm run build
 
 # ---- runtime stage ---------------------------------------------------------
-FROM node:22-slim AS runtime
+# Debian 13 (trixie): Debian 12's zlib1g carries a CRITICAL advisory
+# (CVE-2023-45853) that Debian will not fix, which the image scan blocks on.
+FROM node:22-trixie-slim AS runtime
 
 WORKDIR /app
 
 # apt-get upgrade picks up security fixes published after the base image was
 # built (e.g. the GnuTLS auth-bypass fix); without it the image ships whatever
-# the base tag froze.
+# the base tag froze. The openssl package pulls in the matching libssl, whose
+# package name differs between Debian releases.
 RUN apt-get update \
  && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends openssl libssl3 ca-certificates \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  # The base image bundles an npm whose vendored tar carries a critical
  # advisory. Upgrading npm replaces that vendored copy.
@@ -71,8 +75,12 @@ COPY --from=builder /app/prisma ./prisma
 
 # Uploads are held in memory and nothing is written to disk, so the backend
 # can drop to an unprivileged user.
+# perl-base is an essential Debian package, but nothing in this image runs Perl.
+# Removing it last drops Perl CVEs Debian has not fixed (CVE-2026-13221,
+# CVE-2026-42496, CVE-2026-8376), which the deploy's image scan blocks on.
 RUN useradd --system --uid 10001 --create-home appuser \
- && chown -R appuser:appuser /app
+ && chown -R appuser:appuser /app \
+ && dpkg --purge --force-remove-essential --force-depends perl-base
 USER appuser
 
 EXPOSE 3001
