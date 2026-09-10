@@ -49,7 +49,7 @@ export default function FilePreviewModal({ filename, content, onClose, onDownloa
       <div className="panel-elevated animate-fade-up w-[90vw] max-w-4xl max-h-[85vh] flex flex-col overflow-hidden !rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-hairline bg-panel">
-          <h3 className="text-sm font-600 font-display text-ink truncate">{filename}</h3>
+          <h3 className="text-sm font-600 font-display text-ink break-words min-w-0">{filename}</h3>
           <div className="flex items-center gap-1">
             <button
               onClick={onDownload}

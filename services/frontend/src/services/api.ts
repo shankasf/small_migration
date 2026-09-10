@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary, Integration, IntegrationProvider, ApiKey } from '../types';
+import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary, Integration, IntegrationProvider, ApiKey, LibraryFile } from '../types';
 import { getToken, clearAuth, refreshIdToken } from './auth';
 
 const API_BASE = '/api';
@@ -79,8 +79,8 @@ export async function getMessages(sessionId: string): Promise<Message[]> {
   return response.data;
 }
 
-export async function sendMessage(sessionId: string, message: string): Promise<ChatResponse> {
-  const response = await api.post(`/chat/${sessionId}/messages`, { message });
+export async function sendMessage(sessionId: string, message: string, fileRefs?: string[]): Promise<ChatResponse> {
+  const response = await api.post(`/chat/${sessionId}/messages`, { message, fileRefs });
   return response.data;
 }
 
@@ -374,4 +374,26 @@ export async function adminGetSecuritySummary(days = 30): Promise<SecuritySummar
 export function apiErrorMessage(error: unknown, fallback = 'Something went wrong'): string {
   const err = error as { response?: { data?: { error?: string } }; message?: string };
   return err?.response?.data?.error || err?.message || fallback;
+}
+
+// Account-scoped library: immutable asset IDs identify exact file versions.
+export async function searchFileLibrary(params: { q?: string; kind?: string; from?: string; to?: string; offset?: number }, signal?: AbortSignal): Promise<{ files: LibraryFile[]; hasMore: boolean; semanticAvailable: boolean; filters?: { kind?: string; from?: string; to?: string; extension?: string } }> {
+  const response = await api.get('/files/library', { params, signal });
+  return response.data;
+}
+
+export async function getLibraryFileContent(id: string): Promise<{ filename: string; content: string; version: number }> {
+  return (await api.get(`/files/library/${encodeURIComponent(id)}/content`)).data;
+}
+
+export async function downloadLibraryFile(id: string, filename: string): Promise<void> {
+  const response = await api.get(`/files/library/${encodeURIComponent(id)}/download`, { responseType: 'blob' });
+  const url = URL.createObjectURL(response.data);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

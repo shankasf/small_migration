@@ -19,6 +19,7 @@ from llm import configure_llm
 from telemetry import init_telemetry
 from routes.migration import router as migration_router
 from routes.stt import router as stt_router
+from routes.file_search import router as file_search_router
 
 load_dotenv()
 
@@ -81,6 +82,7 @@ init_telemetry(app)
 # Include routes
 app.include_router(migration_router, prefix="/ai", tags=["AI"])
 app.include_router(stt_router, prefix="/ai", tags=["STT"])
+app.include_router(file_search_router, prefix="/ai", tags=["Files"])
 
 @app.get("/")
 async def root():

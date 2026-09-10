@@ -25,12 +25,17 @@ if not existing.get('taskDefinitionArns'):
 exports = {e['Name']: e['Value'] for e in aws('cloudformation', 'list-exports')['Exports']}
 # Fixed code only; the model id reaches the task as an environment variable.
 check = (
-    "import os,sys,urllib.request,urllib.error\n"
+    "import os,sys,json,urllib.request,urllib.error\n"
     "req=urllib.request.Request('https://api.openai.com/v1/models/'+os.environ['CHECK_MODEL'],"
     "headers={'Authorization':'Bearer '+os.environ.get('OPENAI_API_KEY','')})\n"
     "try:\n"
     "    urllib.request.urlopen(req,timeout=20)\n"
     "    print('model available')\n"
+    "    payload=json.dumps({'model':'text-embedding-3-small','input':['file search readiness'],'dimensions':1536}).encode()\n"
+    "    embedding=urllib.request.Request('https://api.openai.com/v1/embeddings',data=payload,headers={'Authorization':'Bearer '+os.environ.get('OPENAI_API_KEY',''),'Content-Type':'application/json'})\n"
+    "    result=json.load(urllib.request.urlopen(embedding,timeout=30))\n"
+    "    assert len(result['data'][0]['embedding'])==1536\n"
+    "    print('embedding model available')\n"
     "except urllib.error.HTTPError as e:\n"
     "    print('model check failed: HTTP',e.code)\n"
     "    sys.exit(1)\n"

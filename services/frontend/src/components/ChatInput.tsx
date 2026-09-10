@@ -1,13 +1,15 @@
 import { useState, useRef, useCallback, useEffect, KeyboardEvent } from 'react';
-import { ArrowUp, Check, ChevronRight, FilePlus2, Mic, Plus, Square, X } from 'lucide-react';
+import { ArrowUp, AtSign, Check, ChevronRight, FilePlus2, Mic, Plus, Square, X } from 'lucide-react';
 import * as api from '../services/api';
-import { Integration, IntegrationProvider } from '../types';
+import { Integration, IntegrationProvider, LibraryFile } from '../types';
+import FileLibraryPicker from './FileLibraryPicker';
+import FileReferenceChips from './FileReferenceChips';
 import { INTEGRATION_PROVIDERS } from '../integrationCatalog';
 
 const MAX_FILES = 10;
 
 interface ChatInputProps {
-  onSend: (message: string, files?: File[]) => void;
+  onSend: (message: string, files?: File[], fileRefs?: LibraryFile[]) => Promise<void>;
   disabled?: boolean;
   placeholder?: string;
   /** Prefill the composer from an external action (e.g. a starter card).
@@ -27,6 +29,12 @@ export default function ChatInput({
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [selectedRefs, setSelectedRefs] = useState<LibraryFile[]>([]);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [sendError, setSendError] = useState('');
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const mentionPosition = useRef<number | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
@@ -54,16 +62,46 @@ export default function ChatInput({
     };
   }, [plusMenuOpen]);
 
-  const handleSend = () => {
-    const files = filesRef.current;
-    if (!disabled && (message.trim() || files.length > 0)) {
-      onSend(message.trim(), files.length > 0 ? [...files] : undefined);
-      setMessage('');
-      filesRef.current = [];
-      setSelectedFiles([]);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
+  const closeLibrary = useCallback(() => {
+    setLibraryOpen(false);
+    textareaRef.current?.focus();
+  }, []);
+
+  const toggleReference = (file: LibraryFile) => {
+    setSelectedRefs(previous => previous.some(item => item.id === file.id)
+      ? previous.filter(item => item.id !== file.id)
+      : previous.length < MAX_FILES ? [...previous, file] : previous);
+    const position = mentionPosition.current;
+    if (position !== null) {
+      setMessage(previous => previous[position] === '@' ? previous.slice(0, position) + previous.slice(position + 1) : previous);
+      mentionPosition.current = null;
+    }
+  };
+
+  const handleSend = async () => {
+    const files = [...filesRef.current];
+    if (disabled || sendingRef.current || !(message.trim() || files.length || selectedRefs.length)) return;
+    const draft = message;
+    const references = [...selectedRefs];
+    sendingRef.current = true;
+    setSending(true);
+    setSendError('');
+    setMessage('');
+    filesRef.current = [];
+    setSelectedFiles([]);
+    setSelectedRefs([]);
+    try {
+      await onSend(draft.trim(), files.length ? files : undefined, references);
+    } catch (error) {
+      setMessage(draft);
+      filesRef.current = files;
+      setSelectedFiles(files);
+      setSelectedRefs(references);
+      setSendError(api.apiErrorMessage(error));
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
     }
   };
 
@@ -92,6 +130,11 @@ export default function ChatInput({
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setMessage(e.target.value);
+    const cursor = e.target.selectionStart;
+    if (e.target.value[cursor - 1] === '@' && (cursor === 1 || /\s/.test(e.target.value[cursor - 2]))) {
+      mentionPosition.current = cursor - 1;
+      setLibraryOpen(true);
+    }
     const textarea = e.target;
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
@@ -201,21 +244,24 @@ export default function ChatInput({
     }
   };
 
-  const canSend = (message.trim() || selectedFiles.length > 0) && !disabled;
+  const canSend = (message.trim() || selectedFiles.length > 0 || selectedRefs.length > 0) && !disabled && !sending;
 
   return (
     <div className="relative z-30 bg-obsidian px-4 py-3">
       <div className="max-w-3xl mx-auto">
+        {sendError && <p role="alert" className="mb-2 text-sm text-danger">{sendError} Your draft and selected files have been restored.</p>}
+        <FileReferenceChips files={selectedRefs.map(file => ({ ...file, assetId: file.id }))} onRemove={id => setSelectedRefs(previous => previous.filter(file => file.id !== id))} label="Selected files · exact versions" />
+        {libraryOpen && <FileLibraryPicker selected={selectedRefs} onToggle={toggleReference} onClose={closeLibrary} />}
         {/* Selected files */}
         {selectedFiles.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3 px-2">
             {selectedFiles.map((file, index) => (
               <span
                 key={`${file.name}-${file.size}-${index}`}
-                className="chip !text-ink"
+                className="chip !text-ink max-w-full"
               >
                 <span className="w-2 h-2 rounded-full bg-brass"></span>
-                {file.name.length > 25 ? file.name.slice(0, 25) + '...' : file.name}
+                <span className="min-w-0 break-words">{file.name}</span>
                 <button
                   onClick={() => removeFile(index)}
                   className="p-0.5 hover:bg-raised rounded-full transition-colors"
@@ -243,7 +289,7 @@ export default function ChatInput({
             accept=".csv,.xlsx,.xls,.txt,.sql,.json,.xml,.md,.py,.js,.ts,.yaml,.yml,.log"
             onChange={handleFileSelect}
             className="hidden"
-            disabled={disabled}
+            disabled={disabled || sending}
           />
 
           {/* Text input */}
@@ -253,9 +299,9 @@ export default function ChatInput({
             onChange={handleTextareaChange}
             onKeyDown={handleKeyDown}
             placeholder={isTranscribing ? 'Transcribing...' : isRecording ? 'Listening...' : placeholder}
-            disabled={disabled || isRecording}
+            disabled={disabled || sending || isRecording}
             rows={1}
-            className="max-h-40 min-h-[40px] flex-1 resize-none self-center bg-transparent px-2 py-2 text-[15px] text-ink placeholder:text-faint focus:outline-none"
+            className="max-h-40 min-h-[40px] min-w-0 flex-1 resize-none self-center bg-transparent px-2 py-2 text-[15px] text-ink placeholder:text-faint focus:outline-none"
             style={{ boxShadow: 'none' }}
           />
 
@@ -263,8 +309,8 @@ export default function ChatInput({
           <div className="relative shrink-0" ref={plusMenuRef}>
             <button
               type="button"
-              onClick={() => !disabled && setPlusMenuOpen(open => !open)}
-              disabled={disabled}
+              onClick={() => !disabled && !sending && setPlusMenuOpen(open => !open)}
+              disabled={disabled || sending}
               className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
                 disabled
                   ? 'cursor-not-allowed border-hairline bg-elevated text-faint'
@@ -283,10 +329,15 @@ export default function ChatInput({
               <div className="absolute bottom-full right-0 z-40 mb-3 w-[min(21rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-hairline bg-panel shadow-console animate-fade-up">
                 <div className="border-b border-hairline px-4 py-3">
                   <p className="text-sm font-600 text-ink">Add context</p>
-                  <p className="mt-0.5 text-xs text-faint">Upload files or use a connected workspace</p>
+                  <p className="mt-0.5 text-xs text-faint">Find existing files, upload, or connect a workspace</p>
                 </div>
 
                 <div className="p-2">
+                  <button type="button" onClick={() => { setPlusMenuOpen(false); mentionPosition.current = null; setLibraryOpen(true); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-elevated">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brass/10 text-brass"><AtSign className="h-4 w-4" /></span>
+                    <span className="min-w-0 flex-1"><span className="block text-sm font-500 text-ink">My Files</span><span className="block text-[11px] text-faint">Reuse uploads and generated files from any chat</span></span>
+                    <span className="font-mono text-xs text-faint">@</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -372,7 +423,7 @@ export default function ChatInput({
 
         {/* Helper text */}
         <p className="text-[11px] text-faint text-center mt-3 tracking-wide">
-          Use metadata and synthetic examples only. Do not upload personal or patient data. Generated SQL is a draft and requires review and testing.
+          Type @ to reuse a file from any chat. Use metadata and synthetic examples only. Do not upload personal or patient data. Generated SQL is a draft and requires review and testing.
         </p>
       </div>
     </div>

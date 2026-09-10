@@ -564,7 +564,7 @@ Resources:
           Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-backend:${ImageTag}'
           Essential: true
           DependsOn: [{ ContainerName: volume-init, Condition: SUCCESS }]
-          Command: [node, node_modules/prisma/build/index.js, db, push, --skip-generate]
+          Command: [node, dist/operations/schemaSync.js]
           ReadonlyRootFilesystem: true
           MountPoints:
             - { SourceVolume: tmp, ContainerPath: /tmp }

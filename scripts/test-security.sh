@@ -12,5 +12,8 @@ export AI_SERVICE_URL=http://127.0.0.1:58439
 unset AUDIT_ARCHIVE_BUCKET AUDIT_ARCHIVE_REQUIRED RETENTION_DELETE_ENABLED
 cd services/backend
 node -e 'const u=new URL(process.env.DATABASE_URL); if (!["localhost","127.0.0.1"].includes(u.hostname)||u.pathname!=="/migration_security_test")process.exit(1)'
+node -e 'const {PrismaClient}=require("@prisma/client");const p=new PrismaClient();p.$executeRawUnsafe("CREATE EXTENSION IF NOT EXISTS vector").finally(()=>p.$disconnect())'
 ./node_modules/.bin/prisma db push --skip-generate
 node --import tsx --test tests/security.test.ts
+
+node --import tsx --test tests/fileLibrary.test.ts

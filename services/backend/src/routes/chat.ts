@@ -6,6 +6,7 @@ import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middlewa
 import { recordAudit } from '../services/audit.js';
 import { checkTokenCaps, computeCostUsd, recordUsage } from '../services/usage.js';
 import { beginTurn } from '../services/aiLog.js';
+import { attachLibraryRefs, referenceData, resolveFileRefs, snapshotFile } from '../services/fileLibrary.js';
 
 
 const router = Router();
@@ -61,8 +62,21 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       return res.status(429).json({ error: caps.reason });
     }
 
+    const selected = await resolveFileRefs(prisma, user.id, req.body.fileRefs || []);
+    // Restore explicit references on later turns; recheck source ownership on every use.
+    const previousTurn = await prisma.message.findFirst({
+      where: {sessionId, role: 'assistant'}, orderBy: {createdAt: 'desc'},
+      include: {libraryRefs: {where: {assetId: {not: null}}, orderBy: {createdAt: 'asc'}}},
+    });
+    const previousAssets = await prisma.fileAsset.findMany({where: {
+      id: {in: (previousTurn?.libraryRefs || []).map(r => r.assetId!)}, session: {ownerUserId: user.id},
+    }});
+    const assets = [...previousAssets.filter(a => !selected.some(s => s.id === a.id ||
+      (s.sessionId === a.sessionId && s.kind === a.kind && s.filename === a.filename))), ...selected];
+    const contextFiles = Object.fromEntries(session.files.filter(f => !assets.some(a => a.filename === f.filename)).map(f => [f.filename, f.content]));
+    for (const asset of assets) contextFiles[`${asset.filename} [v${asset.version}; ${asset.id}]`] = asset.content;
     const screened = await screenPayload(message,
-      Object.fromEntries(session.files.map(f => [f.filename, f.content])),
+      contextFiles,
       session.messages.map(m => ({ role: m.role, content: m.content })));
     message = screened.message;
 
@@ -72,24 +86,13 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       data: {
         sessionId,
         role: 'user',
-        content: message
+        content: message,
+        libraryRefs: {create: referenceData(selected)},
       }
     });
 
-    // Always send files to AI service so it has them even if uploaded mid-conversation
-    let files: Record<string, string> | undefined;
-    if (session.files.length > 0) {
-      const fileMap: Record<string, string> = {};
-      for (const file of session.files) {
-        if (file.content) {
-          fileMap[file.filename] = screened.files[file.filename];
-        }
-      }
-      if (Object.keys(fileMap).length > 0) {
-        files = fileMap;
-        console.log(`[CHAT] Sending ${Object.keys(fileMap).length} files to AI service: ${Object.keys(fileMap).join(', ')}`);
-      }
-    }
+    // Explicit file labels carry immutable IDs and versions; never resolve a name alone.
+    const files = Object.keys(screened.files).length ? screened.files : undefined;
 
     // Prepare conversation history
     const history = screened.history;
@@ -197,7 +200,8 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       data: {
         sessionId,
         role: 'assistant',
-        content: aiResponse.response
+        content: aiResponse.response,
+        libraryRefs: {create: referenceData(assets)},
       }
     });
 
@@ -227,6 +231,11 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       );
     }
 
+    for (const output of savedOutputs) {
+      const versions = await prisma.generatedOutput.findMany({where: {sessionId, filename: output.filename}, orderBy: [{createdAt: 'asc'}, {id: 'asc'}]});
+      for (const record of versions) await snapshotFile(prisma, 'output', record);
+    }
+
     // Update session name if it's the first message
     const sessionName = isFirstMessage
       ? message.slice(0, 50) + (message.length > 50 ? '...' : '')
@@ -240,9 +249,10 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     });
 
     // Return saved DB records (with id, createdAt) so frontend can use directly
+    const [userWithRefs, assistantWithRefs] = await attachLibraryRefs(prisma, [userMessage, assistantMessage]);
     res.json({
-      userMessage,
-      assistantMessage,
+      userMessage: userWithRefs,
+      assistantMessage: assistantWithRefs,
       generated_files: aiResponse.generated_files || [],
       savedOutputs,
       updatedSession: {
@@ -277,7 +287,7 @@ router.get('/:sessionId/messages', async (req: AuthedRequest, res: Response) => 
       orderBy: { createdAt: 'asc' }
     });
 
-    res.json(messages);
+    res.json(await attachLibraryRefs(prisma, messages));
   } catch (error) {
     console.error('Error getting messages:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get messages' });

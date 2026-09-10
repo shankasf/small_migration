@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { AuthedRequest, canAccessSession, requireRole, requireWriteAccess } from '../middleware/auth.js';
 import { screenPayload, resetAISession } from '../services/aiService.js';
 import { recordAudit } from '../services/audit.js';
+import { attachLibraryRefs } from '../services/fileLibrary.js';
 
 const router = Router();
 
@@ -111,7 +112,7 @@ router.get('/:id', async (req: AuthedRequest, res: Response, next) => {
       return res.status(403).json({ error: 'You do not have access to this session' });
     }
 
-    res.json(session);
+    res.json({...session, messages: await attachLibraryRefs(prisma, session.messages)});
   } catch (error) {
     console.error('Error getting session:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get session' });

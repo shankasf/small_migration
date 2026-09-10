@@ -13,10 +13,33 @@ export interface Session {
   };
 }
 
+export interface LibraryFile {
+  id: string;
+  kind: 'upload' | 'output';
+  filename: string;
+  version: number;
+  summary: string | null;
+  indexStatus: string;
+  createdAt: string;
+  sourceSessionId: string;
+  sourceSessionName: string;
+  excerpt: string | null;
+}
+
+export interface FileReference {
+  id: string;
+  assetId: string;
+  filename: string;
+  version: number;
+  kind: 'upload' | 'output';
+  sourceSessionId: string;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
   role: 'user' | 'assistant';
+  fileRefs?: FileReference[];
   content: string;
   createdAt: string;
 }

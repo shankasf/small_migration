@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Add backward-compatible columns using the existing schema task BEFORE new app tasks start."""
 import json
+from pathlib import Path
 import subprocess
 
 
@@ -17,6 +18,9 @@ sql = [
     'ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "roleManagedLocally" BOOLEAN NOT NULL DEFAULT false',
     'ALTER TABLE "GeneratedOutput" ADD COLUMN IF NOT EXISTS "validation" JSONB',
 ]
+# Versioned additive DDL is checked in with the release; no user-supplied SQL.
+sql.append('CREATE EXTENSION IF NOT EXISTS vector')
+sql.extend(statement.strip() for statement in Path('services/backend/prisma/sql/file-library.sql').read_text().split(';') if statement.strip())
 # Fixed statements only; no user input is interpolated into SQL or shell code.
 script = "const {PrismaClient}=require('@prisma/client');const p=new PrismaClient();(async()=>{for(const q of " + json.dumps(sql) + ") await p.$executeRawUnsafe(q)})().catch(()=>{console.error('Additive schema preflight failed');process.exitCode=1}).finally(()=>p.$disconnect())"
 network = {'awsvpcConfiguration': {'subnets': exports['circini-AppSubnets'].split(','), 'securityGroups':[exports['circini-SgApp']], 'assignPublicIp':'DISABLED'}}

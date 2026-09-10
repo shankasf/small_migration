@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { screenPayload, testOutput } from '../services/aiService.js';
 import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
 import { recordAudit } from '../services/audit.js';
+import { snapshotFile } from '../services/fileLibrary.js';
 
 const router = Router();
 
@@ -155,6 +156,11 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
 
     console.log('[UPLOAD] Upserting files to database...');
     const screened = await screenPayload('', Object.fromEntries(parsed.map(f => [f.originalname, f.content])));
+    // Capture the old upload before replacing it so referenced versions remain immutable.
+    for (const item of parsed) {
+      const old = await prisma.uploadedFile.findUnique({where: {sessionId_category: {sessionId, category: item.category}}});
+      if (old) await snapshotFile(prisma, 'upload', old);
+    }
     const uploadedFiles = await Promise.all(
       parsed.map(({ content, category, originalname }) =>
         prisma.uploadedFile.upsert({
@@ -171,18 +177,20 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
             category,
             content: screened.files[originalname],
           },
-          select: { id: true, filename: true, category: true },
+          select: { id: true, filename: true, category: true, sessionId: true, content: true, createdAt: true },
         })
       )
     );
 
+    // New versions use upload time, not the original mutable row creation time.
+    for (const file of uploadedFiles) await snapshotFile(prisma, 'upload', {...file, createdAt: new Date()});
     console.log(`[UPLOAD] Successfully saved ${uploadedFiles.length} files`);
     await recordAudit(prisma, {
       userId: req.user!.id, action: 'file.upload', resource: sessionId,
       detail: JSON.stringify({ files: uploadedFiles.map(f => f.filename) }),
       ip: req.ip
     });
-    res.status(201).json({ files: uploadedFiles });
+    res.status(201).json({ files: uploadedFiles.map(({content, ...file}) => file) });
   } catch (error) {
     next(error);
   }
@@ -236,9 +244,10 @@ router.delete('/:fileId', requireWriteAccess, async (req: AuthedRequest, res: Re
       return res.status(403).json({ error: 'You do not have access to this file' });
     }
 
-    await prisma.uploadedFile.delete({
-      where: { id: fileId }
-    });
+    await prisma.$transaction([
+      prisma.fileAsset.deleteMany({where: {kind: 'upload', sourceId: fileId}}),
+      prisma.uploadedFile.delete({where: {id: fileId}}),
+    ]);
 
     await recordAudit(prisma, {
       userId: req.user!.id, action: 'file.delete', resource: fileId,

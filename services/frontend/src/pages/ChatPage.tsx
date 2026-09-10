@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { ArrowUpRight } from 'lucide-react';
-import { Session, Message, UploadedFile, GeneratedOutput, Integration, IntegrationProvider } from '../types';
+import { Session, Message, UploadedFile, GeneratedOutput, Integration, IntegrationProvider, LibraryFile } from '../types';
 import ChatArea from '../components/ChatArea';
 import ChatInput from '../components/ChatInput';
 import { LogEntry } from '../hooks/useRealtimeLogs';
@@ -35,7 +35,7 @@ interface ChatPageProps {
   isUploading?: boolean;
   uploadStatus?: string | null;
   errorMessage?: string | null;
-  onSend: (message: string, files?: File[]) => void;
+  onSend: (message: string, files?: File[], fileRefs?: LibraryFile[]) => Promise<void>;
   onDownloadOutput: (output: GeneratedOutput) => void;
   onNewChat: () => void;
   realtimeLogs?: LogEntry[];
@@ -108,7 +108,7 @@ const ChatPage = memo(function ChatPage({
   // Welcome screen when no session
   if (!session) {
     return (
-      <div className="relative flex-1 flex flex-col min-h-0 bg-obsidian">
+      <div className="relative flex-1 flex flex-col min-h-0 min-w-0 bg-obsidian">
         <div className="console-grid pointer-events-none absolute inset-0 opacity-60" />
         <div className="relative flex-1 flex flex-col items-center justify-center gap-8 px-4">
           <WelcomeHero
@@ -124,7 +124,7 @@ const ChatPage = memo(function ChatPage({
   }
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-obsidian">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 bg-obsidian">
       {/* Minimal header */}
       <header className="flex items-center justify-center px-4 py-2 border-b border-hairline bg-panel/60">
         <div className="flex flex-col items-center">

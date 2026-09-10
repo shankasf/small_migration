@@ -13,6 +13,8 @@ import { PrismaClient } from '@prisma/client';
 import sessionsRouter from './routes/sessions.js';
 import chatRouter from './routes/chat.js';
 import filesRouter from './routes/files.js';
+import fileLibraryRouter from './routes/fileLibrary.js';
+import { startFileIndexer } from './services/fileLibrary.js';
 import sttRouter from './routes/stt.js';
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
@@ -152,6 +154,7 @@ app.use('/api/admin', adminRouter);
 app.use('/api/api-keys', apiKeysRouter);
 app.use('/api/sessions', sessionsRouter);
 app.use('/api/chat', chatRouter);
+app.use('/api/files/library', fileLibraryRouter);
 app.use('/api/files', filesRouter);
 app.use('/api/stt', sttRouter);
 app.use('/api/integrations', githubRouter);
@@ -165,6 +168,8 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
       detail: JSON.stringify(err.result.guardrail) }).catch(() => console.error("[AUDIT_FAILED] Block event could not be persisted"));
     return res.status(422).json({ error: err.result.error || 'Content blocked by policy', guardrail: err.result.guardrail });
   }
+  const status = (err as Error & { statusCode?: number }).statusCode;
+  if (status === 400 || status === 403 || status === 409) return res.status(status).json({ error: err.message });
   console.error('[REQUEST_FAILED]', err.name);
   res.status(503).json({ error: 'Request could not be completed safely. Please try again.' });
 });
@@ -200,9 +205,12 @@ export function emitLog(sessionId: string, log: { step: string; message: string;
   recordAiEvent({ sessionId, step: log.step, message: log.message, type: log.type, detail: log.data });
 }
 
+const stopFileIndexer = startFileIndexer(prisma);
+
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down...');
+  stopFileIndexer();
   await prisma.$disconnect();
   io.close();
   process.exit(0);

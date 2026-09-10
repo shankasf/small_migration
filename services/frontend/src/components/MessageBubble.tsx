@@ -4,6 +4,7 @@ import { useState, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import FileReferenceChips from './FileReferenceChips';
 import { CirciniMark } from './Brand';
 
 interface MessageBubbleProps {
@@ -98,6 +99,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
     return (
       <div className="flex justify-end mb-6">
         <div className="max-w-[85%] sm:max-w-[70%]">
+          <FileReferenceChips files={message.fileRefs || []} label="Attached files" />
           {/* File attachment cards */}
           {hasFileCards && (
             <div className="mb-2 space-y-1.5">
@@ -109,7 +111,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
                   <div className="text-brass">
                     {getFileIcon(file.filename)}
                   </div>
-                  <span className="flex-1 text-sm text-ink truncate min-w-0">
+                  <span className="flex-1 text-sm text-ink break-words min-w-0">
                     {file.filename}
                   </span>
                   <button
@@ -158,6 +160,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
 
         {/* Content */}
         <div className="flex-1 min-w-0 pt-1">
+          <FileReferenceChips files={message.fileRefs || []} label="Used files" />
           <div className="prose-console max-w-none">
             <ReactMarkdown
               components={{

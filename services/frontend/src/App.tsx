@@ -9,7 +9,7 @@ import LoginPage from './pages/LoginPage';
 import AdminPage from './pages/AdminPage';
 import SettingsPage from './pages/SettingsPage';
 import FilePreviewModal from './components/FilePreviewModal';
-import { Session, Message, UploadedFile, GeneratedOutput, User, Integration, IntegrationProvider } from './types';
+import { Session, Message, UploadedFile, GeneratedOutput, User, Integration, IntegrationProvider, LibraryFile } from './types';
 import * as api from './services/api';
 import { getToken, getStoredUser, fetchMe, logout } from './services/auth';
 import { AuthConfig, fetchAuthConfig, completeLogin } from './services/oidc';
@@ -75,6 +75,8 @@ function App() {
   const isSettingsRoute = location.pathname === '/settings';
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSession, setActiveSession] = useState<Session | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const activeSessionRef = useRef<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [_outputs, setOutputs] = useState<GeneratedOutput[]>([]);
@@ -189,6 +191,8 @@ function App() {
     try {
       const session = await api.createSession();
       setSessions(prev => [session, ...prev]);
+      activeSessionIdRef.current = session.id;
+      activeSessionRef.current = session;
       setActiveSession(session);
       setMessages([]);
       setUploadedFiles([]);
@@ -204,9 +208,9 @@ function App() {
 
   // Mirror of activeSession.id for effects/handlers that shouldn't re-run
   // every time the session object changes
-  const activeSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     activeSessionIdRef.current = activeSession?.id ?? null;
+    activeSessionRef.current = activeSession;
   }, [activeSession]);
 
   const clearThreadState = useCallback(() => {
@@ -285,14 +289,11 @@ function App() {
   }, [completedNotice]);
 
   // Unified send handler - handles message with optional files
-  const handleSend = useCallback(async (message: string, files?: File[]) => {
+  const handleSend = useCallback(async (message: string, files?: File[], fileRefs: LibraryFile[] = []) => {
     console.log(`[SEND] handleSend called: message="${message.slice(0, 50)}...", files=${files?.length || 0}`);
 
-    // Determine which session to use
-    // Use functional getter for activeSession to avoid stale closure
-    const holder: { current: Session | null } = { current: null };
-    setActiveSession(prev => { holder.current = prev; return prev; });
-    let session: Session | null = holder.current;
+    // Read the active thread without scheduling an asynchronous state update.
+    let session: Session | null = activeSessionRef.current;
 
     console.log(`[SEND] Active session: ${session?.id || 'none'}`);
 
@@ -301,8 +302,7 @@ function App() {
       console.log('[SEND] No active session, creating new one...');
       session = await createNewSession();
       if (!session) {
-        console.error('[SEND] Failed to create session, aborting');
-        return;
+        throw new Error('Could not create a chat. Please try again.');
       }
       console.log(`[SEND] Created session: ${session.id}`);
     }
@@ -313,7 +313,7 @@ function App() {
     console.log(`[SEND] hasFiles=${hasFiles}, hasMessage=${hasMessage}`);
 
     // If nothing to send, return
-    if (!hasFiles && !hasMessage) {
+    if (!hasFiles && !hasMessage && !fileRefs.length) {
       console.log('[SEND] Nothing to send, returning');
       return;
     }
@@ -347,12 +347,12 @@ function App() {
           setUploadStatus(null);
           setIsUploading(false);
         }, 3000);
-        return;
+        throw error;
       }
     }
 
     // Prepare the message content
-    let messageContent = message.trim();
+    let messageContent = message.trim() || (fileRefs.length ? 'Please analyze the selected files.' : '');
     if (hasFiles && !hasMessage) {
       const fileNames = files.map(f => f.name).join(', ');
       messageContent = `[Attached: ${fileNames}]\n\nPlease analyze the uploaded files.`;
@@ -368,6 +368,7 @@ function App() {
       id: `temp-${Date.now()}`,
       sessionId: session.id,
       role: 'user',
+      fileRefs: fileRefs.map(file => ({ id: file.id, assetId: file.id, filename: file.filename, version: file.version, kind: file.kind, sourceSessionId: file.sourceSessionId })),
       content: messageContent,
       createdAt: new Date().toISOString(),
     };
@@ -382,7 +383,7 @@ function App() {
     }
 
     try {
-      const response = await api.sendMessage(session.id, messageContent);
+      const response = await api.sendMessage(session.id, messageContent, fileRefs.map(file => file.id));
 
       // The user may have switched threads (or opened the admin portal) while
       // this generated — only touch on-screen state if they're still here
@@ -444,6 +445,7 @@ function App() {
         setUnseenSessions(prev => ({ ...prev, [session.id]: true }));
         notifyCompletion(session.id, session.name || 'Chat', true);
       }
+      throw error;
     } finally {
       setPendingSessions(prev => {
         const next = { ...prev };

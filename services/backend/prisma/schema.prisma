@@ -163,6 +163,7 @@ model Session {
   updatedAt   DateTime          @updatedAt
   messages    Message[]
   files       UploadedFile[]
+  libraryFiles FileAsset[]
   outputs     GeneratedOutput[]
 
   @@index([ownerUserId])
@@ -178,9 +179,11 @@ model Message {
   outputs   GeneratedOutput[]
 
   @@index([sessionId])
+  libraryRefs FileReference[]
 }
 
 model UploadedFile {
+  libraryAssets FileAsset[]
   id        String   @id @default(uuid())
   sessionId String
   session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -197,6 +200,7 @@ model UploadedFile {
 // filename create new rows (no upsert), each linked to the assistant message
 // that produced it — so every chat turn keeps the exact files it delivered.
 model GeneratedOutput {
+  libraryAssets FileAsset[]
   id        String   @id @default(uuid())
   sessionId String
   session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -211,4 +215,58 @@ model GeneratedOutput {
 
   @@index([sessionId])
   @@index([messageId])
+}
+
+// Immutable snapshots shared by discovery, previews and explicit chat references.
+model FileAsset {
+  id          String @id @default(uuid())
+  kind        String
+  sourceId    String
+  uploadedFileId String?
+  uploadedFile UploadedFile? @relation(fields: [uploadedFileId], references: [id], onDelete: Cascade)
+  generatedOutputId String?
+  generatedOutput GeneratedOutput? @relation(fields: [generatedOutputId], references: [id], onDelete: Cascade)
+  sessionId   String
+  session     Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  filename    String
+  version     Int
+  content     String @db.Text
+  contentHash String
+  summary     String
+  indexStatus String @default("pending")
+  indexedAt   DateTime?
+  retryAt     DateTime @default(now())
+  attempts    Int @default(0)
+  createdAt   DateTime @default(now())
+  chunks      FileChunk[]
+  references  FileReference[]
+  @@unique([kind, sourceId, contentHash])
+  @@unique([sessionId, kind, filename, version])
+  @@index([sessionId, createdAt])
+  @@index([indexStatus, retryAt])
+}
+
+model FileChunk {
+  id        String @id @default(uuid())
+  assetId   String
+  asset     FileAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  ordinal   Int
+  content   String @db.Text
+  embedding Unsupported("vector(1536)")?
+  @@unique([assetId, ordinal])
+}
+
+model FileReference {
+  id         String @id @default(uuid())
+  messageId  String
+  message    Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  assetId    String?
+  asset      FileAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  filename   String
+  version    Int
+  kind       String
+  sourceSessionId String
+  createdAt  DateTime @default(now())
+  @@index([messageId])
+  @@index([assetId])
 }

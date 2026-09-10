@@ -128,3 +128,14 @@ export async function cancelUserRuns(userId: string): Promise<void> {
     headers: {'x-internal-key': process.env.INTERNAL_API_KEY}, timeout: 10000,
   });
 }
+
+export async function embedSearchTexts(texts: string[]): Promise<number[][]> {
+  const { data } = await axios.post(`${AI_SERVICE_URL}/ai/files/embed`, { texts }, {
+    headers: { 'x-internal-key': process.env.INTERNAL_API_KEY }, timeout: 60000,
+  });
+  if (!Array.isArray(data.embeddings) || data.embeddings.length !== texts.length ||
+      data.embeddings.some((v: unknown) => !Array.isArray(v) || v.length !== 1536 || v.some(n => !Number.isFinite(n)))) {
+    throw new Error('Invalid search embedding response');
+  }
+  return data.embeddings;
+}
