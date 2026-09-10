@@ -8,7 +8,8 @@
 set -uo pipefail
 
 BASE="${1:-https://migration.callsphere.site}"
-NS="${NAMESPACE:-migration-agent}"
+CLUSTER="${ECS_CLUSTER:-circini-demo}"
+SERVICES="${ECS_SERVICES:-frontend backend ai-service}"
 PASS=0
 FAIL=0
 
@@ -68,39 +69,69 @@ expect_code "internal ns is not public"    "$BASE/api/internal/anything"  401
 expect_code "logs needs internal key"      "$BASE/api/logs/x"             401 -X POST -H 'Content-Type: application/json' -d '{}'
 expect_code "logs rejects wrong key"       "$BASE/api/logs/x"             401 -X POST -H 'Content-Type: application/json' -H 'x-internal-key: wrong' -d '{}'
 
-echo "== ai-service is not reachable with a user token =="
-expect_code "ai chat needs internal key"  "$BASE/ai/chat"    401 -X POST -H 'Content-Type: application/json' -d '{}'
-expect_code "ai status needs internal key" "$BASE/ai/status/x" 401
+echo "== ai-service is not routed from the internet =="
+# Under K3s, Traefik routed /ai to the ai-service and a 401 proved the internal
+# key was enforced. On ECS the ai-service has no target group and no ALB rule
+# at all - it is reachable only inside the VPC over Service Connect - so /ai/*
+# must fall through to the SPA and never return an ai-service response.
+for aipath in /ai/chat /ai/status/x; do
+  aibody=$(curl -s --max-time 25 "$BASE$aipath" 2>/dev/null)
+  if echo "$aibody" | grep -qE '"(output_dir|internal_auth)"[[:space:]]*:'; then
+    bad "ai-service not routed ($aipath)" "ai-service response returned through the ALB"
+  else
+    ok "ai-service not routed ($aipath)"
+  fi
+done
 
 echo "== transport =="
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "http://${BASE#https://}/" 2>/dev/null)
 case "$code" in 30[0-9]) ok "http redirects to https ($code)";; *) bad "http redirects to https" "got $code";; esac
 
 echo "== container hardening =="
-# Probe with a namespaced read: the CD ServiceAccount is scoped to this
-# namespace and cannot 'get namespaces', so gating on that would silently skip
-# every assertion below.
-if command -v kubectl >/dev/null 2>&1 && kubectl get deploy -n "$NS" >/dev/null 2>&1; then
-  # No source is mounted from the host — the image is the only code source.
-  hp=$(kubectl get deploy -n "$NS" -o jsonpath='{range .items[*]}{.spec.template.spec.volumes[*].hostPath.path}{"\n"}{end}' 2>/dev/null | tr -d '\n')
-  [ -z "$hp" ] && ok "no hostPath mounts in any deployment" || bad "no hostPath mounts" "found: $hp"
+# Assertions read the live ECS task definitions. Gated on a describe call so
+# the script still runs (skipping this section) without AWS credentials.
+if command -v aws >/dev/null 2>&1 \
+   && aws ecs describe-services --cluster "$CLUSTER" --services $SERVICES >/dev/null 2>&1; then
 
-  # Images must be pinned to an immutable tag, never :latest.
-  imgs=$(kubectl get deploy -n "$NS" -o jsonpath='{range .items[*]}{.spec.template.spec.containers[*].image}{"\n"}{end}' 2>/dev/null)
-  if echo "$imgs" | grep -q ':latest'; then
-    bad "images pinned (not :latest)" "$(echo "$imgs" | grep ':latest' | tr '\n' ' ')"
+  tds=$(aws ecs describe-services --cluster "$CLUSTER" --services $SERVICES \
+        --query 'services[].taskDefinition' --output text 2>/dev/null)
+
+  # Images must be pinned to an immutable tag, never :latest. The ADOT
+  # collector sidecar is vendor-published and exempt.
+  imgs=$(for td in $tds; do
+           aws ecs describe-task-definition --task-definition "$td" \
+             --query "taskDefinition.containerDefinitions[?name!='otel-collector'].image" \
+             --output text 2>/dev/null
+         done)
+  if echo "$imgs" | tr '\t' '\n' | grep -q ':latest'; then
+    bad "images pinned (not :latest)" "$(echo "$imgs" | tr '\t' '\n' | grep ':latest' | tr '\n' ' ')"
   else
     ok "images pinned to immutable tags"
   fi
 
-  # Outputs volume must stay writable — blocking it would break the product.
-  if kubectl exec -n "$NS" deployment/ai-service -- sh -c 'touch /data/outputs/.smoke && rm -f /data/outputs/.smoke' >/dev/null 2>&1; then
-    ok "outputs volume writable"
-  else
-    bad "outputs volume writable" "write failed"
-  fi
+  # Application containers run on a read-only root filesystem.
+  rw=""
+  for td in $tds; do
+    rw="$rw $(aws ecs describe-task-definition --task-definition "$td" \
+      --query "taskDefinition.containerDefinitions[?name!='otel-collector' && name!='volume-init' && readonlyRootFilesystem!=\`true\`].name" \
+      --output text 2>/dev/null)"
+  done
+  rw=$(echo "$rw" | tr -s ' ' | sed 's/^ //;s/ $//')
+  [ -z "$rw" ] && ok "read-only root filesystem on all app containers" \
+                || bad "read-only root filesystem" "writable: $rw"
+
+  # Credentials must arrive via Secrets Manager, never as plaintext env vars.
+  leaked=""
+  for td in $tds; do
+    leaked="$leaked $(aws ecs describe-task-definition --task-definition "$td" \
+      --query "taskDefinition.containerDefinitions[].environment[?contains(name,'SECRET') || contains(name,'PASSWORD') || contains(name,'API_KEY')].name" \
+      --output text 2>/dev/null)"
+  done
+  leaked=$(echo "$leaked" | tr -s ' ' | sed 's/^ //;s/ $//')
+  [ -z "$leaked" ] && ok "no credentials in plaintext environment" \
+                   || bad "no credentials in plaintext environment" "found: $leaked"
 else
-  echo "  (skipped: no kubectl or namespace $NS not reachable)"
+  echo "  (skipped: no aws CLI or cluster $CLUSTER not reachable)"
 fi
 
 echo

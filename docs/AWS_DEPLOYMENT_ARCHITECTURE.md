@@ -16,7 +16,7 @@
 | Availability | Single task per service — restart on failure |
 | Identity | **Self-hosted Keycloak** — there is no AD or Entra tenant to federate with |
 | Data | Test data only |
-| Sizing basis | `deploy/kubernetes/deployment.yaml` + runtime limits in code |
+| Sizing basis | The retired K3s deployment's resource limits (git history) + runtime limits in code |
 
 ---
 

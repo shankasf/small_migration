@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Circini Migration Agent demo - application layer.
-  ECS Fargate cluster with Service Connect, task definitions mirroring
-  deploy/kubernetes/deployment.yaml (read-only rootfs, writable /tmp,
-  /var/cache/nginx and /data/outputs), the ALB with path routing and
-  sticky sessions for Socket.IO, and the on-deploy schema-sync task.
+  ECS Fargate cluster with Service Connect, task definitions with a
+  read-only rootfs and writable /tmp, /var/cache/nginx and /data/outputs,
+  the ALB with path routing and sticky sessions for Socket.IO, and the
+  on-deploy schema-sync task.
 
 Parameters:
   ImageTag:

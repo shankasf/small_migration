@@ -10,7 +10,7 @@ AI-powered DBT/SQL data migration assistant with a ChatGPT-like interface for an
 - **Backend**: Node.js, Express, TypeScript, Prisma, PostgreSQL, Socket.IO, Multer (file uploads)
 - **AI Service**: Python, FastAPI, OpenAI Agents SDK, OpenAI Whisper (speech-to-text via `gpt-4o-transcribe`)
 - **Database**: PostgreSQL
-- **Deployment**: Kubernetes (K3s), Docker, Traefik, cert-manager
+- **Deployment**: AWS ECS Fargate, Docker, Application Load Balancer, ACM, CloudFormation
 
 ## Architecture
 
@@ -19,15 +19,18 @@ flowchart LR
     U["🖥️ Browser<br/>React + Vite"]
 
     subgraph edge["Edge — TLS termination"]
-        IG["Traefik ingress<br/>migration.callsphere.site<br/>cert-manager · Let's Encrypt"]
+        IG["Application Load Balancer<br/>migration.callsphere.site<br/>ACM certificate · HTTP→HTTPS"]
     end
 
-    subgraph cluster["K3s cluster — namespace: migration-agent"]
+    subgraph cluster["ECS Fargate — cluster circini-demo · Service Connect"]
         FE["frontend :5173<br/>React 18 · Vite · Tailwind"]
-        BE["backend :3001<br/>Express · Prisma · Socket.IO<br/>🔐 JWT + RBAC"]
+        BE["backend :3001<br/>Express · Prisma · Socket.IO<br/>🔐 Cognito JWT + RBAC"]
         AI["ai-service :8084<br/>FastAPI · Agents SDK<br/>🔐 x-internal-key"]
-        DB[("PostgreSQL<br/>users · sessions · messages<br/>audit_events · usage_records")]
-        PV[("outputs PVC<br/>/data/outputs")]
+        PV[("task scratch volume<br/>/data/outputs")]
+    end
+
+    subgraph managed["Managed data services"]
+        DB[("RDS PostgreSQL 16<br/>users · sessions · messages<br/>audit_events · usage_records")]
     end
 
     OAI["☁️ OpenAI API<br/>chat + Whisper"]
@@ -188,9 +191,9 @@ known-credential account.
 > Push to `main` and the pipeline builds, scans, deploys and smoke-tests. Do not
 > deploy by hand.
 >
-> `deploy/kubernetes/deploy.sh` rebuilds the ConfigMap and Secret from a local
-> `.env`; if that file is partial it will **blank live secrets**. It is not part
-> of the pipeline and should be run deliberately, if ever.
+> Every secret lives in AWS Secrets Manager under `circini/*` and is injected
+> into the task definition by CloudFormation. Nothing is read from a local
+> `.env`, and no credential is stored on a developer machine.
 
 ## CnA readiness
 
@@ -343,7 +346,7 @@ deploy path.
 ```mermaid
 flowchart LR
     P(["push to main"]) --> CI["CI<br/>typecheck · lint · 44 tests<br/>dep audit · secret scan<br/>manifest policy"]
-    CI -- pass --> B["Build 3 images<br/>tag sha-&lt;commit&gt;<br/>push to GHCR"]
+    CI -- pass --> B["Build 3 images<br/>tag sha-&lt;commit&gt;<br/>push to ECR"]
     CI -- fail --> X1["❌ stop"]
     B --> SC["Trivy scan<br/>CRITICAL blocks"]
     SC -- fail --> X2["❌ stop, nothing deployed"]
@@ -360,14 +363,14 @@ flowchart LR
     class CI,B,SC,D,SM step
 ```
 
-**Why a self-hosted runner.** The k3s API server listens on `127.0.0.1` only,
-so GitHub-hosted runners cannot reach the cluster. CD runs on a runner on the
-node itself, authenticated as a ServiceAccount scoped to the `migration-agent`
-namespace — it can manage this application and nothing else in the cluster.
+**Why GitHub-hosted runners.** CD runs on standard GitHub-hosted runners and
+reaches AWS over the public API, so there is no self-hosted runner and no
+machine to patch. The job assumes `circini-github-deploy` via GitHub OIDC,
+scoped to this account's `circini-*` resources and nothing else.
 
-**Credentials.** No long-lived registry credential is stored in the cluster.
-The GHCR pull secret is minted from the deploy job's ephemeral token on every
-run.
+**Credentials.** No long-lived AWS key exists anywhere. The deploy job mints a
+short-lived OIDC token per run, and ECR login is derived from that same
+assumed role.
 
 **Images.** Tagged `sha-<commit>` and never overwritten, so what is running is
 always traceable to a commit and any previous build can be redeployed as-is.
@@ -409,7 +412,7 @@ small_migration/
 │       ├── telemetry.py       # OpenTelemetry tracing
 │       └── config.py          # Settings from environment
 ├── deploy/
-│   └── kubernetes/            # K8s manifests, ingress and deploy script
+│   └── aws/                   # CloudFormation stacks: network, data, cognito, app
 ├── docs/                      # ARCHITECTURE.md, CNA_IMPLEMENTATION.md
 ├── scripts/
 │   ├── start-dev.sh           # Start all 3 services for local development
@@ -572,15 +575,17 @@ The migration agent has access to these tools per session:
 
 Deployment is automated. Pushing to `main` runs CI, builds the three images,
 scans them, deploys, and smoke-tests — see [CI/CD](#cicd). There is no manual
-build or `kubectl apply` step.
+build or `aws cloudformation deploy` step.
 
 ```bash
 # Watch the current deploy
 gh run watch
 
 # What is running right now
-kubectl get deploy -n migration-agent \
-  -o custom-columns='NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image'
+aws ecs describe-services --cluster circini-demo \
+  --services frontend backend ai-service \
+  --query 'services[].{Name:serviceName,Running:runningCount,TaskDef:taskDefinition}' \
+  --output table
 
 # Verify the deployment and its security controls at any time
 ./deploy/smoke-test.sh
@@ -588,19 +593,30 @@ kubectl get deploy -n migration-agent \
 
 ### Rollback
 
-Every commit's images stay in GHCR, so rolling back is redeploying an earlier
+Every commit's images stay in ECR, so rolling back is redeploying an earlier
 tag — no rebuild:
 
 ```bash
 gh workflow run deploy.yml -f image_tag=sha-abc1234
 ```
 
-The pipeline also rolls back on its own: if the rollout or the smoke test
-fails, it runs `kubectl rollout undo` and re-verifies before reporting failure.
+Rollback is **manual**. Services run `MinimumHealthyPercent: 100` /
+`MaximumPercent: 200`, so a failing new task never displaces a healthy one and
+the old revision keeps serving; the job then fails at `aws ecs wait
+services-stable`. ECS is not configured with a deployment circuit breaker, so
+it does not revert the task definition by itself — redeploy the last good tag
+with the command above.
 
-### One-time cluster bootstrap
+### Infrastructure
 
-```bash
-deploy/kubernetes/bootstrap.sh            # namespace + scoped deploy ServiceAccount
-deploy/kubernetes/runner-kubeconfig.sh    # kubeconfig for the CD runner
-```
+Four CloudFormation stacks in `deploy/aws/`, deployed in order by the pipeline:
+
+| Stack | Contents |
+|---|---|
+| `circini-network` | VPC, subnets, security groups, NAT gateway |
+| `circini-data` | RDS PostgreSQL 16, Secrets Manager entries (`circini/*`) |
+| `circini-cognito` | User pool, SPA client, groups `admin` / `analyst` / `auditor` |
+| `circini-app` | ECS cluster, services, task definitions, ALB, S3 audit archive |
+
+A fifth stack, `circini-github-oidc`, holds the `circini-github-deploy` role
+the pipeline assumes. Stacks are idempotent — an unchanged template is a no-op.

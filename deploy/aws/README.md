@@ -23,8 +23,10 @@ aws cloudformation deploy --stack-name circini-app     --template-file app.yaml 
 
 ## Images
 
-Built with nerdctl on the K3s host, pushed to ECR
-(`circini-frontend|backend|ai-service`, tagged with the git short SHA + `latest`).
+Built by GitHub Actions (`.github/workflows/deploy.yml`) with Buildx and
+pushed to ECR (`circini-frontend|backend|ai-service`), tagged `sha-<short-sha>`.
+Tags are immutable and never overwritten, so a running task always traces back
+to one commit and any earlier build can be redeployed as-is.
 
 ## Per-deploy steps
 
