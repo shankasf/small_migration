@@ -70,9 +70,26 @@ async function main() {
     console.log(JSON.stringify({ fileLibraryBrowserKeyRevoked: key.id }));
     return;
   }
-  const user = await prisma.user.findUnique({ where: { email: 'sagar@callsphere.ai' } });
+  let user = await prisma.user.findUnique({ where: { email: 'sagar@callsphere.ai' } });
   assert.equal(user?.role, 'admin', 'Verification administrator missing');
   assert.equal(user.status, 'active', 'Verification administrator inactive');
+  const priorFile = async ownerId => {
+    const where = { session: { ownerUserId: ownerId, name: { not: { startsWith: 'E2E file library' } } } };
+    const upload = await prisma.uploadedFile.findFirst({ where, orderBy: { createdAt: 'asc' }, select: { id: true } });
+    if (upload) return { ...upload, kind: 'upload' };
+    const output = await prisma.generatedOutput.findFirst({ where, orderBy: { createdAt: 'asc' }, select: { id: true } });
+    return output ? { ...output, kind: 'output' } : null;
+  };
+  let existing = await priorFile(user.id);
+  if (!existing) {
+    const candidates = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, orderBy: { createdAt: 'asc' } });
+    for (const candidate of candidates) {
+      const file = await priorFile(candidate.id);
+      if (file) { user = candidate; existing = file; break; }
+    }
+  }
+  mark('legacy candidate selected', { ownerId: user.id, kind: existing?.kind || null, sourceId: existing?.id || null });
+  assert.ok(existing, 'No active administrator owns a pre-existing upload or output fixture');
   const minted = generateApiKey();
   token = minted.key;
   const key = await prisma.apiKey.create({ data: { userId: user.id, name: run,
@@ -83,12 +100,8 @@ async function main() {
   evidence.vectorVersion = extension[0].extversion;
   assert.equal((await fetch(base + '/api/files/library')).status, 401, 'Anonymous library access accepted');
   mark('legacy file selection');
-  const existing = await prisma.uploadedFile.findFirst({ where: {
-    session: { ownerUserId: user.id, name: { not: { startsWith: 'E2E file library' } } },
-  }, orderBy: { createdAt: 'asc' }, select: { id: true } });
-  assert.ok(existing, 'An existing owned upload is required for the legacy-file test');
   const legacy = await waitFor('legacy backfill', () => prisma.fileAsset.findFirst({
-    where: { kind: 'upload', sourceId: existing.id }, orderBy: { version: 'asc' },
+    where: { kind: existing.kind, sourceId: existing.id }, orderBy: { version: 'asc' },
   }));
   evidence.legacyAssetId = legacy.id;
   const source = await session('upload source');
@@ -139,7 +152,7 @@ async function main() {
     'Generated output changed after reuse');
   evidence.outputAssetId = output.id;
   mark('reuse pre-existing owned file');
-  const legacyMatches = await search(legacy.filename, 'upload');
+  const legacyMatches = await search(legacy.filename, existing.kind);
   assert.ok(legacyMatches.files.some(item => item.id === legacy.id), 'Existing file absent from cross-chat search');
   await message(reuse, 'Read this selected existing file and give one concise sentence describing its purpose. Do not change it or generate output.', legacy);
   const foreign = await prisma.fileAsset.findFirst({ where: { session: { ownerUserId: { not: user.id } } } });
