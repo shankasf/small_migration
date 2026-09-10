@@ -14,6 +14,7 @@ on:
 # deploy role — no long-lived AWS keys are stored in the repo.
 permissions:
   contents: read
+  pull-requests: read
   id-token: write
 
 concurrency:
@@ -138,6 +139,11 @@ jobs:
           aws cloudformation deploy --stack-name circini-cognito \
             --template-file deploy/aws/cognito.yaml --no-fail-on-empty-changeset \
             --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
+
+      - name: Validate and configure GitHub App
+        env:
+          GITHUB_APP_BOOTSTRAP_JSON: ${{ secrets.GITHUB_APP_BOOTSTRAP_JSON }}
+        run: node scripts/configure-github-app.mjs
 
       - name: Deploy app stack
         run: |

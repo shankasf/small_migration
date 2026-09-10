@@ -16,9 +16,9 @@ export const INTEGRATION_PROVIDERS: IntegrationProviderInfo[] = [
   {
     id: 'github',
     name: 'GitHub',
-    description: 'Read dbt projects, branches, pull requests, and repository history.',
+    description: 'Connect your GitHub account and choose repositories and branches for your workspace.',
     category: 'Source control',
-    permission: 'OAuth · Repository access',
+    permission: 'GitHub App · Read-only repositories',
     icon: Github,
     accent: 'text-ink',
     surface: 'bg-ink/[0.08]',

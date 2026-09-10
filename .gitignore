@@ -1,4 +1,5 @@
 # Environment variables
+*.pem
 .env
 .env.local
 .env.*.local

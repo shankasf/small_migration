@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   # github.workflow differs when this is called by deploy.yml, so the standalone
@@ -39,6 +40,8 @@ jobs:
         run: npx tsc --noEmit
       - name: Build
         run: npm run build
+      - name: GitHub integration security tests
+        run: npx tsx --test tests/github.test.ts
 
   frontend:
     name: Frontend — typecheck and lint

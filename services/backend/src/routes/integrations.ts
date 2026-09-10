@@ -3,6 +3,7 @@ import { createHash, createPrivateKey, createPublicKey, createSign, randomBytes 
 import axios from 'axios';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { AuthedRequest, requireWriteAccess } from '../middleware/auth.js';
+import { githubAppConfigured } from '../services/githubApp.js';
 import { recordAudit } from '../services/audit.js';
 import {
   encryptIntegrationSecrets,
@@ -37,7 +38,8 @@ function oauthConfigured(provider: 'github' | 'gitlab'): boolean {
 }
 
 function providerConfigured(provider: Provider): boolean {
-  if (provider === 'github' || provider === 'gitlab') return oauthConfigured(provider);
+  if (provider === 'github') return githubAppConfigured();
+  if (provider === 'gitlab') return oauthConfigured(provider);
   return integrationEncryptionConfigured();
 }
 
