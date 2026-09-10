@@ -30,6 +30,13 @@ class Settings:
     AZURE_OPENAI_API_VERSION: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
     AZURE_OPENAI_DEPLOYMENT: str = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
 
+    # Processing approval is an operator-reviewed evidence reference, not a claim
+    # that an environment variable can establish a provider contract.
+    APPROVED_LLM_HOST: str = os.getenv("APPROVED_LLM_HOST", "api.openai.com")
+    PROCESSING_REGION: str = os.getenv("PROCESSING_REGION", "unverified")
+    PROVIDER_APPROVAL_REFERENCE: str = os.getenv("PROVIDER_APPROVAL_REFERENCE", "")
+    PHI_APPROVAL_REFERENCE: str = os.getenv("PHI_APPROVAL_REFERENCE", "")
+    VOICE_ENABLED: bool = _bool("VOICE_ENABLED", "false")
     # --- Guardrails ---
     GUARDRAILS_ENABLED: bool = _bool("GUARDRAILS_ENABLED", "true")
     # Mode A (default): health PII is blocked outright before model egress.

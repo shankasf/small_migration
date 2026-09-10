@@ -8,6 +8,9 @@ anywhere without depending on ambient environment or a .env file.
 """
 
 import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tempfile
 
 os.environ.setdefault("OUTPUT_DIR", tempfile.mkdtemp(prefix="ai-service-tests-"))

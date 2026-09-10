@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Circini Migration Agent demo - application layer.
-  ECS Fargate cluster with Service Connect, task definitions mirroring
-  deploy/kubernetes/deployment.yaml (read-only rootfs, writable /tmp,
-  /var/cache/nginx and /data/outputs), the ALB with path routing and
-  sticky sessions for Socket.IO, and the on-deploy schema-sync task.
+  ECS Fargate cluster with Service Connect, task definitions with a
+  read-only rootfs and writable /tmp, /var/cache/nginx and /data/outputs,
+  the ALB with path routing and sticky sessions for Socket.IO, and the
+  on-deploy schema-sync task.
 
 Parameters:
   ImageTag:
@@ -17,6 +17,28 @@ Parameters:
   OpenAiModel:
     Type: String
     Default: gpt-5.6-sol
+  LlmProvider:
+    Type: String
+    Default: openai
+    AllowedValues: [openai, azure]
+  ApprovedLlmHost:
+    Type: String
+    Default: api.openai.com
+  ProcessingRegion:
+    Type: String
+    Default: unverified
+  ProviderApprovalReference:
+    Type: String
+    Default: ''
+  AzureEndpoint:
+    Type: String
+    Default: ''
+  AzureDeployment:
+    Type: String
+    Default: ''
+  AzureApiVersion:
+    Type: String
+    Default: '2024-10-21'
   CertificateArn:
     Type: String
     Default: ''
@@ -25,6 +47,7 @@ Parameters:
     Default: migration.callsphere.site
 
 Conditions:
+  UseAzure: !Equals [!Ref LlmProvider, azure]
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
 Resources:
@@ -32,7 +55,109 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /ecs/circini
-      RetentionInDays: 30
+
+  AuditArchive:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'circini-audit-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration: { Status: Enabled }
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+  AuditArchivePolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AuditArchive
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt AuditArchive.Arn, !Sub '${AuditArchive.Arn}/*']
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } }
+          - Effect: Deny
+            Principal: '*'
+            Action: s3:PutObjectLegalHold
+            Resource: !Sub '${AuditArchive.Arn}/*'
+            Condition:
+              StringEquals: { 's3:object-lock-legal-hold': 'OFF' }
+  SecurityAlerts:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: circini-security-alerts
+  CriticalSecurityMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref LogGroup
+      FilterPattern: '{ $.severity = "critical" }'
+      MetricTransformations:
+        - MetricNamespace: Circini/Security
+          MetricName: CriticalEvents
+          MetricValue: '1'
+          DefaultValue: 0
+  AuditFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref LogGroup
+      FilterPattern: '"AUDIT_FAILED"'
+      MetricTransformations:
+        - MetricNamespace: Circini/Security
+          MetricName: AuditFailures
+          MetricValue: '1'
+          DefaultValue: 0
+  CriticalSecurityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: circini-critical-security-events
+      Namespace: Circini/Security
+      MetricName: CriticalEvents
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref SecurityAlerts]
+  AuditFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: circini-audit-write-failure
+      Namespace: Circini/Security
+      MetricName: AuditFailures
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref SecurityAlerts]
+  BackendUnavailableAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: circini-backend-unavailable
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - { Name: LoadBalancer, Value: !GetAtt Alb.LoadBalancerFullName }
+        - { Name: TargetGroup, Value: !GetAtt BackendTargetGroup.TargetGroupFullName }
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref SecurityAlerts]
 
   Namespace:
     Type: AWS::ServiceDiscovery::PrivateDnsNamespace
@@ -80,6 +205,28 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
         - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  BackendTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: circini-backend-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: append-audit-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:PutObject', 's3:PutObjectLegalHold']
+                Resource: !Sub '${AuditArchive.Arn}/audit/*'
 
   # ---------------------------------------------------------------- ALB ----
   Alb:
@@ -231,7 +378,7 @@ Resources:
       Cpu: '512'
       Memory: '2048'
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
-      TaskRoleArn: !GetAtt TaskRole.Arn
+      TaskRoleArn: !GetAtt BackendTaskRole.Arn
       Volumes:
         - { Name: tmp }
       ContainerDefinitions:
@@ -259,6 +406,10 @@ Resources:
             - { SourceVolume: tmp, ContainerPath: /tmp }
           Environment:
             - { Name: PORT, Value: '3001' }
+            - { Name: AUDIT_ARCHIVE_BUCKET, Value: !Ref AuditArchive }
+            - { Name: AUDIT_ARCHIVE_REQUIRED, Value: 'true' }
+            - { Name: GITHUB_OAUTH_SCOPES, Value: 'read:user' }
+            - { Name: GITLAB_OAUTH_SCOPES, Value: 'read_user' }
             - { Name: AI_SERVICE_URL, Value: 'http://ai-service:8084' }
             - { Name: CORS_ORIGIN, Value: !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}'] }
             - { Name: PUBLIC_APP_URL, Value: !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}'] }
@@ -344,12 +495,26 @@ Resources:
           Environment:
             - { Name: PORT, Value: '8084' }
             - { Name: OPENAI_MODEL, Value: !Ref OpenAiModel }
+            - { Name: LLM_PROVIDER, Value: !Ref LlmProvider }
+            - { Name: APPROVED_LLM_HOST, Value: !Ref ApprovedLlmHost }
+            - { Name: PROCESSING_REGION, Value: !Ref ProcessingRegion }
+            - { Name: PROVIDER_APPROVAL_REFERENCE, Value: !Ref ProviderApprovalReference }
+            - { Name: AZURE_OPENAI_ENDPOINT, Value: !Ref AzureEndpoint }
+            - { Name: AZURE_OPENAI_DEPLOYMENT, Value: !Ref AzureDeployment }
+            - { Name: AZURE_OPENAI_API_VERSION, Value: !Ref AzureApiVersion }
+            - { Name: GUARDRAILS_ENABLED, Value: 'true' }
+            - { Name: PHI_MODE, Value: 'false' }
+            - { Name: VOICE_ENABLED, Value: 'false' }
+            - { Name: OPENAI_AGENTS_DISABLE_TRACING, Value: '1' }
             - { Name: OUTPUT_DIR, Value: /data/outputs }
             - { Name: BACKEND_URL, Value: 'http://backend:3001' }
             - { Name: OTEL_SERVICE_NAME, Value: circini-ai-service }
             - { Name: OTEL_EXPORTER_OTLP_ENDPOINT, Value: 'http://localhost:4318' }
           Secrets:
-            - { Name: OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretOpenAi }
+            - !If
+              - UseAzure
+              - { Name: AZURE_OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretAzureOpenAi }
+              - { Name: OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretOpenAi }
             - { Name: INTERNAL_API_KEY, ValueFrom: !ImportValue circini-SecretInternalApiKey }
           LogConfiguration:
             LogDriver: awslogs
@@ -509,6 +674,10 @@ Resources:
         Namespace: !GetAtt Namespace.Arn
 
 Outputs:
+  SecurityAlertTopicArn:
+    Value: !Ref SecurityAlerts
+  AuditArchiveBucket:
+    Value: !Ref AuditArchive
   AlbUrl:
     Value: !Sub 'http://${Alb.DNSName}'
   AlbDnsName:

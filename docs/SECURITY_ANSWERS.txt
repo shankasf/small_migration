@@ -1,0 +1,64 @@
+Security answers after implementation — 8 September 2026
+Scope: implemented source and local tests. These controls must be deployed and checked before describing them as live.
+
+1. What data leaves our environment?
+Screened messages, history and file contents reach the selected LLM. SDK tracing is disabled and model requests use store=false. AWS receives operational telemetry; enabled integrations exchange authentication data. Provider retention still requires separate verification. Evidence: llm.py, routes/migration.py, routes/integrations.ts.
+
+2. Can users upload PHI/PII?
+PHI is not an approved use. Prompts, uploads and filenames are screened before storage; detected health identifiers are rejected and recognised general PII is redacted. Pattern detection cannot guarantee identification of every sensitive narrative. Evidence: guardrails.py, routes/chat.ts, routes/files.ts.
+
+3. How is PHI prevented from reaching the LLM?
+The same policy runs before storage and again before model calls, covering current text, files, filenames and saved history. Blocking or screening failure stops the request. Voice and PHI mode are disabled. An independent PHI assessment is still required. Evidence: guardrails.py, llm.py.
+
+4. How are prompt injections detected?
+Rules inspect messages, attachments, filenames and history, including common Unicode and URL/HTML obfuscation. Restricted tools and read-only SQL validation limit impact. This remains heuristic detection, not guaranteed protection. Evidence: guardrails.py, validation.py.
+
+5. Where is data stored and processed?
+The AWS templates specify Sydney ECS and encrypted private RDS, with a private audit archive. External LLM residency is reported separately and remains unverified until provider evidence is supplied. Evidence: deploy/aws/*.yaml and security/configuration endpoint.
+
+6. How is Azure OpenAI configured?
+Azure requires an exact HTTPS resource host, key from Secrets Manager, deployment, region and approval reference. It is not enabled automatically. Private connectivity and provider retention agreements remain external prerequisites. Evidence: llm.py, config.py, deploy/aws/app.yaml.
+
+7. How are roles enforced?
+Server-side token, account-status, role and ownership checks protect HTTP and WebSocket access. Local role restrictions cannot be overwritten by old SSO claims. Evidence: middleware/auth.ts, services/realtime.ts.
+
+8. Can administrators see prompts?
+Yes: administrators can read screened stored conversations. Administrators and auditors can see filtered AI activity previews. Legacy records need a controlled review because this release does not silently rewrite historical data. Evidence: routes/sessions.ts, routes/admin.ts.
+
+9. What audit logs exist?
+Authentication, access denials, mutation intent, administration, guardrails and file actions are recorded with limited metadata. The AWS archive uses indefinite Object Lock legal holds and append-only runtime permissions. Audit failure blocks new mutations and emits an alarm signal. Archive operation still needs deployment verification. Evidence: services/audit.ts, index.ts, deploy/aws/app.yaml.
+
+10. How long is data retained?
+Chats, uploads, outputs, AI activity, usage and audit records are retained indefinitely with no automatic deletion. CloudWatch and the audit archive have no expiry. The separate RDS backup recovery window remains seven days and does not expire primary records. Evidence: services/retention.ts, aiLog.ts, deploy/aws/data.yaml.
+
+11. Can users access others' artefacts?
+Analysts are restricted to their own sessions, files and validation results. Administrators have explicit broader access. Socket joins and deliveries recheck ownership and account validity. Automated isolation tests pass. Evidence: services/realtime.ts, tests/security.test.ts.
+
+12. What happens when content is blocked?
+The API returns a reason, makes no model call and does not store the rejected submission. A scanner outage also prevents persistence. Security metadata is audited without saving the blocked payload. Evidence: aiService.ts, index.ts, tests/security.test.ts.
+
+13. How are outputs validated?
+SQL receives static Snowflake parsing, prohibited-statement/template checks and a content hash. Synthetic mapping fixtures can run in a restricted SQLite process. Outputs remain drafts until actual target Snowflake/dbt testing and human approval outside this application. Evidence: validation.py, sandbox_validation.py, files.ts.
+
+14. Can AI modify production?
+No production execution or deployment tools are exposed to the agent. It produces draft artefacts. Target database access and deployment approval remain separately controlled. Evidence: migration.py:create_tools.
+
+15. What security testing is complete?
+Local Python guardrail/validation tests and backend database-backed storage, ownership, socket, revocation and retention tests pass. Type/build checks and dependency audits are run separately. Independent penetration testing remains pending. Evidence: services/*/tests, .github/workflows/ci.yml.
+
+16. How are vulnerabilities managed?
+Daily scans and weekly dependency update automation are configured. Fixable and unfixed high/critical Node dependency findings are gated, and critical images are blocked. SECURITY.md proposes triage deadlines and an exception process; the accountable owner must adopt them. Evidence: ci.yml, deploy.yml, dependabot.yml, SECURITY.md.
+
+17. What compliance frameworks are supported?
+Design mappings cover NZ privacy/health requirements, HISO, NZISM, ISO 27001, NIST AI RMF, OWASP and HIPAA safeguards. Implementation does not establish certification, accreditation or legal compliance. Evidence: docs/ARCHITECTURE.md and SECURITY_HARDENING.md.
+
+18. What monitoring and alerting exists?
+Activity/security dashboards, telemetry and AWS alarms for critical security events, audit failures and backend availability are configured. A monitored SNS recipient, actual delivery test and telemetry arrival still need verification. Evidence: deploy/aws/app.yaml, telemetry.py, routes/admin.ts.
+
+19. How quickly can access be revoked?
+Application revocation disables the account, invalidates older tokens, disconnects sockets and requests cancellation of active AI runs. Every delivery rechecks access. IdP-only changes are not instantaneous; use the application revocation action during offboarding. Evidence: admin.ts, auth.ts, realtime.ts.
+
+20. Why a dedicated platform rather than a Copilot Agent?
+The benefit is the migration-specific workflow: document handling, versioned SQL drafts, custom validation and per-user controls. A dedicated platform is not inherently more secure. Compare these workflow requirements and operating costs with Copilot Studio's authentication and data-policy capabilities before deciding.
+
+Outstanding evidence and release decisions: docs/SECURITY_HARDENING.md.

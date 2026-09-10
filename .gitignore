@@ -4,6 +4,15 @@
 .env.local
 .env.*.local
 
+# Credentials must never be committed or left on disk - every secret the app
+# uses is stored in AWS Secrets Manager under circini/* and injected by ECS.
+*.pem
+*.key
+*.p12
+*.pfx
+*client_secret*
+*-private-key*
+
 # Python
 __pycache__/
 *.py[cod]

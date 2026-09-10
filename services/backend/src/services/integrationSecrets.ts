@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
 
-function encryptionKey(): Buffer {
-  const configured = process.env.INTEGRATION_ENCRYPTION_KEY?.trim();
+function encryptionKey(value = process.env.INTEGRATION_ENCRYPTION_KEY): Buffer {
+  const configured = value?.trim();
   if (!configured) {
     throw new Error('Integration credential encryption is not configured');
   }
@@ -39,7 +39,7 @@ export function encryptIntegrationSecrets(value: Record<string, unknown>): strin
   return ['v1', iv.toString('base64url'), tag.toString('base64url'), ciphertext.toString('base64url')].join('.');
 }
 
-export function decryptIntegrationSecrets(value: string): Record<string, unknown> {
+function decryptWithKey(value: string, key: Buffer): Record<string, unknown> {
   const [version, ivText, tagText, ciphertextText] = value.split('.');
   if (version !== 'v1' || !ivText || !tagText || !ciphertextText) {
     throw new Error('Unsupported encrypted integration credential');
@@ -50,7 +50,7 @@ export function decryptIntegrationSecrets(value: string): Record<string, unknown
   }
   const decipher = createDecipheriv(
     'aes-256-gcm',
-    encryptionKey(),
+    key,
     Buffer.from(ivText, 'base64url'),
     { authTagLength: 16 }
   );
@@ -60,4 +60,13 @@ export function decryptIntegrationSecrets(value: string): Record<string, unknown
     decipher.final(),
   ]).toString('utf8');
   return JSON.parse(plaintext) as Record<string, unknown>;
+}
+
+
+export function decryptIntegrationSecrets(value: string): Record<string, unknown> {
+  try { return decryptWithKey(value, encryptionKey()); }
+  catch {
+    if (!process.env.INTEGRATION_ENCRYPTION_KEY_PREVIOUS) throw new Error('Integration credential could not be decrypted');
+    return decryptWithKey(value, encryptionKey(process.env.INTEGRATION_ENCRYPTION_KEY_PREVIOUS));
+  }
 }

@@ -15,6 +15,8 @@ model User {
   entraOid          String?       @unique
   role              String        @default("analyst") // admin | analyst | auditor
   status            String        @default("active") // active | restricted | disabled
+  tokensValidAfter  DateTime?
+  roleManagedLocally Boolean       @default(false)
   dailyTokenLimit   Int?
   monthlyTokenLimit Int?
   lastLoginAt       DateTime?
@@ -26,6 +28,25 @@ model User {
   aiActivity        AiActivityLog[]
   integrations      Integration[]
   integrationStates IntegrationOAuthState[]
+  apiKeys           ApiKey[]
+}
+
+// Admin-issued credential for calling the REST API from scripts. A key acts as
+// the admin who created it, so role, status and access revocation are
+// re-checked on every request. Only a SHA-256 digest of the key is stored.
+model ApiKey {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  prefix     String    // leading characters of the key, shown to tell keys apart
+  keyHash    String    @unique
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
 }
 
 // Per-user external system connection. Secret material is encrypted by the
@@ -182,7 +203,8 @@ model GeneratedOutput {
   messageId String?  // null on rows created before message linking existed
   message   Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
   filename  String
-  filepath  String   // Path on PersistentVolume
+  validation Json?
+  filepath  String   // Logical output reference; content is held in PostgreSQL
   fileType  String   // "sql" | "txt"
   content   String   @db.Text
   createdAt DateTime @default(now())

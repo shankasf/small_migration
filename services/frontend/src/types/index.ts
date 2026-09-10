@@ -92,6 +92,20 @@ export interface Integration {
   lastVerifiedAt: string | null;
 }
 
+export type ApiKeyStatus = 'active' | 'expired' | 'revoked' | 'inactive';
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  status: ApiKeyStatus;
+  owner: { id: string; email: string; name: string | null };
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
 export interface AdminUser extends User {
   usage: {
     totalTokens: number;

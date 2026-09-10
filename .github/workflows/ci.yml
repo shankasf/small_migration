@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  schedule:
+    - cron: "23 4 * * *"
   pull_request:
   push:
     branches: [main]
@@ -42,6 +44,32 @@ jobs:
         run: npm run build
       - name: GitHub integration security tests
         run: npx tsx --test tests/github.test.ts
+
+  backend-security:
+    name: Backend security integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-test-password
+          POSTGRES_DB: migration_security_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22' }
+      - run: npm ci
+        working-directory: services/backend
+      - run: npx prisma generate
+        working-directory: services/backend
+      - name: Exercise storage, isolation, revocation and retention boundaries
+        run: scripts/test-security.sh
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:synthetic-test-password@127.0.0.1:5432/migration_security_test
 
   frontend:
     name: Frontend — typecheck and lint
@@ -112,7 +140,7 @@ jobs:
           scan-ref: services/backend
           scanners: vuln
           severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          ignore-unfixed: false
           exit-code: '1'
 
       - name: Trivy — frontend dependencies
@@ -122,7 +150,7 @@ jobs:
           scan-ref: services/frontend
           scanners: vuln
           severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          ignore-unfixed: false
           exit-code: '1'
 
       - name: pip-audit — ai-service
@@ -173,35 +201,51 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   manifest-check:
-    name: Kubernetes manifest policy
+    name: CloudFormation template policy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # These encode deployment invariants that a manifest edit must not undo.
-      - name: No hostPath mounts
+      # These encode deployment invariants that a template edit must not undo.
+      # Ported from the K3s manifest gates when K3s was retired (2026-09-10).
+      - name: No host bind mounts
         run: |
-          if grep -n 'hostPath' deploy/kubernetes/*.yaml; then
-            echo "::error::hostPath mounts reintroduce host filesystem exposure — not permitted"
+          # Fargate has no hostPath, but a Volume with SourcePath is the same
+          # host-filesystem exposure on EC2 launch type.
+          if grep -nE '^\s*SourcePath:' deploy/aws/*.yaml; then
+            echo "::error::host bind mounts reintroduce host filesystem exposure — not permitted"
             exit 1
           fi
-          echo "OK: no hostPath mounts"
+          echo "OK: no host bind mounts"
 
       - name: No :latest image tags
         run: |
-          if grep -nE 'image:.*:latest' deploy/kubernetes/*.yaml; then
+          # The ADOT collector is a vendor-published sidecar still on :latest.
+          # TODO: pin it to a digest, then delete this exemption.
+          if grep -nE '^\s*Image:.*:latest' deploy/aws/*.yaml \
+               | grep -v 'aws-observability/aws-otel-collector'; then
             echo "::error::images must be pinned to an immutable tag, never :latest"
             exit 1
           fi
-          echo "OK: no :latest tags"
+          echo "OK: no :latest tags (ADOT sidecar exempted)"
 
-      - name: No hardcoded secrets in manifests
+      - name: No hardcoded secrets in templates
         run: |
-          if grep -nE '^\s*(value|password|token):\s*["'"'"']?(sk-|AKIA|postgres(ql)?://[^ ]*:[^ ]*@)' deploy/kubernetes/*.yaml; then
-            echo "::error::secret literal found in a manifest — use secretKeyRef"
+          if grep -nE '^\s*(Value|Default|SecretString):\s*["'"'"']?(sk-|AKIA|postgres(ql)?://[^ ]*:[^ ]*@)' deploy/aws/*.yaml; then
+            echo "::error::secret literal found in a template — use Secrets/ValueFrom with Secrets Manager"
             exit 1
           fi
           echo "OK: no secret literals"
+
+      - name: Credentials are injected from Secrets Manager
+        run: |
+          # Every credential-shaped environment variable must arrive through
+          # Secrets: ValueFrom, never as a plaintext Environment entry.
+          if grep -nE '^\s*-\s*\{\s*Name:\s*[A-Z_]*(SECRET|PASSWORD|API_KEY)[A-Z_]*,\s*Value:' deploy/aws/*.yaml; then
+            echo "::error::credential passed as a plaintext Environment value — move it to Secrets/ValueFrom"
+            exit 1
+          fi
+          echo "OK: credentials come from Secrets Manager"
 
       - name: No --reload in production Dockerfiles
         run: |

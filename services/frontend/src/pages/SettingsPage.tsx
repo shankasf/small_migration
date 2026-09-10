@@ -15,12 +15,13 @@ import {
   X,
 } from 'lucide-react';
 import ThemeToggle from '../components/ThemeToggle';
+import ApiKeysSettings from '../components/ApiKeysSettings';
 import GitHubRepositories from '../components/GitHubRepositories';
 import { Integration, IntegrationProvider, User } from '../types';
 import * as api from '../services/api';
 import { INTEGRATION_PROVIDERS } from '../integrationCatalog';
 
-type Tab = 'account' | 'integrations';
+type Tab = 'account' | 'integrations' | 'api-keys';
 
 interface SettingsPageProps {
   currentUser: User;
@@ -69,7 +70,10 @@ function FieldLabel({ children, optional = false }: { children: React.ReactNode;
 export default function SettingsPage({ currentUser, integrations, isLoading, onRefresh }: SettingsPageProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab');
-  const tab: Tab = requestedTab === 'integrations' ? 'integrations' : 'account';
+  const canManageApiKeys = currentUser.role === 'admin';
+  const tab: Tab = requestedTab === 'integrations'
+    ? 'integrations'
+    : requestedTab === 'api-keys' && canManageApiKeys ? 'api-keys' : 'account';
   const requestedProvider = searchParams.get('connect') as IntegrationProvider | null;
   const selectedProvider = INTEGRATION_PROVIDERS.some(item => item.id === requestedProvider) ? requestedProvider : null;
   const [busy, setBusy] = useState<IntegrationProvider | null>(null);
@@ -97,7 +101,7 @@ export default function SettingsPage({ currentUser, integrations, isLoading, onR
 
   const chooseTab = (next: Tab) => {
     setError(null);
-    setSearchParams(next === 'integrations' ? { tab: 'integrations' } : {});
+    setSearchParams(next === 'account' ? {} : { tab: next });
   };
 
   const closePanel = () => {
@@ -172,7 +176,7 @@ export default function SettingsPage({ currentUser, integrations, isLoading, onR
   const selectedConnection = selectedProvider ? byProvider.get(selectedProvider) : undefined;
 
   return (
-    <div className="flex min-h-0 flex-1 bg-obsidian">
+    <div className="flex min-h-0 min-w-0 flex-1 bg-obsidian">
       <aside className="hidden w-60 shrink-0 border-r border-hairline bg-panel/55 p-4 md:block">
         <div className="px-2 pb-5 pt-2">
           <p className="eyebrow mb-2">Workspace</p>
@@ -186,14 +190,20 @@ export default function SettingsPage({ currentUser, integrations, isLoading, onR
             <PlugZap className="h-4 w-4" /> Integrations
             <span className="ml-auto font-mono text-[10px] text-faint">{integrations.filter(item => item.status === 'connected').length}</span>
           </button>
+          {canManageApiKeys && (
+            <button onClick={() => chooseTab('api-keys')} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${tab === 'api-keys' ? 'border border-hairline bg-elevated text-ink' : 'border border-transparent text-muted hover:bg-elevated/60 hover:text-ink'}`}>
+              <KeyRound className="h-4 w-4" /> API keys
+            </button>
+          )}
         </nav>
       </aside>
 
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-5xl px-4 py-7 sm:px-7 lg:px-10 lg:py-10">
-          <div className="mb-6 flex gap-2 md:hidden">
+          <div className="mb-6 flex flex-wrap gap-2 md:hidden">
             <button onClick={() => chooseTab('account')} className={tab === 'account' ? 'btn-subtle btn-sm' : 'btn-ghost btn-sm'}>Account</button>
             <button onClick={() => chooseTab('integrations')} className={tab === 'integrations' ? 'btn-subtle btn-sm' : 'btn-ghost btn-sm'}>Integrations</button>
+            {canManageApiKeys && <button onClick={() => chooseTab('api-keys')} className={tab === 'api-keys' ? 'btn-subtle btn-sm' : 'btn-ghost btn-sm'}>API keys</button>}
           </div>
 
           {(notice || callbackNotice) && (
@@ -231,6 +241,8 @@ export default function SettingsPage({ currentUser, integrations, isLoading, onR
                 </div>
               </div>
             </section>
+          ) : tab === 'api-keys' ? (
+            <ApiKeysSettings />
           ) : (
             <section className="animate-fade-up">
               <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">

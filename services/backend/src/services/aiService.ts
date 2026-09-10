@@ -16,6 +16,7 @@ interface GeneratedFile {
   name: string;
   path: string;
   content?: string;
+  validation?: Record<string, unknown>;
 }
 
 interface ChatResponse {
@@ -60,7 +61,7 @@ export async function sendToAIService(request: ChatRequest): Promise<ChatRespons
     return response.data;
   } catch (error) {
     if (axios.isAxiosError(error)) {
-      console.error('AI Service error:', error.response?.data || error.message);
+      console.error('AI Service error:', error.response?.status || 'unavailable');
       throw new Error(error.response?.data?.detail || 'AI service unavailable');
     }
     throw error;
@@ -76,4 +77,54 @@ export async function checkAIServiceHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+
+export interface ScreenedPayload {
+  message: string;
+  files: Record<string, string>;
+  history: Array<{role: string; content: string}>;
+  guardrail: NonNullable<ChatResponse['guardrail']>;
+  error?: string;
+}
+
+export class PolicyError extends Error {
+  constructor(public readonly result: ScreenedPayload) { super('Content blocked by policy'); }
+}
+
+export async function screenPayload(message = '', files?: Record<string, string>, history?: Array<{role: string; content: string}>): Promise<ScreenedPayload> {
+  if (!process.env.INTERNAL_API_KEY) throw new Error('Content screening unavailable');
+  const { data } = await axios.post<ScreenedPayload>(`${AI_SERVICE_URL}/ai/policy/check`, { message, files, history }, {
+    headers: { 'x-internal-key': process.env.INTERNAL_API_KEY }, timeout: 30000,
+  });
+  if (!data.guardrail || !['allow', 'redacted', 'blocked'].includes(data.guardrail.decision)) throw new Error('Invalid screening response');
+  if (data.guardrail.decision === 'blocked') throw new PolicyError(data);
+  return data;
+}
+
+export async function securityStatus() {
+  const { data } = await axios.get(`${AI_SERVICE_URL}/ai/security/status`, {
+    headers: { 'x-internal-key': process.env.INTERNAL_API_KEY }, timeout: 5000,
+  });
+  return data;
+}
+
+export async function resetAISession(id: string) {
+  await axios.post(`${AI_SERVICE_URL}/ai/reset/${encodeURIComponent(id)}`, {}, {
+    headers: { 'x-internal-key': process.env.INTERNAL_API_KEY }, timeout: 10000,
+  });
+}
+
+export async function testOutput(content: string, fixture: unknown) {
+  const { data } = await axios.post(`${AI_SERVICE_URL}/ai/validation/test`, {content, fixture}, {
+    headers: {'x-internal-key': process.env.INTERNAL_API_KEY}, timeout: 15000,
+  });
+  return data;
+}
+
+
+export async function cancelUserRuns(userId: string): Promise<void> {
+  await axios.post(`${AI_SERVICE_URL}/ai/cancel/user/${encodeURIComponent(userId)}`, {}, {
+    headers: {'x-internal-key': process.env.INTERNAL_API_KEY}, timeout: 10000,
+  });
 }
