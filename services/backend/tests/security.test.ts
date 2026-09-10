@@ -51,6 +51,7 @@ before(async () => {
   app.use('/api/sessions', (await import('../src/routes/sessions.js')).default);
   app.use('/api/stt', (await import('../src/routes/stt.js')).default);
   app.use('/api/admin', (await import('../src/routes/admin.js')).default);
+  app.use('/api/api-keys', (await import('../src/routes/apiKeys.js')).default);
   const {PolicyError} = await import('../src/services/aiService.js');
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(err instanceof PolicyError ? 422 : 503).json({error: 'blocked'});
@@ -139,6 +140,57 @@ test('retention is indefinite even if legacy expiry flags are present', async ()
   assert.ok(await prisma.session.findUnique({where:{id:stale.id}}));
   delete process.env.RETENTION_DELETE_ENABLED;
   delete process.env.AI_LOG_RETENTION_DAYS;
+});
+async function createApiKey(token: string) {
+  const res = await request('/api/api-keys', token, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:'ci', expiresInDays:30})});
+  return {status: res.status, body: res.status === 201 ? await res.json() as {secret: string; key: {id: string; status: string}} : null};
+}
+test('only admins create API keys, only from a signed-in session, and only a digest is stored', async () => {
+  assert.equal((await createApiKey(ownerToken)).status, 403);
+  assert.equal((await createApiKey(await issueToken(auditor))).status, 403);
+  const created = await createApiKey(await issueToken(admin));
+  assert.equal(created.status, 201);
+  const {secret, key} = created.body!;
+  assert.match(secret, /^cmk_[A-Za-z0-9_-]{43}$/);
+  assert.equal(key.status, 'active');
+  assert.ok(!JSON.stringify(await prisma.apiKey.findUniqueOrThrow({where:{id:key.id}})).includes(secret));
+  assert.equal((await createApiKey(secret)).status, 403);
+  assert.equal((await request('/api/api-keys', secret)).status, 403);
+});
+test('an API key acts as its admin over HTTP and sockets until revoked or expired', async () => {
+  const adminToken = await issueToken(admin);
+  const {secret, key} = (await createApiKey(adminToken)).body!;
+  assert.equal((await request('/api/admin/users', secret)).status, 200);
+  assert.equal((await request(`/api/sessions/${sessionId}`, secret)).status, 200);
+  const s = await socket(secret);
+  assert.equal((await s.timeout(2000).emitWithAck('join-admin-logs')).ok, true);
+  assert.equal((await request(`/api/api-keys/${key.id}`, adminToken, {method:'DELETE'})).status, 204);
+  assert.equal((await request('/api/sessions', secret)).status, 401);
+  const expiring = (await createApiKey(adminToken)).body!;
+  await prisma.apiKey.update({where:{id:expiring.key.id}, data:{expiresAt:new Date(Date.now() - 1000)}});
+  assert.equal((await request('/api/sessions', expiring.secret)).status, 401);
+});
+test('API keys stop working when their admin is demoted or has access revoked', async () => {
+  const adminToken = await issueToken(admin);
+  for (const change of ['demote', 'revoke']) {
+    const holder = await prisma.user.create({data:{email:`${change}-admin@example.test`, role:'admin'}});
+    const {secret} = (await createApiKey(await issueToken(holder))).body!;
+    assert.equal((await request('/api/sessions', secret)).status, 200);
+    if (change === 'demote') await prisma.user.update({where:{id:holder.id}, data:{role:'analyst'}});
+    else assert.equal((await request(`/api/admin/users/${holder.id}/revoke`, adminToken, {method:'POST'})).status, 200);
+    assert.equal((await request('/api/sessions', secret)).status, 401);
+  }
+});
+test('saving a user without changing role or status keeps their sessions and API keys', async () => {
+  const adminToken = await issueToken(admin);
+  const holder = await prisma.user.create({data:{email:'edited-admin@example.test', role:'admin'}});
+  const holderToken = await issueToken(holder);
+  const {secret} = (await createApiKey(holderToken)).body!;
+  const save = (body: object) => request(`/api/admin/users/${holder.id}`, adminToken, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  assert.equal((await save({role:'admin', status:'active', dailyTokenLimit:5000})).status, 200);
+  for (const credential of [holderToken, secret]) assert.equal((await request('/api/sessions', credential)).status, 200);
+  assert.equal((await save({role:'admin', status:'restricted', dailyTokenLimit:5000})).status, 200);
+  for (const credential of [holderToken, secret]) assert.equal((await request('/api/sessions', credential)).status, 401);
 });
 
 after(async () => {
