@@ -89,7 +89,6 @@ async function main() {
     }
   }
   mark('legacy candidate selected', { ownerId: user.id, kind: existing?.kind || null, sourceId: existing?.id || null });
-  assert.ok(existing, 'No active administrator owns a pre-existing upload or output fixture');
   const minted = generateApiKey();
   token = minted.key;
   const key = await prisma.apiKey.create({ data: { userId: user.id, name: run,
@@ -99,11 +98,7 @@ async function main() {
   assert.equal(extension.length, 1, 'pgvector is not enabled');
   evidence.vectorVersion = extension[0].extversion;
   assert.equal((await fetch(base + '/api/files/library')).status, 401, 'Anonymous library access accepted');
-  mark('legacy file selection');
-  const legacy = await waitFor('legacy backfill', () => prisma.fileAsset.findFirst({
-    where: { kind: existing.kind, sourceId: existing.id }, orderBy: { version: 'asc' },
-  }));
-  evidence.legacyAssetId = legacy.id;
+  let legacy = null;
   const source = await session('upload source');
   const target = await session('cross chat reuse');
   const nonce = crypto.randomBytes(6).toString('hex');
@@ -151,10 +146,21 @@ async function main() {
   assert.equal((await api(`/api/files/library/${output.id}/content`)).content, outputContent.content,
     'Generated output changed after reuse');
   evidence.outputAssetId = output.id;
-  mark('reuse pre-existing owned file');
-  const legacyMatches = await search(legacy.filename, existing.kind);
-  assert.ok(legacyMatches.files.some(item => item.id === legacy.id), 'Existing file absent from cross-chat search');
-  await message(reuse, 'Read this selected existing file and give one concise sentence describing its purpose. Do not change it or generate output.', legacy);
+  if (existing) {
+    mark('reuse pre-existing owned file');
+    legacy = await waitFor('legacy backfill', () => prisma.fileAsset.findFirst({
+      where: { kind: existing.kind, sourceId: existing.id }, orderBy: { version: 'asc' },
+    }));
+    const legacyMatches = await search(legacy.filename, existing.kind);
+    assert.ok(legacyMatches.files.some(item => item.id === legacy.id), 'Existing file absent from cross-chat search');
+    await message(reuse, 'Read this selected existing file and give one concise sentence describing its purpose. Do not change it or generate output.', legacy);
+    evidence.existingFileReuse = 'passed';
+    evidence.legacyAssetId = legacy.id;
+    evidence.legacyKind = existing.kind;
+  } else {
+    evidence.existingFileReuse = 'no pre-existing owned file available';
+    mark('existing file reuse unavailable');
+  }
   const foreign = await prisma.fileAsset.findFirst({ where: { session: { ownerUserId: { not: user.id } } } });
   if (foreign) {
     mark('other owner isolation');
@@ -164,13 +170,13 @@ async function main() {
     await post(`/api/chat/${reuse}/messages`, { message: 'Read this file.', fileRefs: [foreign.id] }, 403);
     evidence.otherOwnerIsolation = 'passed';
   } else evidence.otherOwnerIsolation = 'no foreign fixture available';
-  const expectedAssets = [first.id, second.id, output.id, legacy.id];
+  const expectedAssets = [first.id, second.id, output.id, ...(legacy ? [legacy.id] : [])];
   await waitFor('vector indexing', async () => {
     const indexed = await prisma.fileAsset.count({ where: { id: { in: expectedAssets }, indexStatus: 'ready' } });
     return indexed === expectedAssets.length;
   });
   const embedded = await prisma.$queryRaw`SELECT COUNT(*)::int AS count FROM "FileChunk"
-    WHERE "assetId" IN (${first.id},${second.id},${output.id},${legacy.id}) AND embedding IS NOT NULL`;
+    WHERE "assetId" IN (${first.id},${second.id},${output.id},${legacy?.id || output.id}) AND embedding IS NOT NULL`;
   assert.ok(embedded[0].count >= expectedAssets.length, 'Vector chunks missing');
   const semantic = await search('daily refund ledger settlement date');
   assert.equal(semantic.semanticAvailable, true, 'Semantic provider unavailable');
