@@ -16,6 +16,7 @@ import filesRouter from './routes/files.js';
 import sttRouter from './routes/stt.js';
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
+import apiKeysRouter from './routes/apiKeys.js';
 import { integrationsRouter, integrationCallbackRouter } from './routes/integrations.js';
 import { authenticate, requireInternalKey, seedAdminUser } from './middleware/auth.js';
 import {
@@ -135,7 +136,8 @@ app.use(authenticate(prisma));
 app.use(async (req: import('./middleware/auth.js').AuthedRequest, res, next) => {
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return next();
   try {
-    await recordAudit(prisma, {userId: req.user?.id, action: 'request.mutation', resource: req.path});
+    await recordAudit(prisma, {userId: req.user?.id, action: 'request.mutation', resource: req.path,
+      detail: req.apiKeyId ? JSON.stringify({type: 'api_key'}) : null});
     next();
   } catch { res.status(503).json({error: 'Audit service unavailable. No change was started.'}); }
 });
@@ -143,6 +145,7 @@ app.use(async (req: import('./middleware/auth.js').AuthedRequest, res, next) => 
 // Routes
 app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/api-keys', apiKeysRouter);
 app.use('/api/sessions', sessionsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/files', filesRouter);

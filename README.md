@@ -90,7 +90,7 @@ straight to the handler; any other failure is denied and audited.
 | # | Gate | What it checks | On failure |
 |---|---|---|---|
 | 1 | **Public path** | Exact-match allowlist only — `/api/health`, `/api/auth/login`. No prefix matching, so nothing falls through by resembling a public route. | — (passes to handler) |
-| 2 | **Valid token** | `local`: HS256 JWT, issuer `circini-backend` (startup fails if the secret is under 32 chars). `entra`: verified against the tenant JWKS, with app-roles / AD groups mapped to a role. | `401` |
+| 2 | **Valid token** | `local`: HS256 JWT, issuer `circini-backend` (startup fails if the secret is under 32 chars). `entra`: verified against the tenant JWKS, with app-roles / AD groups mapped to a role. An admin-issued [API key](#api-keys) (`cmk_…`) is accepted in every mode. | `401` |
 | 3 | **Account enabled** | `disabled` is refused outright; `restricted` keeps read access but loses writes. | `403` + audit |
 | 4 | **Role allows route** | `requireRole(...)` gates admin and auditor routes; `requireWriteAccess` blocks auditors and restricted accounts from any write. | `403` + audit |
 
@@ -110,11 +110,29 @@ inherit an auth bypass.
 | Own chat sessions, upload, generate | ✅ | ✅ | ❌ |
 | See **all** sessions | ✅ | own only | ❌ |
 | Manage users, set token budgets | ✅ | ❌ | ❌ |
+| Create and revoke API keys | ✅ | ❌ | ❌ |
 | Read audit log and security summary | ✅ | ❌ | ✅ |
 
 A `restricted` status revokes write access without disabling the account;
 `disabled` blocks sign-in outright. Sessions created before auth existed have no
 owner and are admin-only.
+
+### API keys
+
+Admins create keys under **Settings → API keys** for scripts and other systems.
+The key is shown once; afterwards only its SHA-256 digest and a short prefix are
+kept. Send it as a bearer token:
+
+```bash
+curl -H "Authorization: Bearer $CIRCINI_API_KEY" https://migration.callsphere.site/api/sessions
+```
+
+A key acts as the admin who created it on every REST and WebSocket route. It
+expires after 30, 90, 180 or 365 days and stops working as soon as it is
+revoked, or its admin is demoted, disabled or has their access revoked — that
+includes any role or status save in the admin portal, which records a token
+cutoff. A request made with a key cannot list, create or revoke keys, and every
+mutation it makes is audited with `type: api_key`.
 
 ### Chat request lifecycle
 
@@ -532,10 +550,14 @@ cd services/frontend && npm run dev
 | GET | /api/admin/usage/summary | `admin` | Token usage per user |
 | GET | /api/admin/audit | `admin`, `auditor` | Audit event log |
 | GET | /api/admin/security/summary | `admin`, `auditor` | Guardrail and denial summary |
+| GET | /api/api-keys | `admin` (session) | List every API key and its status |
+| POST | /api/api-keys | `admin` (session) | Create a key — the response is the only time it is shown |
+| DELETE | /api/api-keys/:id | `admin` (session) | Revoke a key |
 | POST | /api/logs/:sessionId | `x-internal-key` | Service-to-service log relay |
 
 `user (write)` denies the read-only `auditor` role and any `restricted` account.
 `owner/admin` means analysts reach only their own sessions.
+`(session)` means the route refuses a request authenticated with an API key.
 
 ### AI Service (port 8084)
 

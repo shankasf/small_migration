@@ -3,11 +3,14 @@ import { timingSafeEqual } from 'node:crypto';
 import { PrismaClient, User } from '@prisma/client';
 import * as jose from 'jose';
 import { recordDeniedAudit as recordAudit } from '../services/audit.js';
+import { apiKeyStatus, hashApiKey, isApiKey } from '../services/apiKeys.js';
 
 export type Role = 'admin' | 'analyst' | 'auditor';
 
 export interface AuthedRequest extends Request {
   user?: User;
+  /** Set when the caller authenticated with an API key instead of a session token. */
+  apiKeyId?: string;
 }
 
 const AUTH_MODE = (process.env.AUTH_MODE || 'local').toLowerCase(); // local | entra | oidc
@@ -220,12 +223,33 @@ export async function resolveUserFromToken(
   prisma: PrismaClient,
   token: string
 ): Promise<User | null> {
-  if (AUTH_MODE === 'entra') return await verifyEntraToken(prisma, token);
-  if (AUTH_MODE === 'oidc') return await verifyOidcToken(prisma, token);
+  return (await resolveCredential(prisma, token))?.user ?? null;
+}
+
+/** API keys are accepted in every auth mode; any other bearer value is a session token. */
+async function resolveCredential(
+  prisma: PrismaClient,
+  token: string
+): Promise<{ user: User; apiKeyId?: string } | null> {
+  if (isApiKey(token)) return await resolveApiKey(prisma, token);
+  if (AUTH_MODE === 'entra' || AUTH_MODE === 'oidc') {
+    const user = AUTH_MODE === 'entra' ? await verifyEntraToken(prisma, token) : await verifyOidcToken(prisma, token);
+    return user ? { user } : null;
+  }
   const decoded = await verifyLocalToken(token);
   if (!decoded) return null;
   const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
-  return user && tokenIsCurrent(user, decoded.issuedAt) ? user : null;
+  return user && tokenIsCurrent(user, decoded.issuedAt) ? { user } : null;
+}
+
+async function resolveApiKey(prisma: PrismaClient, token: string): Promise<{ user: User; apiKeyId: string } | null> {
+  const key = await prisma.apiKey.findUnique({ where: { keyHash: hashApiKey(token) }, include: { user: true } });
+  if (!key || apiKeyStatus(key, key.user) !== 'active') return null;
+  // Record use at most once a minute so a busy script doesn't write on every call.
+  if (!key.lastUsedAt || Date.now() - key.lastUsedAt.getTime() > 60_000) {
+    void prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
+  }
+  return { user: key.user, apiKeyId: key.id };
 }
 
 export function authenticate(prisma: PrismaClient) {
@@ -242,11 +266,12 @@ export function authenticate(prisma: PrismaClient) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    const user = await resolveUserFromToken(prisma, token).catch(() => null);
+    const credential = await resolveCredential(prisma, token).catch(() => null);
 
-    if (!user) {
+    if (!credential) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
+    const { user } = credential;
     if (user.status === 'disabled') {
       await recordAudit(prisma, {
         userId: user.id,
@@ -260,8 +285,28 @@ export function authenticate(prisma: PrismaClient) {
     }
 
     req.user = user;
+    req.apiKeyId = credential.apiKeyId;
     next();
   };
+}
+
+/**
+ * Key management needs a signed-in session. A request made with an API key is
+ * refused, so a leaked key cannot list keys or mint replacements for itself.
+ */
+export async function requireSessionToken(req: AuthedRequest, res: Response, next: NextFunction) {
+  if (!req.apiKeyId) return next();
+  const prisma: PrismaClient = req.app.locals.prisma;
+  await recordAudit(prisma, {
+    userId: req.user?.id,
+    action: 'authz.denied',
+    resource: req.path,
+    decision: 'deny',
+    severity: 'warning',
+    detail: JSON.stringify({ reason: 'API keys cannot manage API keys' }),
+    ip: req.ip,
+  });
+  return res.status(403).json({ error: 'Sign in to the app to manage API keys' });
 }
 
 /** Role gate. Usage: router.get('/x', requireRole('admin', 'auditor'), handler) */

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary, Integration, IntegrationProvider } from '../types';
+import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary, Integration, IntegrationProvider, ApiKey } from '../types';
 import { getToken, clearAuth, refreshIdToken } from './auth';
 
 const API_BASE = '/api';
@@ -194,6 +194,22 @@ export async function connectDbt(data: {
 
 export async function disconnectIntegration(provider: IntegrationProvider): Promise<void> {
   await api.delete(`/integrations/${provider}`);
+}
+
+// ---------- API keys (admin only) ----------
+
+export async function getApiKeys(): Promise<{ keys: ApiKey[]; expiryDays: number[] }> {
+  const response = await api.get('/api-keys');
+  return response.data;
+}
+
+export async function createApiKey(data: { name: string; expiresInDays: number }): Promise<{ key: ApiKey; secret: string }> {
+  const response = await api.post('/api-keys', data);
+  return response.data;
+}
+
+export async function revokeApiKey(id: string): Promise<void> {
+  await api.delete(`/api-keys/${id}`);
 }
 
 // ---------- Admin portal ----------
