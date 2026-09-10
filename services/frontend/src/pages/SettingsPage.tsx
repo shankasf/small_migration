@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import ThemeToggle from '../components/ThemeToggle';
 import ApiKeysSettings from '../components/ApiKeysSettings';
+import GitHubRepositories from '../components/GitHubRepositories';
 import { Integration, IntegrationProvider, User } from '../types';
 import * as api from '../services/api';
 import { INTEGRATION_PROVIDERS } from '../integrationCatalog';
@@ -303,7 +304,7 @@ export default function SettingsPage({ currentUser, integrations, isLoading, onR
             {displayError && <div className="mb-5 rounded-lg border border-danger/25 bg-danger/10 px-3.5 py-3 text-sm text-danger">{displayError}</div>}
             {!selectedConnection?.configured && selectedConnection?.status !== 'connected' && (
               <div className="mb-5 rounded-lg border border-warn/25 bg-warn/10 px-3.5 py-3 text-sm text-warn">
-                An administrator must finish the secure {selectedInfo.name} application setup before users can connect.
+                {selectedProvider === 'github' ? 'GitHub connection setup is not complete yet. This affects all accounts; your administrator role does not need changing.' : `An administrator must finish the secure ${selectedInfo.name} application setup before users can connect.`}
               </div>
             )}
 
@@ -316,6 +317,7 @@ export default function SettingsPage({ currentUser, integrations, isLoading, onR
                     <div><dt className="text-xs text-faint">Last verified</dt><dd className="mt-1 text-ink">{relativeDate(selectedConnection.lastVerifiedAt)}</dd></div>
                   </dl>
                 </div>
+                {selectedProvider === 'github' && <GitHubRepositories onSaved={onRefresh} onReconnect={() => connectOAuth('github')} />}
                 <div className="mt-6 flex justify-end">
                   <button onClick={() => disconnect(selectedProvider)} disabled={busy === selectedProvider} className="btn-danger">
                     {busy === selectedProvider ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unplug className="h-4 w-4" />} Disconnect

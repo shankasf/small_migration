@@ -1,0 +1,35 @@
+name: Production release status
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+    steps:
+      - name: Configure read access through deployment identity
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Inspect stack and service rollout status
+        run: |
+          set -euo pipefail
+          aws cloudformation describe-stacks --stack-name circini-app \
+            --query 'Stacks[].{Status:StackStatus,Updated:LastUpdatedTime}'
+          aws cloudformation describe-stack-events --stack-name circini-app --max-items 25 \
+            --query 'StackEvents[].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}'
+          aws ecs describe-services --cluster circini-demo --services backend frontend ai-service \
+            --query 'services[].{Service:serviceName,Desired:desiredCount,Running:runningCount,Pending:pendingCount,Deployments:deployments[].{Status:status,State:rolloutState,Reason:rolloutStateReason,Task:taskDefinition,Running:runningCount,Pending:pendingCount,Failed:failedTasks},Events:events[:5]}'
+          TASKS=$(aws ecs list-tasks --cluster circini-demo --desired-status RUNNING --query 'taskArns' --output text)
+          if [ -n "$TASKS" ] && [ "$TASKS" != "None" ]; then
+            aws ecs describe-tasks --cluster circini-demo --tasks $TASKS \
+              --query 'tasks[].{Task:taskArn,Definition:taskDefinitionArn,Status:lastStatus,Health:healthStatus,Containers:containers[].{Name:name,Status:lastStatus,Health:healthStatus,Exit:exitCode,Reason:reason,Image:image}}'
+          fi

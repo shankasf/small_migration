@@ -66,6 +66,35 @@ aws secretsmanager put-secret-value --secret-id circini/gitlab-oauth \
 Until those values are supplied, the UI reports the providers as requiring
 administrator setup rather than presenting a non-functional Connect action.
 
+### Public GitHub App
+
+GitHub uses a public GitHub App with read-only Contents/Metadata permissions.
+Register it for **Any account**, with these settings:
+
+- Homepage: `https://migration.callsphere.site`
+- Callback: `https://migration.callsphere.site/api/integrations/github/callback`
+- Request user authorization during installation; keep expiring user tokens enabled.
+- Webhook: `https://migration.callsphere.site/api/integrations/github/webhook`
+- Webhook content type: JSON, SSL verification enabled, and a random webhook secret.
+- Subscribe to installation/repository-access events. Authorization revocations are also handled.
+
+The `circini/github-oauth` JSON secret must contain `appId`, `slug`, `clientId`,
+`clientSecret`, `privateKey` (the complete PEM), and `webhookSecret`. All fields
+are strings. The PEM is not the client secret. Never commit these credentials.
+To bootstrap through the existing OIDC deployment pipeline, save that JSON as
+the masked repository secret `CIRCINI_GITHUB_APP_BOOTSTRAP_JSON`. The deployment
+validates app identity, read-only permissions, and client credentials before
+updating Secrets Manager and replacing backend tasks. Delete the temporary
+Actions secret after a successful deployment; subsequent releases read AWS.
+
+Users authorize their own GitHub account, install the app on chosen repositories,
+then select a repository and branch in Settings. Repository reads use user
+access tokens, restricting access to the intersection of user and installation
+permissions. Refresh tokens rotate under a database row lock. Installation
+IDs from redirects never grant access. Signed webhooks clear removed repository
+selections and revoked connections. Connecting does not yet import repository
+files into an AI migration session.
+
 ## CI/CD (GitHub Actions → ECR + CloudFormation)
 
 `.github/workflows/deploy.yml` runs on every push to `main`: CI gate → build the

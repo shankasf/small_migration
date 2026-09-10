@@ -140,6 +140,11 @@ jobs:
             --template-file deploy/aws/cognito.yaml --no-fail-on-empty-changeset \
             --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
 
+      - name: Validate and configure GitHub App
+        env:
+          GITHUB_APP_BOOTSTRAP_JSON: ${{ secrets.CIRCINI_GITHUB_APP_BOOTSTRAP_JSON }}
+        run: node scripts/configure-github-app.mjs
+
       - name: Apply additive security schema before replacing tasks
         run: python3 scripts/preflight-security-schema.py
 
@@ -202,3 +207,6 @@ jobs:
           curl -fsS -o /dev/null "$BASE/"
           curl -fsS "$BASE/api/health" | grep -q '"status":"ok"'
           echo "smoke test passed"
+
+      - name: Verify live GitHub integration
+        run: python3 scripts/verify-github-production.py

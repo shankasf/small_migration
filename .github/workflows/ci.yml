@@ -42,6 +42,8 @@ jobs:
         run: npx tsc --noEmit
       - name: Build
         run: npm run build
+      - name: GitHub integration security tests
+        run: npx tsx --test tests/github.test.ts
 
   backend-security:
     name: Backend security integration tests

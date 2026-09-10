@@ -428,6 +428,10 @@ Resources:
             - { Name: INTEGRATION_ENCRYPTION_KEY, ValueFrom: !ImportValue circini-SecretIntegrationEncryption }
             - { Name: GITHUB_CLIENT_ID, ValueFrom: !Sub ['${Arn}:clientId::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
             - { Name: GITHUB_CLIENT_SECRET, ValueFrom: !Sub ['${Arn}:clientSecret::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
+            - { Name: GITHUB_APP_ID, ValueFrom: !Sub ['${Arn}:appId::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
+            - { Name: GITHUB_APP_SLUG, ValueFrom: !Sub ['${Arn}:slug::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
+            - { Name: GITHUB_APP_PRIVATE_KEY, ValueFrom: !Sub ['${Arn}:privateKey::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
+            - { Name: GITHUB_WEBHOOK_SECRET, ValueFrom: !Sub ['${Arn}:webhookSecret::', { Arn: !ImportValue circini-SecretGitHubOAuth }] }
             - { Name: GITLAB_CLIENT_ID, ValueFrom: !Sub ['${Arn}:clientId::', { Arn: !ImportValue circini-SecretGitLabOAuth }] }
             - { Name: GITLAB_CLIENT_SECRET, ValueFrom: !Sub ['${Arn}:clientSecret::', { Arn: !ImportValue circini-SecretGitLabOAuth }] }
             - { Name: SEED_ADMIN_EMAIL, ValueFrom: !Sub ['${Arn}:email::', { Arn: !ImportValue circini-SecretSeedAdmin }] }

@@ -160,6 +160,30 @@ export async function healthCheck(): Promise<{ status: string }> {
 }
 
 // Integrations
+export interface GitHubRepository {
+  id: number;
+  installationId: number;
+  fullName: string;
+  private: boolean;
+  defaultBranch: string;
+}
+
+export interface GitHubSelection { id: number; installationId: number; fullName: string; branch: string }
+
+export async function getGitHubRepositories(): Promise<{
+  repositories: GitHubRepository[]; truncated: boolean; installUrl: string; selectedRepository: GitHubSelection | null;
+}> {
+  return (await api.get('/integrations/github/repositories')).data;
+}
+
+export async function getGitHubBranches(installationId: number, repositoryId: number): Promise<{ branches: string[]; defaultBranch: string }> {
+  return (await api.get('/integrations/github/branches', { params: { installationId, repositoryId } })).data;
+}
+
+export async function selectGitHubRepository(installationId: number, repositoryId: number, branch: string): Promise<void> {
+  await api.post('/integrations/github/repository', { installationId, repositoryId, branch });
+}
+
 export async function getIntegrations(): Promise<Integration[]> {
   const response = await api.get('/integrations');
   return response.data.integrations;
