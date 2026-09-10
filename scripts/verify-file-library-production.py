@@ -14,10 +14,16 @@ def aws(*args):
     return json.loads(subprocess.check_output(['aws', *args, '--output', 'json'], text=True))
 
 
-services = aws('ecs', 'describe-services', '--cluster', 'circini-demo', '--services', 'backend')['services']
-backend = services[0]
-assert backend['runningCount'] == backend['desiredCount'] and backend['pendingCount'] == 0
-assert all(d.get('rolloutState') == 'COMPLETED' for d in backend['deployments']), 'Backend rollout unfinished'
+stable_deadline = time.monotonic() + 1200
+while True:
+    backend = aws('ecs', 'describe-services', '--cluster', 'circini-demo', '--services', 'backend')['services'][0]
+    stable = backend['runningCount'] == backend['desiredCount'] and backend['pendingCount'] == 0
+    stable = stable and all(d.get('rolloutState') == 'COMPLETED' for d in backend['deployments'])
+    if stable:
+        break
+    assert time.monotonic() < stable_deadline, 'Backend did not stabilize before verification deadline'
+    print(json.dumps({'fileLibraryProgress': 'waiting for backend steady state'}), flush=True)
+    time.sleep(15)
 source = Path('scripts/check-file-library-live.cjs').read_bytes()
 encoded = base64.b64encode(gzip.compress(source, mtime=0)).decode()
 # /tmp is the task's explicitly writable ephemeral volume. The code is trusted repository code.

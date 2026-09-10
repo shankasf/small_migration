@@ -4,9 +4,11 @@ Small Migration / Circini · Conversation decisions and application guide · 10 
 
 ## Release status
 
-The full-history change is recorded in commit fe0fac0. The file library implementation and eleven database integration tests have been completed locally. Deployment and production end-to-end verification are in progress; this edition does not yet certify the file library as live. The release evidence below will be updated after the deployment gates and live checks finish.
+The full-history memory change is live: commit fe0fac0 passed its deployment workflow. The file library is recorded in commit 6db270274a7b36444611c405b7652ba61ba147e4, and all eight CI jobs passed. The feature deployment completed successfully, including schema synchronization, service health gates, the production smoke test and GitHub integration checks. The application release is live. Production acceptance tests passed for dummy files, exact versions, generated outputs, reuse of an existing owned uploaded file, semantic retrieval and user isolation. All seven browser interaction checks passed against the live application without API mocks, including preview/download, exact-version use, chat reload, resumed-chat references and a 390-pixel mobile layout.
 
-Repository: [shankasf/small_migration](https://github.com/shankasf/small_migration), target branch: main. Source links use main and therefore follow subsequent changes; the final release commit identifies the delivered version.
+Evidence: [successful memory deployment](https://github.com/shankasf/small_migration/actions/runs/34538569854), [file library commit](https://github.com/shankasf/small_migration/commit/6db270274a7b36444611c405b7652ba61ba147e4), [passed feature CI](https://github.com/shankasf/small_migration/actions/runs/34540309633), [successful feature deployment](https://github.com/shankasf/small_migration/actions/runs/34540309836).
+
+Repository: [shankasf/small_migration](https://github.com/shankasf/small_migration), branch: main. Deployment was triggered directly from main through GitHub Actions; no pull request was created for this release. Code evidence links are pinned to feature commit 6db270274a7b36444611c405b7652ba61ba147e4; the memory fix is included in that release history.
 
 ## What we discussed and decided
 
@@ -33,7 +35,7 @@ PostgreSQL stores each Message under its Session. The backend now loads the comp
 
 For example, an instruction given 30 messages ago is no longer excluded by an application limit of 20 messages. The model still has a finite context window: loading full history is not unlimited memory, and sufficiently large conversations/files can exceed model limits. Automated compaction is a future improvement, not part of this change.
 
-Evidence: [backend chat context](https://github.com/shankasf/small_migration/blob/main/services/backend/src/routes/chat.ts), [message/session schema](https://github.com/shankasf/small_migration/blob/main/services/backend/prisma/schema.prisma), [AI input and Runner call](https://github.com/shankasf/small_migration/blob/main/services/ai-service/routes/migration.py).
+Evidence: [backend chat context](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/routes/chat.ts), [message/session schema](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/prisma/schema.prisma), [AI input and Runner call](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/ai-service/routes/migration.py).
 
 ### Temporary RAM caches
 
@@ -41,7 +43,7 @@ The AI service caches session agents, files, and activity timestamps in its own 
 
 Example: leave chat A unused for 70 minutes. Its temporary cache can be cleared on a later cleanup. Opening or continuing chat A still loads its saved history and files from the database. If a process has too many cached chats, older caches make room; database chats remain.
 
-Evidence: [SESSION_TTL_SECONDS, SESSION_MAX_COUNT and eviction](https://github.com/shankasf/small_migration/blob/main/services/ai-service/routes/migration.py).
+Evidence: [SESSION_TTL_SECONDS, SESSION_MAX_COUNT and eviction](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/ai-service/routes/migration.py).
 
 ### User identity and retention
 
@@ -51,7 +53,7 @@ Durable chats, uploads, outputs, usage and audit records retain the existing ind
 
 The app does not yet maintain an automatic cross-chat preference record such as “this user always wants Snowflake SQL.” File reuse across your chats is retrieval of selected files, not a hidden global conversation history.
 
-Evidence: [authentication and access checks](https://github.com/shankasf/small_migration/blob/main/services/backend/src/middleware/auth.ts), [retention policy](https://github.com/shankasf/small_migration/blob/main/services/backend/src/services/retention.ts), [file ownership enforcement](https://github.com/shankasf/small_migration/blob/main/services/backend/src/services/fileLibrary.ts).
+Evidence: [authentication and access checks](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/middleware/auth.ts), [retention policy](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/services/retention.ts), [file ownership enforcement](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/services/fileLibrary.ts).
 
 ### OpenAI Agents SDK: capability versus adoption
 
@@ -73,7 +75,7 @@ Sources: [official OpenAI documentation: running agents](https://developers.open
 
 When several matches appear, preview and select the intended one. An explicit selection needs no second approval step. In the picker search box, a phrase such as “find customer SQL I generated yesterday” is interpreted into customer meaning/keywords, generated source, a .sql filename filter and yesterday’s UTC date range. The explicit picker date/source filters can narrow or override the inferred values. A general conversational search tool invoked from an ordinary sent chat message is not part of this implementation.
 
-Evidence: [composer](https://github.com/shankasf/small_migration/blob/main/services/frontend/src/components/ChatInput.tsx), [My Files picker](https://github.com/shankasf/small_migration/blob/main/services/frontend/src/components/FileLibraryPicker.tsx), [preview](https://github.com/shankasf/small_migration/blob/main/services/frontend/src/components/LibraryFilePreview.tsx), [chat integration](https://github.com/shankasf/small_migration/blob/main/services/backend/src/routes/chat.ts).
+Evidence: [composer](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/frontend/src/components/ChatInput.tsx), [My Files picker](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/frontend/src/components/FileLibraryPicker.tsx), [preview](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/frontend/src/components/LibraryFilePreview.tsx), [chat integration](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/routes/chat.ts).
 
 ## Where files and the search data live
 
@@ -86,9 +88,11 @@ Evidence: [composer](https://github.com/shankasf/small_migration/blob/main/servi
 
 File ownership is resolved through the source Session's ownerUserId, rather than trusting a user ID supplied by the browser. A filename is a label; the immutable asset ID identifies the selected content. Version numbering is scoped to source chat, source type and filename. Therefore two different chats can each have customers.sql v1, while their IDs remain distinct.
 
+For spreadsheet uploads, the existing ingestion flow parses worksheets into extracted text before persistence. An immutable file version preserves that exact stored content, not the original Excel binary bytes. Preview, AI context and library download operate on the stored representation.
+
 The implemented summary is a compact extract of the filename and first three nonempty lines, capped at 300 characters. It is not an AI-authored description of the entire file. The summary is included as a prefix when each chunk is embedded, rather than stored in a separate summary-vector column. Content chunks carry the details the extract omits; the full content remains stored unchanged in the snapshot.
 
-Evidence: [file schema](https://github.com/shankasf/small_migration/blob/main/services/backend/prisma/schema.prisma), [snapshot, summary and chunk creation](https://github.com/shankasf/small_migration/blob/main/services/backend/src/services/fileLibrary.ts).
+Evidence: [file schema](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/prisma/schema.prisma), [snapshot, summary and chunk creation](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/services/fileLibrary.ts).
 
 ## How search selects candidates
 
@@ -102,7 +106,7 @@ If embeddings are unavailable, keyword matches remain usable and the picker repo
 
 For 1,000 files, the library searches stored metadata/content/vectors and returns a small page of results. The chatbot does not receive the entire library. A chat turn receives that chat's normal uploaded-file context plus explicit selected and restored references, so accumulated attachments and full history still contribute to model context size. This implementation uses exact vector search within the allowed subset; large-library performance should be measured before choosing an approximate index or further tuning.
 
-Evidence: [index worker and hybrid query](https://github.com/shankasf/small_migration/blob/main/services/backend/src/services/fileLibrary.ts), [embedding-service boundary](https://github.com/shankasf/small_migration/blob/main/services/backend/src/services/aiService.ts).
+Evidence: [index worker and hybrid query](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/services/fileLibrary.ts), [embedding-service boundary](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/src/services/aiService.ts).
 
 ## Why this design was selected
 
@@ -112,10 +116,28 @@ Sources: [pgvector: hybrid search](https://github.com/pgvector/pgvector#hybrid-s
 
 ## Verification and release evidence
 
-The database integration suite covers eleven tests using an isolated localhost migration_security_test database, actual PostgreSQL/pgvector queries, and a deterministic mock embedding service. It verifies immutable upload versions, concurrent generated versions, semantic and late-keyword matches, owner/date/source filtering, natural-language and exact-filename handling, large-file keyword retrieval, keyword fallback, invalid-reference rejection, reference persistence, legacy backfill, and source-deletion behavior. The mock validates retrieval plumbing without claiming to evaluate real-provider semantic quality. A separate AI-service suite passes 13 tests for internal authentication, invalid input, blocking sensitive content before provider calls, screened text, correct vector dimensions/order, and unavailable or unapproved provider configuration.
+The database integration suite passes eleven tests using an isolated localhost migration_security_test database, actual PostgreSQL/pgvector queries, and a deterministic mock embedding service. It verifies immutable upload versions, concurrent generated versions, semantic and late-keyword matches, owner/date/source filtering, natural-language and exact-filename handling, large-file keyword retrieval, keyword fallback, invalid-reference rejection, reference persistence, legacy backfill, and source-deletion behavior. The mock validates retrieval plumbing without claiming to evaluate real-provider semantic quality. A separate AI-service suite passes 13 tests for internal authentication, invalid input, blocking sensitive content before provider calls, screened text, correct vector dimensions/order, and unavailable or unapproved provider configuration.
 
-Evidence: [AI embedding boundary tests](https://github.com/shankasf/small_migration/blob/main/services/ai-service/tests/test_file_search.py), [file library integration tests](https://github.com/shankasf/small_migration/blob/main/services/backend/tests/fileLibrary.test.ts), [security test runner](https://github.com/shankasf/small_migration/blob/main/scripts/test-security.sh).
+Evidence: [AI embedding boundary tests](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/ai-service/tests/test_file_search.py), [file library integration tests](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/services/backend/tests/fileLibrary.test.ts), [security test runner](https://github.com/shankasf/small_migration/blob/6db270274a7b36444611c405b7652ba61ba147e4/scripts/test-security.sh).
 
 Production acceptance requested in this conversation: deploy the memory and file changes, pass CI/security and ECS health gates, create/upload a uniquely named dummy file, find it through My Files, preview/select its exact version, use it in a chat, resume an existing chat and reuse an existing file, then verify saved references after reload. The final release record must list actual outcomes, release commit, CI/deployment run and live evidence; a build or local test alone is insufficient.
 
-Final release commit: pending. Deployment and live end-to-end outcome: pending verification.
+Feature commit: 6db270274a7b36444611c405b7652ba61ba147e4. CI run 34540309633: all eight jobs passed. Deployment run 34540309836: successful. Schema synchronization exited 0 at 23:22:49 UTC; the smoke test passed at 23:31:27 UTC and GitHub integration checks passed at 23:32:43 UTC on 10 September 2026. Live dummy-file and resumed-chat acceptance workflow 34542141976: successful. Final AWS status workflow 34542688597 confirmed all three services healthy on release 6db2702. Browser interaction verification: all seven checks passed at 23:35:24 UTC on 10 September 2026 against the live application without mocks. Memory deployment run 34538569854 for fe0fac0 passed.
+
+
+### Production acceptance results
+
+The production workflow passed using the deployed services and real database/provider integration. The dummy file was library_probe_5115bcb9240a.sql. Its two upload versions contained different values, 731 and 842; explicitly selecting the older version made the AI read 731. Generated-output revisions remained immutable and a generated file was reused in a new chat. Reuse of an existing owned uploaded file also passed. A reference owned by another user was rejected with HTTP 403. The temporary verification API key was revoked and subsequently rejected with HTTP 401.
+
+Database evidence confirmed pgvector 0.8.1, 71 embedded chunks and a successful semantic search. The recorded older upload asset was 933a775d-be87-4b44-a62c-8c095ae7e593 (v1); the newer was 03f0bd84-5a52-443c-a6cd-c31e49853d81 (v2). The reused existing uploaded asset was bbefe7ad-b1df-4e9d-b6b4-919226887b1b.
+
+Evidence: [successful production file-library acceptance](https://github.com/shankasf/small_migration/actions/runs/34542141976), [final healthy AWS service status](https://github.com/shankasf/small_migration/actions/runs/34542688597). The browser evidence is recorded below.
+
+
+### Browser acceptance results
+
+A real Chrome session against the live application passed seven checks at 23:35:24 UTC on 10 September 2026, without mocked API responses: authenticated immutable-version identity; @ picker discovery of both versions; preview and download of exact revision 731; no horizontal overflow at a 390-pixel mobile width; exact asset-ID submission in a new chat with AI reading 731; unchanged attached/used chips and content after reload; and resuming the existing test chat without reattachment, with AI reading revision 842 and the reference surviving reload.
+
+Evidence: [browser verification record](https://github.com/shankasf/small_migration/blob/main/docs/evidence/file-library/browser-evidence.json), [mobile My Files screenshot](https://github.com/shankasf/small_migration/blob/main/docs/evidence/file-library/my-files-mobile.png), [production API/database verification record](https://github.com/shankasf/small_migration/blob/main/docs/evidence/file-library/production-evidence.json). The evidence records contain synthetic test identifiers and no authentication secrets.
+
+The separate temporary browser credential was revoked after the browser checks, and a subsequent live request returned HTTP 401. Evidence: [successful browser credential cleanup](https://github.com/shankasf/small_migration/actions/runs/34542847757).

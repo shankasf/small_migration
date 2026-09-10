@@ -1,0 +1,39 @@
+{
+  "fileLibraryBrowserCheck": "passed",
+  "checks": [
+    {
+      "check": "authenticated identity and distinct immutable synthetic versions",
+      "assetId": "933a775d-be87-4b44-a62c-8c095ae7e593",
+      "version": 1
+    },
+    {
+      "check": "@ picker finds both real uploaded versions"
+    },
+    {
+      "check": "preview and download match immutable revision 731"
+    },
+    {
+      "check": "390px mobile picker has no horizontal overflow"
+    },
+    {
+      "check": "new chat sends exact asset ID and AI reads revision 731",
+      "sessionId": "0070de21-aeb6-43b1-967b-13ad919fd28f",
+      "assetId": "933a775d-be87-4b44-a62c-8c095ae7e593"
+    },
+    {
+      "check": "reloaded attached and used chips preview the same exact original file"
+    },
+    {
+      "check": "existing E2E chat resumes revision 842 without reattachment and survives reload",
+      "sessionId": "3d614338-5ce5-4e07-b277-c55ece7ecc23",
+      "assetId": "03f0bd84-5a52-443c-a6cd-c31e49853d81"
+    }
+  ],
+  "createdSessions": [
+    "0070de21-aeb6-43b1-967b-13ad919fd28f"
+  ],
+  "screenshots": [
+    "docs/evidence/file-library/my-files-mobile.png"
+  ],
+  "finishedAt": "2026-09-10T23:35:24.915Z"
+}

@@ -1,0 +1,27 @@
+{
+  "fileLibraryProductionCheck": "passed",
+  "run": "E2E file library 2026-09-10T23:32:03.443Z",
+  "sessions": [
+    "bd2bbd58-f638-44b0-9e8b-c7f9cd6cd2c5",
+    "3d614338-5ce5-4e07-b277-c55ece7ecc23",
+    "87e52dbe-9a4e-4f80-9468-1893d93d1ab8"
+  ],
+  "vectorVersion": "0.8.1",
+  "uploadVersions": [
+    {
+      "id": "03f0bd84-5a52-443c-a6cd-c31e49853d81",
+      "version": 2
+    },
+    {
+      "id": "933a775d-be87-4b44-a62c-8c095ae7e593",
+      "version": 1
+    }
+  ],
+  "outputAssetId": "97332b49-99f4-4b16-a1ed-d94e512f19cf",
+  "existingFileReuse": "passed",
+  "legacyAssetId": "bbefe7ad-b1df-4e9d-b6b4-919226887b1b",
+  "legacyKind": "upload",
+  "otherOwnerIsolation": "passed",
+  "embeddedChunks": 71,
+  "semanticSearch": "passed"
+}
