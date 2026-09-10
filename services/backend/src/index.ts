@@ -14,6 +14,7 @@ import sttRouter from './routes/stt.js';
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
 import { integrationsRouter, integrationCallbackRouter } from './routes/integrations.js';
+import { githubRouter, githubCallbackRouter, githubWebhookRouter } from './routes/github.js';
 import { authenticate, requireInternalKey, resolveUserFromToken, seedAdminUser } from './middleware/auth.js';
 import {
   AiLogEvent, AiLogRecord, buildAiLogRecord, isPersistable, persistAiLog, startAiLogRetention,
@@ -57,6 +58,8 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   credentials: true
 }));
+app.locals.prisma = prisma;
+app.use('/api/integrations', githubWebhookRouter);
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -66,9 +69,9 @@ app.locals.prisma = prisma;
 // Request logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
-  console.log(`[REQ] ${req.method} ${req.url} content-type=${req.headers['content-type'] || 'none'} content-length=${req.headers['content-length'] || 'none'}`);
+  console.log(`[REQ] ${req.method} ${req.path} content-type=${req.headers['content-type'] || 'none'} content-length=${req.headers['content-length'] || 'none'}`);
   res.on('finish', () => {
-    console.log(`[RES] ${req.method} ${req.url} ${res.statusCode} ${Date.now() - start}ms`);
+    console.log(`[RES] ${req.method} ${req.path} ${res.statusCode} ${Date.now() - start}ms`);
   });
   next();
 });
@@ -116,6 +119,7 @@ app.post('/api/logs/:sessionId', requireInternalKey, (req, res) => {
 // OAuth providers redirect here without the SPA bearer token. The callback is
 // protected by a short-lived, single-use state value created on an authenticated
 // request; no other integration route is public.
+app.use('/api/integrations', githubCallbackRouter);
 app.use('/api/integrations', integrationCallbackRouter);
 
 // Authentication — every route below this line requires a valid user token
@@ -128,6 +132,7 @@ app.use('/api/sessions', sessionsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/files', filesRouter);
 app.use('/api/stt', sttRouter);
+app.use('/api/integrations', githubRouter);
 app.use('/api/integrations', integrationsRouter);
 
 // Error handler
