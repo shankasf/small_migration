@@ -134,6 +134,9 @@ their access is revoked. Editing anything else, such as token limits, leaves it
 working. A request made with a key cannot list, create or revoke keys, and every
 mutation it makes is audited with `type: api_key`.
 
+See [docs/API_KEYS.md](docs/API_KEYS.md) for the full scope and for examples on
+Windows, macOS/Linux, Python, Node.js, Postman and CI.
+
 ### Chat request lifecycle
 
 Every control below is enforced **server-side**. The browser is never trusted.
