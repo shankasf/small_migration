@@ -19,17 +19,6 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Inspect stack and service rollout status
-        run: |
-          set -euo pipefail
-          aws cloudformation describe-stacks --stack-name circini-app \
-            --query 'Stacks[].{Status:StackStatus,Updated:LastUpdatedTime}'
-          aws cloudformation describe-stack-events --stack-name circini-app --max-items 25 \
-            --query 'StackEvents[].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}'
-          aws ecs describe-services --cluster circini-demo --services backend frontend ai-service \
-            --query 'services[].{Service:serviceName,Desired:desiredCount,Running:runningCount,Pending:pendingCount,Deployments:deployments[].{Status:status,State:rolloutState,Reason:rolloutStateReason,Task:taskDefinition,Running:runningCount,Pending:pendingCount,Failed:failedTasks},Events:events[:5]}'
-          TASKS=$(aws ecs list-tasks --cluster circini-demo --desired-status RUNNING --query 'taskArns' --output text)
-          if [ -n "$TASKS" ] && [ "$TASKS" != "None" ]; then
-            aws ecs describe-tasks --cluster circini-demo --tasks $TASKS \
-              --query 'tasks[].{Task:taskArn,Definition:taskDefinitionArn,Status:lastStatus,Health:healthStatus,Containers:containers[].{Name:name,Status:lastStatus,Health:healthStatus,Exit:exitCode,Reason:reason,Image:image}}'
-          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Read exact GitHub chat and connection metadata
+        run: python3 scripts/run-github-chat-diagnostic.py
