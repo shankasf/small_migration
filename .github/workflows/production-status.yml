@@ -24,7 +24,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Configure read access through deployment identity
+      - name: Configure AWS deployment identity
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
@@ -58,3 +58,6 @@ jobs:
             aws ecs describe-tasks --cluster circini-demo --tasks $TASKS \
               --query 'tasks[].{Task:taskArn,Definition:taskDefinitionArn,Status:lastStatus,Health:healthStatus,Containers:containers[].{Name:name,Status:lastStatus,Health:healthStatus,Exit:exitCode,Reason:reason,Image:image}}'
           fi
+      - name: Release domain migration maintenance hold
+        if: ${{ always() && inputs.configure_signify_domain }}
+        run: python3 scripts/manage-business-hours.py release --owner "${{ github.run_id }}" --optional

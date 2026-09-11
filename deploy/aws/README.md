@@ -115,7 +115,7 @@ ROLE=$(aws cloudformation describe-stacks --stack-name circini-github-oidc \
 # 2. Point the repo at it (plus deploy config as repo variables)
 gh variable set AWS_DEPLOY_ROLE_ARN --body "$ROLE"
 gh variable set AWS_REGION        --body ap-southeast-2
-gh variable set APP_DOMAIN        --body migration.callsphere.site
+gh variable set APP_DOMAIN        --body migration-agent.uat.signify.net.nz
 gh variable set AUTH_MODE         --body oidc
 gh variable set OPENAI_MODEL      --body gpt-6-astra
 gh variable set CERTIFICATE_ARN   --body <acm-cert-arn>   # from `aws acm list-certificates`
@@ -129,3 +129,25 @@ The OpenAI API key is **not** a repo secret — it lives in Secrets Manager
 - HTTPS: live — ACM cert, Hostinger CNAME to the ALB, 443 listener, HTTP→HTTPS redirect.
 - Identity: live — Amazon Cognito, `AUTH_MODE=oidc`, TOTP MFA required, embedded in-app sign-in.
 - Optional add-ons: OTel collector deployed (ADOT sidecars). WAF and Multi-AZ RDS not deployed.
+
+## Signify domain
+
+The public app uses `https://migration-agent.uat.signify.net.nz`. Its CNAME
+points to `circini-demo-617813330.ap-southeast-2.elb.amazonaws.com`, with ACM
+certificate `5f12ecf3-ce00-4840-ac77-e4b0ce039953` in `ap-southeast-2`.
+
+Repository variables `APP_DOMAIN` and `CERTIFICATE_ARN` select the new origin.
+`ADDITIONAL_CERTIFICATE_ARN` retains the old domain certificate and
+`ADDITIONAL_APP_URL` retains its Cognito callback/logout URLs. Until the
+external GitHub/GitLab registrations are migrated, `INTEGRATION_APP_DOMAIN`
+remains `migration.callsphere.site`; provider authorization callbacks and the
+return to Settings continue through that existing domain. Ordinary app and
+Cognito sign-in traffic use the Signify domain.
+
+For this move, dispatch `production-status.yml` with
+`configure_signify_domain=true`. The script checks the issued certificate and
+existing DNS, records before-state and guarded change sets, preserves deployed
+images, waits for ECS readiness, and runs the public/security smoke checks.
+It shares the production deployment lock. Normal status dispatches remain
+read-only. This workflow does not change repository variables; set the five
+variables above to the verified stack parameters after successful migration.

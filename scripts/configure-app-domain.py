@@ -88,7 +88,9 @@ def main():
     print('DNS points to existing ALB:', cname, flush=True)
     # Attach the new certificate first: immediately fixes SNI without replacing tasks.
     listener = next(l for l in aws('elbv2', 'describe-listeners', '--load-balancer-arn', alb['LoadBalancerArn'])['Listeners'] if l['Port'] == 443)
-    aws('elbv2', 'add-listener-certificates', '--listener-arn', listener['ListenerArn'], '--certificates', json.dumps([{'CertificateArn': CERT}]))
+    (OUT / 'listener-before.json').write_text(json.dumps(listener, indent=2))
+    aws('elbv2', 'add-listener-certificates', '--listener-arn', listener['ListenerArn'], '--certificates',
+        json.dumps([{'CertificateArn': CERT}, {'CertificateArn': old_cert}]))
     subprocess.run(['curl', '--fail', '--silent', '--show-error', '--retry', '5', 'https://' + DOMAIN + '/api/health'], check=True)
     app = template('circini-app')
     reference = read_template('deploy/aws/app.yaml')
