@@ -109,7 +109,7 @@ export function interpretFileQuery(query: string, now = new Date()) {
   return { text, kind, extension, from, to };
 }
 
-export async function searchFiles(prisma: PrismaClient, userId: string, opts: { q?: string; kind?: string; from?: Date; to?: Date; offset?: number }) {
+export async function searchFiles(prisma: PrismaClient, userId: string, opts: { q?: string; kind?: string; from?: Date; to?: Date; offset?: number; sessionId?: string }) {
   const originalQuery = (opts.q || '').trim().slice(0, 500);
   const interpreted = interpretFileQuery(originalQuery);
   const q = interpreted.text;
@@ -120,6 +120,7 @@ export async function searchFiles(prisma: PrismaClient, userId: string, opts: { 
     catch { /* Explicit response flag exposes keyword-only operation. */ }
   }
   const scope = Prisma.sql`s."ownerUserId"=${userId}
+    ${opts.sessionId ? Prisma.sql`AND s.id=${opts.sessionId}` : Prisma.empty}
     ${opts.kind ? Prisma.sql`AND a.kind=${opts.kind}` : Prisma.empty}
     ${interpreted.extension ? Prisma.sql`AND right(lower(a.filename), length(${interpreted.extension}))=${interpreted.extension}` : Prisma.empty}
     ${opts.from ? Prisma.sql`AND a."createdAt">=${opts.from}` : Prisma.empty}

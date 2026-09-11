@@ -237,6 +237,9 @@ jobs:
       - name: Verify live GitHub integration
         run: python3 scripts/verify-github-production.py
 
+      - name: Verify live chat history search
+        run: python3 scripts/verify-chat-search-production.py
+
       - name: Deploy Auckland business-hours schedule
         run: |
           python3 -m pip install --user PyYAML==6.0.2

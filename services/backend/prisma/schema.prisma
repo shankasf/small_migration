@@ -180,6 +180,7 @@ model Message {
 
   @@index([sessionId])
   libraryRefs FileReference[]
+  searchChunks MessageSearchChunk[]
 }
 
 model UploadedFile {
@@ -269,4 +270,19 @@ model FileReference {
   createdAt  DateTime @default(now())
   @@index([messageId])
   @@index([assetId])
+}
+
+// Rebuildable retrieval index; the original transcript remains the durable source.
+model MessageSearchChunk {
+  id          String @id @default(uuid())
+  messageId   String
+  message     Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  ordinal     Int
+  content     String @db.Text
+  embedding   Unsupported("vector(1536)")?
+  indexStatus String @default("pending")
+  retryAt     DateTime @default(now())
+  attempts    Int @default(0)
+  @@unique([messageId, ordinal])
+  @@index([indexStatus, retryAt])
 }

@@ -1,3 +1,5 @@
+import chatSearchRouter from './routes/chatSearch.js';
+import { startChatIndexer } from './services/chatSearch.js';
 // OTEL must load first so auto-instrumentation can patch http/express/pg
 import './otel.js';
 
@@ -101,6 +103,7 @@ app.get('/api/health', (req, res) => {
 // (rather than exempting a path prefix inside authenticate) means a new route
 // can never inherit an auth exemption implicitly.
 app.use('/api/internal/github', githubAgentRouter);
+app.use('/api/internal/chat-search', chatSearchRouter);
 app.post('/api/logs/:sessionId', requireInternalKey, (req, res) => {
   const { sessionId } = req.params;
   const {
@@ -208,11 +211,13 @@ export function emitLog(sessionId: string, log: { step: string; message: string;
 }
 
 const stopFileIndexer = startFileIndexer(prisma);
+const stopChatIndexer = startChatIndexer(prisma);
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down...');
   stopFileIndexer();
+  stopChatIndexer();
   await prisma.$disconnect();
   io.close();
   process.exit(0);

@@ -1,3 +1,4 @@
+import { historyWithFileEvidence } from '../services/chatSearch.js';
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
@@ -78,7 +79,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     for (const asset of assets) contextFiles[`${asset.filename} [v${asset.version}; ${asset.id}]`] = asset.content;
     const screened = await screenPayload(message,
       contextFiles,
-      session.messages.map(m => ({ role: m.role, content: m.content })));
+      await historyWithFileEvidence(prisma, user.id, session.messages));
     message = screened.message;
 
     // Save only screened content. A rejected request never becomes history.

@@ -17,3 +17,5 @@ node -e 'const {PrismaClient}=require("@prisma/client");const p=new PrismaClient
 node --import tsx --test tests/security.test.ts
 
 node --import tsx --test tests/fileLibrary.test.ts
+
+node --import tsx --test tests/chatSearch.test.ts

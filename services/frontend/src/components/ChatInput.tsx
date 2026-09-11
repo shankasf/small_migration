@@ -292,19 +292,6 @@ export default function ChatInput({
             disabled={disabled || sending}
           />
 
-          {/* Text input */}
-          <textarea
-            ref={textareaRef}
-            value={message}
-            onChange={handleTextareaChange}
-            onKeyDown={handleKeyDown}
-            placeholder={isTranscribing ? 'Transcribing...' : isRecording ? 'Listening...' : placeholder}
-            disabled={disabled || sending || isRecording}
-            rows={1}
-            className="max-h-40 min-h-[40px] min-w-0 flex-1 resize-none self-center bg-transparent px-2 py-2 text-[15px] text-ink placeholder:text-faint focus:outline-none"
-            style={{ boxShadow: 'none' }}
-          />
-
           {/* Add menu — files and connected data tools live in one predictable place. */}
           <div className="relative shrink-0" ref={plusMenuRef}>
             <button
@@ -326,7 +313,7 @@ export default function ChatInput({
             </button>
 
             {plusMenuOpen && (
-              <div className="absolute bottom-full right-0 z-40 mb-3 w-[min(21rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-hairline bg-panel shadow-console animate-fade-up">
+              <div className="absolute bottom-full left-0 z-40 mb-3 w-[min(21rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-hairline bg-panel shadow-console animate-fade-up">
                 <div className="border-b border-hairline px-4 py-3">
                   <p className="text-sm font-600 text-ink">Add context</p>
                   <p className="mt-0.5 text-xs text-faint">Find existing files, upload, or connect a workspace</p>
@@ -387,6 +374,19 @@ export default function ChatInput({
               </div>
             )}
           </div>
+
+          {/* Text input */}
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={handleTextareaChange}
+            onKeyDown={handleKeyDown}
+            placeholder={isTranscribing ? 'Transcribing...' : isRecording ? 'Listening...' : placeholder}
+            disabled={disabled || sending || isRecording}
+            rows={1}
+            className="max-h-40 min-h-[40px] min-w-0 flex-1 resize-none self-center bg-transparent px-2 py-2 text-[15px] text-ink placeholder:text-faint focus:outline-none"
+            style={{ boxShadow: 'none' }}
+          />
 
           {/* Mic button */}
           <button
