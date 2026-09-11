@@ -11,6 +11,13 @@ Parameters:
     Description: HTTPS origin of the deployed frontend (OIDC redirect target)
     Default: https://migration.callsphere.site
 
+  AdditionalAppUrl:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasAdditionalAppUrl: !Not [!Equals [!Ref AdditionalAppUrl, '']]
+
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -65,9 +72,11 @@ Resources:
       SupportedIdentityProviders: [COGNITO]
       CallbackURLs:
         - !Sub '${AppUrl}/auth/callback'
+        - !If [HasAdditionalAppUrl, !Sub '${AdditionalAppUrl}/auth/callback', !Ref 'AWS::NoValue']
         - http://localhost:5173/auth/callback
       LogoutURLs:
         - !Ref AppUrl
+        - !If [HasAdditionalAppUrl, !Ref AdditionalAppUrl, !Ref 'AWS::NoValue']
         - http://localhost:5173
       PreventUserExistenceErrors: ENABLED
       ExplicitAuthFlows:

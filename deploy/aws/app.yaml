@@ -42,11 +42,21 @@ Parameters:
   CertificateArn:
     Type: String
     Default: ''
+  AdditionalCertificateArn:
+    Type: String
+    Default: ''
+    Description: Retained certificate for existing integration callbacks during a domain move
+  IntegrationAppDomain:
+    Type: String
+    Default: ''
+    Description: Optional existing domain registered with external OAuth providers
   AppDomain:
     Type: String
     Default: migration.callsphere.site
 
 Conditions:
+  HasAdditionalCertificate: !And [!Condition HasCertificate, !Not [!Equals [!Ref AdditionalCertificateArn, '']]]
+  HasIntegrationAppDomain: !Not [!Equals [!Ref IntegrationAppDomain, '']]
   UseAzure: !Equals [!Ref LlmProvider, azure]
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
@@ -318,6 +328,13 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref FrontendTargetGroup
 
+  AdditionalHttpsCertificate:
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Condition: HasAdditionalCertificate
+    Properties:
+      ListenerArn: !Ref HttpsListener
+      Certificates: [{ CertificateArn: !Ref AdditionalCertificateArn }]
+
   # ------------------------------------------------------- task definitions
   FrontendTaskDef:
     Type: AWS::ECS::TaskDefinition
@@ -412,7 +429,7 @@ Resources:
             - { Name: GITLAB_OAUTH_SCOPES, Value: 'read_user' }
             - { Name: AI_SERVICE_URL, Value: 'http://ai-service:8084' }
             - { Name: CORS_ORIGIN, Value: !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}'] }
-            - { Name: PUBLIC_APP_URL, Value: !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}'] }
+            - { Name: PUBLIC_APP_URL, Value: !If [HasIntegrationAppDomain, !Sub 'https://${IntegrationAppDomain}', !If [HasCertificate, !Sub 'https://${AppDomain}', !Sub 'http://${Alb.DNSName}']] }
             - { Name: AUTH_MODE, Value: !Ref AuthMode }
             - { Name: OIDC_ISSUER, Value: !ImportValue circini-OidcIssuer }
             - { Name: OIDC_AUDIENCE, Value: !ImportValue circini-SpaClientId }
