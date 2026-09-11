@@ -29,7 +29,8 @@ def intrinsic(loader, tag, node):
 CfnLoader.add_multi_constructor('!', intrinsic)
 
 def aws(*args):
-    return json.loads(subprocess.check_output(['aws', *args, '--output', 'json'], text=True))
+    output = subprocess.check_output(['aws', *args, '--output', 'json'], text=True)
+    return json.loads(output) if output.strip() else {}
 
 def template(stack):
     body = aws('cloudformation', 'get-template', '--stack-name', stack)['TemplateBody']
@@ -89,8 +90,9 @@ def main():
     # Attach the new certificate first: immediately fixes SNI without replacing tasks.
     listener = next(l for l in aws('elbv2', 'describe-listeners', '--load-balancer-arn', alb['LoadBalancerArn'])['Listeners'] if l['Port'] == 443)
     (OUT / 'listener-before.json').write_text(json.dumps(listener, indent=2))
-    aws('elbv2', 'add-listener-certificates', '--listener-arn', listener['ListenerArn'], '--certificates',
-        json.dumps([{'CertificateArn': CERT}, {'CertificateArn': old_cert}]))
+    for certificate_arn in (CERT, old_cert):
+        aws('elbv2', 'add-listener-certificates', '--listener-arn', listener['ListenerArn'], '--certificates',
+            json.dumps([{'CertificateArn': certificate_arn}]))
     subprocess.run(['curl', '--fail', '--silent', '--show-error', '--retry', '5', 'https://' + DOMAIN + '/api/health'], check=True)
     app = template('circini-app')
     reference = read_template('deploy/aws/app.yaml')
