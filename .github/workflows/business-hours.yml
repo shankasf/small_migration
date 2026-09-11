@@ -1,0 +1,75 @@
+name: AWS business hours
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Status/plan are read-only; hold temporarily opens the app; release restores its schedule'
+        type: choice
+        options: [status, plan, hold, release, reconcile]
+        default: status
+      minutes:
+        description: 'Maintenance hold duration, 5–180 minutes'
+        type: number
+        default: 60
+      at:
+        description: 'Optional ISO timestamp for read-only plan (include UTC offset)'
+        type: string
+        required: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: business-hours-operations
+  cancel-in-progress: false
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Apply requested schedule operation
+        env:
+          HOURS_OPERATION: ${{ inputs.operation }}
+          HOURS_MINUTES: ${{ inputs.minutes }}
+          HOURS_AT: ${{ inputs.at }}
+          HOURS_OWNER: manual-${{ github.actor }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          operation = os.environ['HOURS_OPERATION']
+          args = ['python3', 'scripts/manage-business-hours.py', operation]
+          if operation in ['hold', 'release']:
+              args += ['--owner', os.environ['HOURS_OWNER']]
+          if operation == 'hold':
+              args += ['--minutes', os.environ['HOURS_MINUTES'], '--wait', '--pending-ok']
+          if operation == 'plan' and os.environ.get('HOURS_AT'):
+              args += ['--at', os.environ['HOURS_AT']]
+          subprocess.run(args, check=True)
+          PY
+      - name: Refresh credentials for the second startup phase
+        if: inputs.operation == 'hold'
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Finish startup and begin the requested maintenance window
+        if: inputs.operation == 'hold'
+        env:
+          HOURS_MINUTES: ${{ inputs.minutes }}
+          HOURS_OWNER: manual-${{ github.actor }}
+        run: python3 scripts/manage-business-hours.py hold --owner "$HOURS_OWNER" --minutes "$HOURS_MINUTES" --wait
+      - name: Release failed maintenance startup
+        if: failure() && inputs.operation == 'hold'
+        env:
+          HOURS_OWNER: manual-${{ github.actor }}
+        run: python3 scripts/manage-business-hours.py release --owner "$HOURS_OWNER"
+      - name: Verify installed schedule configuration
+        run: |
+          aws scheduler get-schedule --name circini-business-hours \
+            --query '{State:State,Schedule:ScheduleExpression,Timezone:ScheduleExpressionTimezone,Target:Target.Arn}'

@@ -122,6 +122,24 @@ Resources:
               - Effect: Allow
                 Action: ['sns:CreateTopic', 'sns:GetTopicAttributes', 'sns:SetTopicAttributes', 'sns:TagResource', 'sns:UntagResource', 'sns:ListTagsForResource']
                 Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:circini-security-alerts'
+              # The business-hours stack manages only this application's scheduler.
+              - Effect: Allow
+                Action: ['lambda:CreateFunction', 'lambda:GetFunction', 'lambda:GetFunctionConfiguration', 'lambda:UpdateFunctionCode', 'lambda:UpdateFunctionConfiguration', 'lambda:DeleteFunction', 'lambda:InvokeFunction', 'lambda:PutFunctionConcurrency', 'lambda:DeleteFunctionConcurrency', 'lambda:GetFunctionConcurrency', 'lambda:PutFunctionEventInvokeConfig', 'lambda:GetFunctionEventInvokeConfig', 'lambda:DeleteFunctionEventInvokeConfig', 'lambda:TagResource', 'lambda:UntagResource', 'lambda:ListTags']
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:circini-business-hours'
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:circini-business-hours:*'
+              - Effect: Allow
+                Action: ['scheduler:CreateSchedule', 'scheduler:GetSchedule', 'scheduler:UpdateSchedule', 'scheduler:DeleteSchedule', 'scheduler:TagResource', 'scheduler:UntagResource', 'scheduler:ListTagsForResource']
+                Resource: !Sub 'arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/circini-business-hours'
+              - Effect: Allow
+                Action: ['scheduler:GetScheduleGroup']
+                Resource: !Sub 'arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/default'
+              - Effect: Allow
+                Action: ['ssm:GetParameter', 'ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:AddTagsToResource', 'ssm:RemoveTagsFromResource', 'ssm:ListTagsForResource']
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/business-hours/lease'
+              - Effect: Allow
+                Action: ['sqs:CreateQueue', 'sqs:GetQueueUrl', 'sqs:GetQueueAttributes', 'sqs:SetQueueAttributes', 'sqs:DeleteQueue', 'sqs:TagQueue', 'sqs:UntagQueue', 'sqs:ListQueueTags']
+                Resource: !Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:circini-business-hours-failures'
               # Manage and pass ONLY the circini-* task/execution roles the app
               # stack defines. iam:PassRole is scoped so a compromised pipeline
               # cannot hand an arbitrary role to ECS or CloudFormation.

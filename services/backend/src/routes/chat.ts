@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
+import { githubChatContext } from '../services/githubAgent.js';
 import { screenPayload, sendToAIService } from '../services/aiService.js';
 import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
 import { recordAudit } from '../services/audit.js';
@@ -126,6 +127,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
         history,
         user_id: user.id,
         turn_id: turnId,
+        github_context: await githubChatContext(prisma, user.id),
       });
     } catch (aiError) {
       recordAiEvent({

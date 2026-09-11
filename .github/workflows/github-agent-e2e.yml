@@ -1,0 +1,41 @@
+name: GitHub agent production E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: 'Exact active administrator account with GitHub connected'
+        required: true
+        type: string
+      session_id:
+        description: 'Optional existing E2E GitHub read verification chat ID; original chats are never modified'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: github-agent-production-e2e
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Configure deployment identity
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Verify actual GitHub reads and original access question
+        env:
+          GITHUB_VERIFY_EMAIL: ${{ inputs.email }}
+          GITHUB_VERIFY_SESSION_ID: ${{ inputs.session_id }}
+        run: python3 scripts/verify-github-agent-production.py

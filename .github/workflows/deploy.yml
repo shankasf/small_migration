@@ -115,17 +115,35 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Base stacks are idempotent — an unchanged template is a no-op. The app
-      # stack carries the new image tag and config.
-      - name: Deploy network / data / cognito stacks
+      - name: Converge deployment permissions
         run: |
-          set -euo pipefail
-          # Keep the bootstrap role converged before it creates resources. The
-          # role is deliberately allowed to update only circini-* IAM roles.
           aws cloudformation deploy --stack-name circini-github-oidc \
             --template-file deploy/aws/github-oidc.yaml \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+
+      - name: Hold scheduled shutdown and wake the database for deployment
+        run: python3 scripts/manage-business-hours.py hold --owner "${{ github.run_id }}" --optional --wait --pending-ok
+
+      # Refresh short-lived credentials after a potentially slow RDS cold start.
+      - name: Refresh AWS deployment credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Finish database startup with refreshed credentials
+        run: python3 scripts/manage-business-hours.py hold --owner "${{ github.run_id }}" --optional --wait
+
+      - name: Refresh credentials for the application rollout
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy network / data / cognito stacks
+        run: |
+          set -euo pipefail
           aws cloudformation deploy --stack-name circini-network \
             --template-file deploy/aws/network.yaml --no-fail-on-empty-changeset
           aws cloudformation deploy --stack-name circini-data \
@@ -218,3 +236,13 @@ jobs:
 
       - name: Verify live GitHub integration
         run: python3 scripts/verify-github-production.py
+
+      - name: Deploy Auckland business-hours schedule
+        run: |
+          python3 -m pip install --user PyYAML==6.0.2
+          python3 scripts/deploy-business-hours.py
+          python3 scripts/manage-business-hours.py reconcile
+
+      - name: Resume business-hours policy after deployment
+        if: ${{ always() }}
+        run: python3 scripts/manage-business-hours.py release --owner "${{ github.run_id }}" --optional

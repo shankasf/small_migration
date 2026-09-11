@@ -1,0 +1,290 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Circini weekday Auckland opening hours and compute cost controls
+Parameters:
+  ListenerArn:
+    Type: String
+  FrontendTargetArn:
+    Type: String
+  BackendTargetArn:
+    Type: String
+  AlertTopicArn:
+    Type: String
+  InitialLease:
+    Type: String
+    Default: '{}'
+  InitiallyOpen:
+    Type: String
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Default: 'false'
+Conditions:
+  IsInitiallyOpen:
+    Fn::Equals:
+    - Ref: InitiallyOpen
+    - 'true'
+Resources:
+  Gate:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn:
+        Ref: ListenerArn
+      Priority: 1
+      Conditions:
+      - Field: path-pattern
+        PathPatternConfig:
+          Values:
+          - Fn::If:
+            - IsInitiallyOpen
+            - /__circini_business_hours_closed__
+            - /*
+      Actions:
+      - Type: fixed-response
+        FixedResponseConfig:
+          StatusCode: '503'
+          ContentType: text/html
+          MessageBody: <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Circini
+            opening hours</title><body style="font:18px system-ui;max-width:640px;margin:12vh auto;padding:24px"><h1>Circini
+            is currently closed</h1><p>Available Monday to Friday, 10 am–8 pm New Zealand time.</p><p>We may be starting up
+            if you are visiting during those hours. Please try again shortly.</p></body></html>
+  Lease:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /circini/business-hours/lease
+      Type: String
+      Value:
+        Ref: InitialLease
+      Description: Expiring deployment maintenance lease; no credentials
+  Logs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /aws/lambda/circini-business-hours
+  Failures:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: circini-business-hours-failures
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+  ControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: business-hours
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource:
+              Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/circini-business-hours:*
+          - Effect: Allow
+            Action:
+            - ecs:DescribeServices
+            - ecs:UpdateService
+            Resource:
+            - Fn::Sub: arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/circini-demo/frontend
+            - Fn::Sub: arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/circini-demo/backend
+            - Fn::Sub: arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/circini-demo/ai-service
+          - Effect: Allow
+            Action:
+            - ecs:ListTasks
+            Resource: '*'
+            Condition:
+              ArnEquals:
+                ecs:cluster:
+                  Fn::Sub: arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/circini-demo
+          - Effect: Allow
+            Action:
+            - ecs:DescribeTasks
+            Resource:
+              Fn::Sub: arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/circini-demo/*
+          - Effect: Allow
+            Action:
+            - rds:DescribeDBInstances
+            - rds:StartDBInstance
+            - rds:StopDBInstance
+            Resource:
+              Fn::Sub: arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:circini-demo
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:DescribeRules
+            - elasticloadbalancing:DescribeTargetHealth
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:ModifyRule
+            Resource:
+              Ref: Gate
+          - Effect: Allow
+            Action:
+            - ssm:GetParameter
+            - ssm:PutParameter
+            Resource:
+              Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/business-hours/lease
+          - Effect: Allow
+            Action:
+            - cloudwatch:DescribeAlarms
+            - cloudwatch:EnableAlarmActions
+            - cloudwatch:DisableAlarmActions
+            Resource:
+              Fn::Sub: arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:circini-backend-unavailable
+      RoleName: circini-business-hours-controller
+  Controller:
+    Type: AWS::Lambda::Function
+    DependsOn: Logs
+    Properties:
+      FunctionName: circini-business-hours
+      Runtime: python3.12
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+        - ControllerRole
+        - Arn
+      Timeout: 55
+      MemorySize: 128
+      ReservedConcurrentExecutions: 1
+      Code:
+        ZipFile: __CONTROLLER_CODE__
+      Environment:
+        Variables:
+          CLUSTER: circini-demo
+          DATABASE: circini-demo
+          LEASE_PARAMETER:
+            Ref: Lease
+          GATE_RULE:
+            Ref: Gate
+          FRONTEND_TARGET:
+            Ref: FrontendTargetArn
+          BACKEND_TARGET:
+            Ref: BackendTargetArn
+  InvocationPolicy:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName:
+        Ref: Controller
+      Qualifier: $LATEST
+      MaximumEventAgeInSeconds: 60
+      MaximumRetryAttempts: 0
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: scheduler.amazonaws.com
+          Action: sts:AssumeRole
+          Condition:
+            StringEquals:
+              aws:SourceAccount:
+                Ref: AWS::AccountId
+      Policies:
+      - PolicyName: business-hours
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource:
+              Fn::GetAtt:
+              - Controller
+              - Arn
+          - Effect: Allow
+            Action:
+            - sqs:SendMessage
+            Resource:
+              Fn::GetAtt:
+              - Failures
+              - Arn
+      RoleName: circini-business-hours-scheduler
+  Schedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: circini-business-hours
+      Description: Reconcile Auckland weekday opening, warm-up and shutdown each minute
+      State: ENABLED
+      ScheduleExpression: cron(* * * * ? *)
+      ScheduleExpressionTimezone: Pacific/Auckland
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      Target:
+        Arn:
+          Fn::GetAtt:
+          - Controller
+          - Arn
+        RoleArn:
+          Fn::GetAtt:
+          - SchedulerRole
+          - Arn
+        Input: '{"operation":"reconcile"}'
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 60
+          MaximumRetryAttempts: 2
+        DeadLetterConfig:
+          Arn:
+            Fn::GetAtt:
+            - Failures
+            - Arn
+  ControllerErrors:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: circini-business-hours-errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value:
+          Ref: Controller
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - Ref: AlertTopicArn
+  ScheduleFailures:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: circini-business-hours-delivery-failures
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+      - Name: QueueName
+        Value:
+          Fn::GetAtt:
+          - Failures
+          - QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - Ref: AlertTopicArn
+Outputs:
+  FunctionName:
+    Value:
+      Ref: Controller
+  ScheduleName:
+    Value:
+      Ref: Schedule
+  GateRuleArn:
+    Value:
+      Ref: Gate
+  Timezone:
+    Value: Pacific/Auckland

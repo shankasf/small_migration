@@ -43,7 +43,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: GitHub integration security tests
-        run: npx tsx --test tests/github.test.ts
+        run: npx tsx --test tests/github.test.ts tests/githubAgent.test.ts
 
   backend-security:
     name: Backend security integration tests
@@ -205,6 +205,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Test Auckland business-hours policy and shutdown ordering
+        run: python3 -m unittest discover -s scripts/tests -p 'test*.py' -v
+
+      - name: Validate business-hours CloudFormation and deployment IAM
+        run: |
+          python3 -m pip install --user cfn-lint==1.55.1
+          cfn-lint deploy/aws/business-hours.yaml deploy/aws/github-oidc.yaml deploy/aws/app.yaml
 
       # These encode deployment invariants that a template edit must not undo.
       # Ported from the K3s manifest gates when K3s was retired (2026-09-10).

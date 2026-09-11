@@ -10,6 +10,7 @@ interface ChatRequest {
   /** Identity of the turn, so AI-service activity logs are attributable. */
   user_id?: string;
   turn_id?: string;
+  github_context?: { status: string; selectedRepository: { id: number; installationId: number; fullName: string; branch: string } | null };
 }
 
 interface GeneratedFile {

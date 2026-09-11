@@ -486,6 +486,16 @@ Resources:
           Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/circini-ai-service:${ImageTag}'
           Essential: true
           DependsOn: [{ ContainerName: volume-init, Condition: SUCCESS }]
+          HealthCheck:
+            Command:
+              - CMD
+              - python
+              - -c
+              - "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8084/ai/health',timeout=3); assert r.status==200 and json.load(r).get('status')=='healthy'"
+            Interval: 15
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
           PortMappings:
             - { Name: ai, ContainerPort: 8084, Protocol: tcp }
           ReadonlyRootFilesystem: true

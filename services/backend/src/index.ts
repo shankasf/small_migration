@@ -10,6 +10,7 @@ import { recordAudit } from './services/audit.js';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
+import githubAgentRouter from './routes/githubAgent.js';
 import sessionsRouter from './routes/sessions.js';
 import chatRouter from './routes/chat.js';
 import filesRouter from './routes/files.js';
@@ -99,6 +100,7 @@ app.get('/api/health', (req, res) => {
 // and carry their own fail-closed x-internal-key guard. Registering them here
 // (rather than exempting a path prefix inside authenticate) means a new route
 // can never inherit an auth exemption implicitly.
+app.use('/api/internal/github', githubAgentRouter);
 app.post('/api/logs/:sessionId', requireInternalKey, (req, res) => {
   const { sessionId } = req.params;
   const {
