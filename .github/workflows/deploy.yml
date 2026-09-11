@@ -156,7 +156,8 @@ jobs:
             }
           aws cloudformation deploy --stack-name circini-cognito \
             --template-file deploy/aws/cognito.yaml --no-fail-on-empty-changeset \
-            --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
+            --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}" \
+              AdditionalAppUrl="${{ vars.ADDITIONAL_APP_URL }}"
 
       - name: Validate and configure GitHub App
         env:
@@ -185,6 +186,8 @@ jobs:
               ImageTag="${{ steps.resolve.outputs.tag }}" \
               AuthMode="${{ vars.AUTH_MODE || 'oidc' }}" \
               CertificateArn="${{ vars.CERTIFICATE_ARN }}" \
+              AdditionalCertificateArn="${{ vars.ADDITIONAL_CERTIFICATE_ARN }}" \
+              IntegrationAppDomain="${{ vars.INTEGRATION_APP_DOMAIN }}" \
               AppDomain="${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}" \
               OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-6-astra' }}" \
               LlmProvider="${{ vars.LLM_PROVIDER || 'openai' }}" \

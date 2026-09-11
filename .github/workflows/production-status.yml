@@ -2,6 +2,15 @@ name: Production release status
 
 on:
   workflow_dispatch:
+    inputs:
+      configure_signify_domain:
+        description: Apply the reviewed Signify domain and certificate migration
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -14,11 +23,27 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
     steps:
-      - name: Configure read access through deployment identity
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Configure AWS deployment identity
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+      - name: Hold scheduled shutdown during domain migration
+        if: ${{ inputs.configure_signify_domain }}
+        run: python3 scripts/manage-business-hours.py hold --owner "${{ github.run_id }}" --optional --wait
+      - name: Configure Signify HTTPS domain
+        if: ${{ inputs.configure_signify_domain }}
+        run: |
+          python3 -m pip install PyYAML==6.0.2
+          python3 scripts/configure-app-domain.py
+      - name: Save domain migration evidence
+        if: ${{ always() && inputs.configure_signify_domain }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signify-domain-evidence
+          path: domain-evidence/
+          retention-days: 30
       - name: Inspect stack and service rollout status
         run: |
           set -euo pipefail
@@ -33,3 +58,6 @@ jobs:
             aws ecs describe-tasks --cluster circini-demo --tasks $TASKS \
               --query 'tasks[].{Task:taskArn,Definition:taskDefinitionArn,Status:lastStatus,Health:healthStatus,Containers:containers[].{Name:name,Status:lastStatus,Health:healthStatus,Exit:exitCode,Reason:reason,Image:image}}'
           fi
+      - name: Release domain migration maintenance hold
+        if: ${{ always() && inputs.configure_signify_domain }}
+        run: python3 scripts/manage-business-hours.py release --owner "${{ github.run_id }}" --optional
