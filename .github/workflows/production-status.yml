@@ -19,17 +19,34 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Inspect stack and service rollout status
+      - name: Read automatic schedule logs after manual verification
         run: |
-          set -euo pipefail
-          aws cloudformation describe-stacks --stack-name circini-app \
-            --query 'Stacks[].{Status:StackStatus,Updated:LastUpdatedTime}'
-          aws cloudformation describe-stack-events --stack-name circini-app --max-items 25 \
-            --query 'StackEvents[].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}'
-          aws ecs describe-services --cluster circini-demo --services backend frontend ai-service \
-            --query 'services[].{Service:serviceName,Desired:desiredCount,Running:runningCount,Pending:pendingCount,Deployments:deployments[].{Status:status,State:rolloutState,Reason:rolloutStateReason,Task:taskDefinition,Running:runningCount,Pending:pendingCount,Failed:failedTasks},Events:events[:5]}'
-          TASKS=$(aws ecs list-tasks --cluster circini-demo --desired-status RUNNING --query 'taskArns' --output text)
-          if [ -n "$TASKS" ] && [ "$TASKS" != "None" ]; then
-            aws ecs describe-tasks --cluster circini-demo --tasks $TASKS \
-              --query 'tasks[].{Task:taskArn,Definition:taskDefinitionArn,Status:lastStatus,Health:healthStatus,Containers:containers[].{Name:name,Status:lastStatus,Health:healthStatus,Exit:exitCode,Reason:reason,Image:image}}'
-          fi
+          python3 - <<'PYCODE'
+          import datetime, json, subprocess
+          def aws(*args):
+              return json.loads(subprocess.check_output(['aws', *args, '--output', 'json'], text=True))
+          start = int(datetime.datetime(2026, 9, 11, 1, 9, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+          logs = aws('logs', 'filter-log-events', '--log-group-name', '/aws/lambda/circini-business-hours', '--start-time', str(start))
+          results, errors, invocations = [], [], []
+          for event in logs.get('events', []):
+              message = event.get('message', '').strip()
+              timestamp = datetime.datetime.fromtimestamp(event['timestamp'] / 1000, datetime.timezone.utc).isoformat()
+              if message.startswith('START RequestId:'):
+                  invocations.append({'timestamp': timestamp, 'message': message})
+              try:
+                  value = json.loads(message)
+              except json.JSONDecodeError:
+                  value = None
+              if isinstance(value, dict) and 'publicReady' in value:
+                  results.append({'timestamp': timestamp, 'result': value})
+              if '[ERROR]' in message or 'Traceback' in message or 'Task timed out' in message:
+                  errors.append({'timestamp': timestamp, 'message': message[:700]})
+          schedule = aws('scheduler', 'get-schedule', '--name', 'circini-business-hours')
+          queue = aws('sqs', 'get-queue-url', '--queue-name', 'circini-business-hours-failures')['QueueUrl']
+          attrs = aws('sqs', 'get-queue-attributes', '--queue-url', queue, '--attribute-names', 'ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible', 'ApproximateNumberOfMessagesDelayed')['Attributes']
+          print(json.dumps({'automaticScheduleLogCheck': {'since': '2026-09-11T01:09:00Z', 'schedule': {key: schedule.get(key) for key in ['Name', 'State', 'ScheduleExpression', 'ScheduleExpressionTimezone']}, 'invocationCount': len(invocations), 'results': results[-8:], 'errors': errors, 'deadLetterQueue': attrs}}))
+          assert len(results) >= 1, 'No automatic scheduled result found after 01:09 UTC'
+          assert not errors, 'Scheduled controller errors found'
+          assert schedule['State'] == 'ENABLED'
+          assert all(int(count) == 0 for count in attrs.values()), 'Scheduler dead-letter queue contains messages'
+          PYCODE
