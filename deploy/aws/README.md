@@ -71,10 +71,10 @@ administrator setup rather than presenting a non-functional Connect action.
 GitHub uses a public GitHub App with read-only Contents/Metadata permissions.
 Register it for **Any account**, with these settings:
 
-- Homepage: `https://migration.callsphere.site`
-- Callback: `https://migration.callsphere.site/api/integrations/github/callback`
+- Homepage: `https://migration-agent.uat.signify.net.nz`
+- Callback: `https://migration-agent.uat.signify.net.nz/api/integrations/github/callback`
 - Request user authorization during installation; keep expiring user tokens enabled.
-- Webhook: `https://migration.callsphere.site/api/integrations/github/webhook`
+- Webhook: `https://migration-agent.uat.signify.net.nz/api/integrations/github/webhook`
 - Webhook content type: JSON, SSL verification enabled, and a random webhook secret.
 - Subscribe to installation/repository-access events. Authorization revocations are also handled.
 
@@ -136,13 +136,13 @@ The public app uses `https://migration-agent.uat.signify.net.nz`. Its CNAME
 points to `circini-demo-617813330.ap-southeast-2.elb.amazonaws.com`, with ACM
 certificate `5f12ecf3-ce00-4840-ac77-e4b0ce039953` in `ap-southeast-2`.
 
-Repository variables `APP_DOMAIN` and `CERTIFICATE_ARN` select the new origin.
-`ADDITIONAL_CERTIFICATE_ARN` retains the old domain certificate and
-`ADDITIONAL_APP_URL` retains its Cognito callback/logout URLs. Until the
-external GitHub/GitLab registrations are migrated, `INTEGRATION_APP_DOMAIN`
-remains `migration.callsphere.site`; provider authorization callbacks and the
-return to Settings continue through that existing domain. Ordinary app and
-Cognito sign-in traffic use the Signify domain.
+Repository variables `APP_DOMAIN` and `CERTIFICATE_ARN` select the origin.
+This is now the only public domain: the former `migration.callsphere.site`
+origin is retired. `ADDITIONAL_CERTIFICATE_ARN`, `ADDITIONAL_APP_URL` and
+`INTEGRATION_APP_DOMAIN` exist only to bridge a domain move and are left
+unset, so the retired certificate is off the 443 listener, Cognito keeps no
+callback or logout URL for it, and provider authorization callbacks return
+through the Signify domain.
 
 For this move, dispatch `production-status.yml` with
 `configure_signify_domain=true`. The script checks the issued certificate and

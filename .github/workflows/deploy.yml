@@ -156,7 +156,7 @@ jobs:
             }
           aws cloudformation deploy --stack-name circini-cognito \
             --template-file deploy/aws/cognito.yaml --no-fail-on-empty-changeset \
-            --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}" \
+            --parameter-overrides AppUrl="https://${{ vars.APP_DOMAIN || 'migration-agent.uat.signify.net.nz' }}" \
               AdditionalAppUrl="${{ vars.ADDITIONAL_APP_URL }}"
 
       - name: Validate and configure GitHub App
@@ -188,7 +188,7 @@ jobs:
               CertificateArn="${{ vars.CERTIFICATE_ARN }}" \
               AdditionalCertificateArn="${{ vars.ADDITIONAL_CERTIFICATE_ARN }}" \
               IntegrationAppDomain="${{ vars.INTEGRATION_APP_DOMAIN }}" \
-              AppDomain="${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}" \
+              AppDomain="${{ vars.APP_DOMAIN || 'migration-agent.uat.signify.net.nz' }}" \
               OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-6-astra' }}" \
               LlmProvider="${{ vars.LLM_PROVIDER || 'openai' }}" \
               ApprovedLlmHost="${{ vars.APPROVED_LLM_HOST || 'api.openai.com' }}" \
@@ -232,7 +232,7 @@ jobs:
       - name: Smoke test
         run: |
           set -euo pipefail
-          BASE="https://${{ vars.APP_DOMAIN || 'migration.callsphere.site' }}"
+          BASE="https://${{ vars.APP_DOMAIN || 'migration-agent.uat.signify.net.nz' }}"
           curl -fsS -o /dev/null "$BASE/"
           curl -fsS "$BASE/api/health" | grep -q '"status":"ok"'
           echo "smoke test passed"

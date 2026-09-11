@@ -7,7 +7,7 @@
 
 set -uo pipefail
 
-BASE="${1:-https://migration.callsphere.site}"
+BASE="${1:-https://migration-agent.uat.signify.net.nz}"
 CLUSTER="${ECS_CLUSTER:-circini-demo}"
 SERVICES="${ECS_SERVICES:-frontend backend ai-service}"
 PASS=0

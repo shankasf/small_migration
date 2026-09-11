@@ -9,7 +9,7 @@ Parameters:
   AppUrl:
     Type: String
     Description: HTTPS origin of the deployed frontend (OIDC redirect target)
-    Default: https://migration.callsphere.site
+    Default: https://migration-agent.uat.signify.net.nz
 
   AdditionalAppUrl:
     Type: String

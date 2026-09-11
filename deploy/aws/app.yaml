@@ -52,7 +52,7 @@ Parameters:
     Description: Optional existing domain registered with external OAuth providers
   AppDomain:
     Type: String
-    Default: migration.callsphere.site
+    Default: migration-agent.uat.signify.net.nz
 
 Conditions:
   HasAdditionalCertificate: !And [!Condition HasCertificate, !Not [!Equals [!Ref AdditionalCertificateArn, '']]]

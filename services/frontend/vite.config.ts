@@ -9,7 +9,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '0.0.0.0',
-    allowedHosts: ['migration.callsphere.site', 'circini.callsphere.site', 'callsphere.site', 'www.callsphere.site', 'localhost'],
+    allowedHosts: ['migration-agent.uat.signify.net.nz', 'localhost'],
     proxy: {
       '/api': {
         target: process.env.API_PROXY_TARGET || 'http://localhost:3001',

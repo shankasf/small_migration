@@ -8,7 +8,7 @@ info:
     covers key management and the primary chat/file workflow. Source verified against application release
     6db2702.
 servers:
-- url: https://migration.callsphere.site
+- url: https://migration-agent.uat.signify.net.nz
   description: Production AWS application
 - url: http://localhost:3001
   description: Local backend

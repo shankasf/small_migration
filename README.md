@@ -19,7 +19,7 @@ flowchart LR
     U["🖥️ Browser<br/>React + Vite"]
 
     subgraph edge["Edge — TLS termination"]
-        IG["Application Load Balancer<br/>migration.callsphere.site<br/>ACM certificate · HTTP→HTTPS"]
+        IG["Application Load Balancer<br/>migration-agent.uat.signify.net.nz<br/>ACM certificate · HTTP→HTTPS"]
     end
 
     subgraph cluster["ECS Fargate — cluster circini-demo · Service Connect"]
@@ -124,7 +124,7 @@ The key is shown once; afterwards only its SHA-256 digest and a short prefix are
 kept. Send it as a bearer token:
 
 ```bash
-curl -H "Authorization: Bearer $CIRCINI_API_KEY" https://migration.callsphere.site/api/sessions
+curl -H "Authorization: Bearer $CIRCINI_API_KEY" https://migration-agent.uat.signify.net.nz/api/sessions
 ```
 
 A key acts as the admin who created it on every REST and WebSocket route. It

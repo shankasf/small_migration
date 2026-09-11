@@ -77,10 +77,10 @@ Set `CIRCINI_API_KEY` in your local environment or a GitHub Actions secret named
 committed to a file. Do not enable shell tracing when using it.
 
 ```bash
-curl --fail-with-body 'https://migration.callsphere.site/api/auth/me' \
+curl --fail-with-body 'https://migration-agent.uat.signify.net.nz/api/auth/me' \
   -H "Authorization: Bearer ${CIRCINI_API_KEY}"
 
-curl --fail-with-body 'https://migration.callsphere.site/api/sessions' \
+curl --fail-with-body 'https://migration-agent.uat.signify.net.nz/api/sessions' \
   -H "Authorization: Bearer ${CIRCINI_API_KEY}" \
   -H 'Content-Type: application/json' \
   -d '{"name":"API migration test"}'
@@ -90,12 +90,12 @@ Use the returned session `id` in `CIRCINI_SESSION_ID`:
 
 ```bash
 curl --fail-with-body \
-  "https://migration.callsphere.site/api/files/${CIRCINI_SESSION_ID}/upload" \
+  "https://migration-agent.uat.signify.net.nz/api/files/${CIRCINI_SESSION_ID}/upload" \
   -H "Authorization: Bearer ${CIRCINI_API_KEY}" \
   -F 'files=@samples/example.sql'
 
 curl --fail-with-body --get \
-  'https://migration.callsphere.site/api/files/library' \
+  'https://migration-agent.uat.signify.net.nz/api/files/library' \
   -H "Authorization: Bearer ${CIRCINI_API_KEY}" \
   --data-urlencode 'q=example.sql'
 ```

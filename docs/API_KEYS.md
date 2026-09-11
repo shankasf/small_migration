@@ -5,7 +5,7 @@ signing in through the browser.
 
 | | |
 |---|---|
-| Base URL | `https://migration.callsphere.site/api` |
+| Base URL | `https://migration-agent.uat.signify.net.nz/api` |
 | How to send the key | `Authorization: Bearer <key>` header on every request |
 | Key format | `cmk_` followed by 43 characters |
 | Who can create keys | Admins only, from **Settings → API keys** |
@@ -38,7 +38,7 @@ These rules apply to every request made with a key, exactly as in the app:
 - **Audit.** Every change made with a key is recorded in the audit log with
   `type: api_key`. Creating and revoking keys is audited too.
 - **Browsers.** The API only accepts browser requests from
-  `https://migration.callsphere.site`. Keys work from scripts, servers and API
+  `https://migration-agent.uat.signify.net.nz`. Keys work from scripts, servers and API
   tools, not from web pages on other sites.
 
 ## 2. When a key stops working
@@ -68,7 +68,7 @@ minute.
 
 ## 3. Create or revoke a key
 
-1. Sign in at https://migration.callsphere.site as an admin.
+1. Sign in at https://migration-agent.uat.signify.net.nz as an admin.
 2. Open **Settings → API keys**.
 3. Enter a name (for example the device or system that will use it), choose an
    expiry and click **Create key**.
@@ -91,11 +91,11 @@ $s = Read-Host "API key" -AsSecureString; $k = [Net.NetworkCredential]::new('', 
 $h = @{ Authorization = "Bearer $k" }
 
 # Quick check: prints 200 if the key works
-curl.exe -s -o NUL -w "%{http_code}`n" -H "Authorization: Bearer $k" https://migration.callsphere.site/api/auth/me
+curl.exe -s -o NUL -w "%{http_code}`n" -H "Authorization: Bearer $k" https://migration-agent.uat.signify.net.nz/api/auth/me
 
 # Get data as PowerShell objects
-Invoke-RestMethod https://migration.callsphere.site/api/auth/me -Headers $h
-$r = Invoke-RestMethod "https://migration.callsphere.site/api/sessions?limit=5" -Headers $h
+Invoke-RestMethod https://migration-agent.uat.signify.net.nz/api/auth/me -Headers $h
+$r = Invoke-RestMethod "https://migration-agent.uat.signify.net.nz/api/sessions?limit=5" -Headers $h
 $r.sessions | Select-Object name, updatedAt
 
 # Clear the key when finished
@@ -123,11 +123,11 @@ read -rs CIRCINI_API_KEY && export CIRCINI_API_KEY
 
 # Quick check: prints 200 if the key works
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $CIRCINI_API_KEY" \
-  https://migration.callsphere.site/api/auth/me
+  https://migration-agent.uat.signify.net.nz/api/auth/me
 
 # Five sessions, name and date only (needs jq)
 curl -s -H "Authorization: Bearer $CIRCINI_API_KEY" \
-  "https://migration.callsphere.site/api/sessions?limit=5" | jq '.sessions[] | {name, updatedAt}'
+  "https://migration-agent.uat.signify.net.nz/api/sessions?limit=5" | jq '.sessions[] | {name, updatedAt}'
 
 # Clear the key when finished
 unset CIRCINI_API_KEY
@@ -151,7 +151,7 @@ secret manager or a file only the service user can read (`chmod 600`).
 import os
 import requests
 
-BASE = "https://migration.callsphere.site/api"
+BASE = "https://migration-agent.uat.signify.net.nz/api"
 HEADERS = {"Authorization": f"Bearer {os.environ['CIRCINI_API_KEY']}"}
 
 me = requests.get(f"{BASE}/auth/me", headers=HEADERS, timeout=30)
@@ -179,7 +179,7 @@ print(reply.json()["assistantMessage"]["content"])
 Save as `list-sessions.mjs` and run `node list-sessions.mjs`:
 
 ```js
-const BASE = 'https://migration.callsphere.site/api';
+const BASE = 'https://migration-agent.uat.signify.net.nz/api';
 const headers = { Authorization: `Bearer ${process.env.CIRCINI_API_KEY}` };
 
 const res = await fetch(`${BASE}/sessions?limit=5`, { headers });
@@ -193,7 +193,7 @@ Live logs for a session, using `socket.io-client`:
 ```js
 import { io } from 'socket.io-client';
 
-const socket = io('https://migration.callsphere.site', {
+const socket = io('https://migration-agent.uat.signify.net.nz', {
   path: '/api/socket.io',
   auth: { token: process.env.CIRCINI_API_KEY },
 });
@@ -221,7 +221,7 @@ variable. GitHub Actions example:
     CIRCINI_API_KEY: ${{ secrets.CIRCINI_API_KEY }}
   run: |
     curl -fsS -H "Authorization: Bearer $CIRCINI_API_KEY" \
-      https://migration.callsphere.site/api/auth/me
+      https://migration-agent.uat.signify.net.nz/api/auth/me
 ```
 
 ### Phones, tablets and browser apps
