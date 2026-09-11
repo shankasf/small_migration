@@ -96,13 +96,13 @@ test('attached filenames survive history hydration and search; foreign reference
     assert.equal(found.matches[0].files[0].filename, 'attachment_mapping.csv');
   } finally { available = true; }
 });
-test('legacy attachments and generated filenames are discoverable, with file search scoped to the chat', async () => {
+test('generated filenames and saved references are discoverable, with file search scoped to the chat', async () => {
   const m = await message('Here is the result', older, 'assistant');
   const output = await prisma.generatedOutput.create({ data: { sessionId: older, messageId: m.id,
     filename: 'legacy_transform.sql', filepath: 'legacy_transform.sql', fileType: 'sql', content: 'select 1' } });
-  await snapshotFile(prisma, 'output', output);
+  const asset = await snapshotFile(prisma, 'output', output);
   const ref = await message('Please reuse this', current);
-  await prisma.messageFileRef.create({ data: { messageId: ref.id, generatedOutputId: output.id,
+  await prisma.fileReference.create({ data: { messageId: ref.id, assetId: asset.id, version: asset.version,
     filename: output.filename, kind: 'output', sourceSessionId: older } });
   available = false;
   try {

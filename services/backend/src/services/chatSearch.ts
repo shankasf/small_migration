@@ -53,16 +53,13 @@ export function startChatIndexer(prisma: PrismaClient): () => void {
 
 // Resolve metadata live so removed source access never survives in a retrieval cache.
 export async function chatFileEvidence(prisma: PrismaClient, userId: string, messageIds: string[]) {
-  const [refs, legacy, outputs] = await Promise.all([
+  const [refs, outputs] = await Promise.all([
     prisma.fileReference.findMany({ where: { messageId: { in: messageIds }, asset: { session: { ownerUserId: userId } } },
       select: { messageId: true, assetId: true, filename: true, version: true, kind: true, sourceSessionId: true } }),
-    prisma.messageFileRef.findMany({ where: { messageId: { in: messageIds }, OR: [
-      { uploadedFile: { session: { ownerUserId: userId } } }, { generatedOutput: { session: { ownerUserId: userId } } },
-    ] }, select: { messageId: true, filename: true, version: true, kind: true, sourceSessionId: true } }),
     prisma.generatedOutput.findMany({ where: { messageId: { in: messageIds }, session: { ownerUserId: userId } },
       select: { messageId: true, filename: true, sessionId: true, id: true } }),
   ]);
-  return [...refs, ...legacy, ...outputs.map(o => ({ messageId: o.messageId!, filename: o.filename,
+  return [...refs, ...outputs.map(o => ({ messageId: o.messageId!, filename: o.filename,
     kind: 'output', sourceSessionId: o.sessionId, outputId: o.id }))];
 }
 
@@ -98,12 +95,6 @@ export async function searchChatHistory(prisma: PrismaClient, userId: string, se
       SELECT r."messageId", -1, r.filename, NULL::vector FROM "FileReference" r
       JOIN allowed m ON m.id=r."messageId" JOIN "FileAsset" a ON a.id=r."assetId"
       JOIN "Session" s ON s.id=a."sessionId" WHERE s."ownerUserId"=${userId}
-      UNION ALL
-      SELECT r."messageId", -1, r.filename, NULL::vector FROM "MessageFileRef" r JOIN allowed m ON m.id=r."messageId"
-      WHERE EXISTS (SELECT 1 FROM "UploadedFile" u JOIN "Session" s ON s.id=u."sessionId"
-        WHERE u.id=r."uploadedFileId" AND s."ownerUserId"=${userId})
-        OR EXISTS (SELECT 1 FROM "GeneratedOutput" o JOIN "Session" s ON s.id=o."sessionId"
-        WHERE o.id=r."generatedOutputId" AND s."ownerUserId"=${userId})
       UNION ALL
       SELECT o."messageId", -1, o.filename, NULL::vector FROM "GeneratedOutput" o JOIN allowed m ON m.id=o."messageId"
       JOIN "Session" s ON s.id=o."sessionId" WHERE s."ownerUserId"=${userId}

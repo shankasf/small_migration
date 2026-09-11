@@ -3,7 +3,6 @@
 import base64
 import gzip
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -28,11 +27,7 @@ source = Path('scripts/check-chat-search-live.cjs').read_bytes()
 encoded = base64.b64encode(gzip.compress(source, mtime=0)).decode()
 # /tmp is the task's explicitly writable ephemeral volume. The code is trusted repository code.
 command = "require('node:fs').writeFileSync('/tmp/chat-search-check.cjs',require('node:zlib').gunzipSync(Buffer.from('" + encoded + "','base64')));require('/tmp/chat-search-check.cjs')"
-environment = []
-for name in ():
-    if os.environ.get(name):
-        environment.append({'name': name, 'value': os.environ[name]})
-overrides = {'containerOverrides': [{'name': 'backend', 'command': ['node', '-e', command], 'environment': environment}]}
+overrides = {'containerOverrides': [{'name': 'backend', 'command': ['node', '-e', command]}]}
 serialized = json.dumps(overrides, separators=(',', ':'))
 assert len(serialized.encode()) <= 8192, 'ECS overrides exceed the 8192-byte limit'
 with tempfile.TemporaryDirectory(prefix='circini-chat-search-') as directory:
@@ -61,8 +56,7 @@ while True:
                 value = json.loads(event['message'])
             except json.JSONDecodeError:
                 continue
-            if any(key in value for key in ('chatSearchProgress', 'chatSearchProductionCheck',
-                                           'chatSearchBrowserKeyRevoked')):
+            if any(key in value for key in ('chatSearchProgress', 'chatSearchProductionCheck')):
                 print(json.dumps(value), flush=True)
                 passed |= value.get('chatSearchProductionCheck') == 'passed'
     except subprocess.CalledProcessError:
