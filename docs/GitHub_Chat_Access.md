@@ -46,3 +46,23 @@ After the backend and AI service release reaches steady state, run `python3 scri
 The live test first reproduces the exact question “can you access my github” without naming tools, requires a real connection-status tool call and rejects the original generic denial. It verifies actual selected-repository reads and then requires all four GitHub tools to appear in real chatbot activity, checks the selected branch and commit provenance, and validates a concrete package name when reading package.json. GitHub files and connection selection are unchanged. A temporary application API key is revoked on completion or failure; no provider tokens or raw repository content are printed. The dedicated GitHub agent production E2E workflow exits nonzero and reports failure explicitly if verification fails.
 
 A passing local build/test is not a production verification claim. Attach the successful release and live verification run to the final delivery record.
+
+## Live end-to-end evidence — September 11, 2026
+
+[Production E2E run 34548376040](https://github.com/shankasf/small_migration/actions/runs/34548376040)
+passed against the deployed `sha-1cbff1d` backend and AI services. The first
+message was exactly `can you access my github`; its assertions required a real
+`github_connection_status` call and rejected the original generic denial.
+
+The verification chat `a74d9b38-92c5-479a-8277-9e4ef5f0974e` then used all four
+GitHub tools. It read `services/backend/package.json` from
+`shankasf/small_migration`, saved branch `Feature-Review`, pinned commit
+`b58932788863e9fdb655fa5719fec9542f59c56c`, and verified the actual package name
+in the chatbot answer. The original conversation and repository selection were
+preserved; no GitHub writes occurred. The temporary application key was revoked
+and a subsequent authenticated request returned HTTP 401.
+
+The complete [AWS release 34547420528](https://github.com/shankasf/small_migration/actions/runs/34547420528)
+subsequently passed all eight CI gates, three image builds/scans, ECS steady state,
+the public smoke test, and live GitHub integration checks at main commit
+`1cbff1de56da113717f5350407e830c18ca73c12`.

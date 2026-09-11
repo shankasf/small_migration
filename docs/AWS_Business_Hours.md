@@ -98,3 +98,43 @@ verification.
 
 Sources: [AWS Scheduler timezone and timing](https://docs.aws.amazon.com/scheduler/latest/UserGuide/schedule-types.html),
 [RDS stopping, retained storage charges and automatic restart](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_StopInstance.html).
+
+## Live installation — September 11, 2026
+
+[AWS release 34547420528](https://github.com/shankasf/small_migration/actions/runs/34547420528)
+passed all CI/security gates, image scans, ECS steady state, public smoke tests,
+and GitHub integration checks at commit
+`1cbff1de56da113717f5350407e830c18ca73c12`. It created stack
+`circini-business-hours` at 01:08 UTC.
+
+AWS reported schedule `circini-business-hours` as **ENABLED**, with expression
+`cron(* * * * ? *)` and timezone **Pacific/Auckland**. Its controller completed a
+real reconciliation and released the deployment lease. At 13:08 Auckland time,
+maintenance was false, the database was available, the AI application was
+healthy, and each of the three services had desired/running counts 1/1 with no
+pending tasks. Public readiness was true; no corrective actions were needed.
+
+The first actual scheduled evening shutdown and subsequent cold opening have
+not yet occurred at the time of installation. Time-rule tests and a successful
+live reconciliation establish the installed policy; they do not claim that a
+full overnight cycle has already been observed.
+
+A separate [read-only automatic-execution check 34549586598](https://github.com/shankasf/small_migration/actions/runs/34549586598)
+observed successful controller results at 13:09 and 13:10 Auckland time, after
+the deployment's manual reconciliation/release had ended. Both had maintenance
+false, healthy resources, public readiness true, and no corrective actions.
+There were no Lambda error records in the checked window, and all three
+reported dead-letter queue counts were zero. This diagnostic performed no
+controller invocation or resource/lease changes.
+
+Post-release checks against the deployed controller all passed:
+
+| Check | Observed result | Evidence |
+| --- | --- | --- |
+| Current status | Empty lease; healthy app; enabled Auckland schedule | [34549490478](https://github.com/shankasf/small_migration/actions/runs/34549490478) |
+| Friday September 11, 8 pm | Database/services/public access planned off | [34549552812](https://github.com/shankasf/small_migration/actions/runs/34549552812) |
+| Saturday September 12, 10 am | Database/services/public access planned off | [34549619425](https://github.com/shankasf/small_migration/actions/runs/34549619425) |
+| Monday September 14, 10 am | Database/services/public access planned on | [34549670694](https://github.com/shankasf/small_migration/actions/runs/34549670694) |
+
+The future-time checks used `plan`, which is read-only and cannot change production
+resources. They validate the deployed time policy without interrupting the app.
