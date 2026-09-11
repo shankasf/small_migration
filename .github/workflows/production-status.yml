@@ -1,38 +1,35 @@
 name: Production release status
+
 on:
   workflow_dispatch:
+
 permissions:
   contents: read
   id-token: write
+
 jobs:
-  certificate:
+  status:
     runs-on: ubuntu-latest
     environment: production
     env:
-      AWS_REGION: ap-southeast-2
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
     steps:
-      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+      - name: Configure read access through deployment identity
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ap-southeast-2
-      - name: Attach and verify the supplied Signify certificate
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Inspect stack and service rollout status
         run: |
-          python3 - <<'PYCODE'
-          import json, subprocess
-          def aws(*args):
-              return json.loads(subprocess.check_output(['aws', *args, '--output', 'json'], text=True))
-          domain = 'migration-agent.uat.signify.net.nz'
-          cert_arn = 'arn:aws:acm:ap-southeast-2:026146807914:certificate/5f12ecf3-ce00-4840-ac77-e4b0ce039953'
-          assert aws('sts', 'get-caller-identity')['Account'] == '026146807914'
-          cert = aws('acm', 'describe-certificate', '--certificate-arn', cert_arn)['Certificate']
-          assert cert['Status'] == 'ISSUED', cert['Status']
-          assert domain in cert['SubjectAlternativeNames'], cert['SubjectAlternativeNames']
-          alb = aws('elbv2', 'describe-load-balancers', '--names', 'circini-demo')['LoadBalancers'][0]
-          cname = subprocess.check_output(['dig', '+short', 'CNAME', domain], text=True).strip().rstrip('.')
-          assert cname == alb['DNSName']
-          listener = next(l for l in aws('elbv2', 'describe-listeners', '--load-balancer-arn', alb['LoadBalancerArn'])['Listeners'] if l['Port'] == 443)
-          print(json.dumps({'certificateStatus': cert['Status'], 'domains': cert['SubjectAlternativeNames'], 'expires': cert['NotAfter'], 'dns': cname, 'listener': listener['ListenerArn']}))
-          aws('elbv2', 'add-listener-certificates', '--listener-arn', listener['ListenerArn'], '--certificates', json.dumps([{'CertificateArn': cert_arn}]))
-          subprocess.run(['curl', '--fail', '--silent', '--show-error', '--retry', '10', '--retry-all-errors', '--retry-delay', '3', 'https://' + domain + '/api/health'], check=True)
-          print('SIGNIFY_HTTPS_CERTIFICATE_VERIFIED')
-          PYCODE
+          set -euo pipefail
+          aws cloudformation describe-stacks --stack-name circini-app \
+            --query 'Stacks[].{Status:StackStatus,Updated:LastUpdatedTime}'
+          aws cloudformation describe-stack-events --stack-name circini-app --max-items 25 \
+            --query 'StackEvents[].{Time:Timestamp,Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}'
+          aws ecs describe-services --cluster circini-demo --services backend frontend ai-service \
+            --query 'services[].{Service:serviceName,Desired:desiredCount,Running:runningCount,Pending:pendingCount,Deployments:deployments[].{Status:status,State:rolloutState,Reason:rolloutStateReason,Task:taskDefinition,Running:runningCount,Pending:pendingCount,Failed:failedTasks},Events:events[:5]}'
+          TASKS=$(aws ecs list-tasks --cluster circini-demo --desired-status RUNNING --query 'taskArns' --output text)
+          if [ -n "$TASKS" ] && [ "$TASKS" != "None" ]; then
+            aws ecs describe-tasks --cluster circini-demo --tasks $TASKS \
+              --query 'tasks[].{Task:taskArn,Definition:taskDefinitionArn,Status:lastStatus,Health:healthStatus,Containers:containers[].{Name:name,Status:lastStatus,Health:healthStatus,Exit:exitCode,Reason:reason,Image:image}}'
+          fi
