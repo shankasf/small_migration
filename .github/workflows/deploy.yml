@@ -243,6 +243,9 @@ jobs:
       - name: Verify live chat history search
         run: python3 scripts/verify-chat-search-production.py
 
+      - name: Verify head and impact analysis agents
+        run: python3 scripts/verify-impact-agent-production.py
+
       - name: Deploy Auckland business-hours schedule
         run: |
           python3 -m pip install --user PyYAML==6.0.2

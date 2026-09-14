@@ -1,5 +1,6 @@
+import { snowflakeKeyPairJwt } from '../services/snowflakeAuth.js';
 import { Router, Request, Response } from 'express';
-import { createHash, createPrivateKey, createPublicKey, createSign, randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import axios from 'axios';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { AuthedRequest, requireWriteAccess } from '../middleware/auth.js';
@@ -71,26 +72,6 @@ function cleanText(value: unknown, max = 255): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
 }
 
-function snowflakeKeyPairJwt(account: string, username: string, privateKeyPem: string, passphrase?: string): string {
-  const privateKey = createPrivateKey({
-    key: privateKeyPem,
-    format: 'pem',
-    ...(passphrase ? { passphrase } : {}),
-  });
-  const publicKeyDer = createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
-  const fingerprint = `SHA256:${createHash('sha256').update(publicKeyDer).digest('base64')}`;
-  const qualifiedUser = `${account.toUpperCase().replace(/\./g, '-')}.${username.toUpperCase()}`;
-  const now = Math.floor(Date.now() / 1000);
-  const encode = (value: Record<string, unknown>) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({
-    iss: `${qualifiedUser}.${fingerprint}`,
-    sub: qualifiedUser,
-    iat: now,
-    exp: now + 59 * 60,
-  })}`;
-  const signature = createSign('RSA-SHA256').update(unsigned).end().sign(privateKey, 'base64url');
-  return `${unsigned}.${signature}`;
-}
 
 function integrationError(res: Response, error: unknown, fallback: string) {
   const message = axios.isAxiosError(error)

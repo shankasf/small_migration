@@ -9,6 +9,7 @@ import { recordAudit } from '../services/audit.js';
 import { checkTokenCaps, computeCostUsd, recordUsage } from '../services/usage.js';
 import { beginTurn } from '../services/aiLog.js';
 import { attachLibraryRefs, referenceData, resolveFileRefs, snapshotFile } from '../services/fileLibrary.js';
+import { impactState, parseImpactSources, requestImpactSources } from '../services/impactState.js';
 
 
 const router = Router();
@@ -93,6 +94,18 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       }
     });
 
+    // Confirmation is parsed from the authenticated user's actual message, never
+    // from an LLM tool argument. Persist it before any evidence gateway can read.
+    let impact = impactState(session.impactState, user.id);
+    const selection = impact?.phase === 'awaiting_sources' ? parseImpactSources(message) : null;
+    const justConfirmed = Boolean(selection);
+    if (impact && selection) {
+      impact = {...impact, phase: 'confirmed', sources: selection, confirmedAt: userMessage.createdAt.toISOString()};
+      await prisma.session.update({where: {id: sessionId}, data: {impactState: {...impact}}});
+      await recordAudit(prisma, {userId: user.id, action: 'impact.sources.confirmed', resource: sessionId,
+        detail: JSON.stringify({changed: selection}), ip: req.ip});
+    }
+
     // Explicit file labels carry immutable IDs and versions; never resolve a name alone.
     const files = Object.keys(screened.files).length ? screened.files : undefined;
 
@@ -120,6 +133,7 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
 
     // Call AI service
     let aiResponse;
+    const impactStartedAt = impact ? new Date(impact.startedAt) : null;
     try {
       aiResponse = await sendToAIService({
         session_id: sessionId,
@@ -129,6 +143,11 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
         user_id: user.id,
         turn_id: turnId,
         github_context: await githubChatContext(prisma, user.id),
+        impact_context: {
+          state: impact, just_confirmed: justConfirmed,
+          connections: (await prisma.integration.findMany({where: {userId: user.id, status: 'connected'}, select: {provider: true}})).map(i => i.provider),
+          history: impactStartedAt ? screened.history.filter((_, index) => session.messages[index]?.createdAt >= impactStartedAt) : [],
+        },
       });
     } catch (aiError) {
       recordAiEvent({
@@ -147,6 +166,16 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     const outputTokens = aiResponse.usage?.output_tokens || 0;
     const model = aiResponse.usage?.model || 'unknown';
     const provider = aiResponse.usage?.provider || 'openai';
+    if (aiResponse.impact_action === 'request_sources') {
+      // An explicit source switch keeps the original brief; a new analysis uses
+      // the new user request. Earlier consent is never carried into this grant.
+      const brief = impact && (parseImpactSources(message) || /\b(sources?|instead|switch)\b/i.test(message))
+        ? `${impact.request}\n\nFollow-up: ${message}` : message;
+      impact = requestImpactSources(user.id, brief, userMessage.createdAt);
+      await prisma.session.update({where: {id: sessionId}, data: {impactState: {...impact}}});
+    } else if (aiResponse.impact_action === 'clear' && impact) {
+      await prisma.session.update({where: {id: sessionId}, data: {impactState: {}}});
+    }
     if (inputTokens || outputTokens) {
       recordUsage(prisma, {
         userId: user.id,

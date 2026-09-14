@@ -14,6 +14,7 @@ if not existing.get('taskDefinitionArns'):
     raise SystemExit(0)
 exports = {e['Name']: e['Value'] for e in aws('cloudformation', 'list-exports')['Exports']}
 sql = [
+    'ALTER TABLE "Session" ADD COLUMN IF NOT EXISTS "impactState" JSONB',
     'ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "tokensValidAfter" TIMESTAMP(3)',
     'ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "roleManagedLocally" BOOLEAN NOT NULL DEFAULT false',
     'ALTER TABLE "GeneratedOutput" ADD COLUMN IF NOT EXISTS "validation" JSONB',

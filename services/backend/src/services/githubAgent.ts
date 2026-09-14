@@ -23,7 +23,7 @@ export async function githubChatContext(prisma: PrismaClient, userId: string) {
 }
 async function readJson(path: string, token: string) {
   return (await axios.get(`https://api.github.com${path}`, { headers: githubHeaders(token), timeout: 15000,
-    maxRedirects: 0, maxContentLength: 8 * 1024 * 1024 })).data;
+    maxRedirects: 0, maxContentLength: 16 * 1024 * 1024 })).data;
 }
 function refValue(value: unknown, fallback: string) {
   const ref = value === undefined || value === '' ? fallback : value;
@@ -38,7 +38,7 @@ function pathValue(value: unknown) {
 }
 
 /** Read-only repository operations. Credentials never appear in return values. */
-export async function readGitHub(prisma: PrismaClient, userId: string, operation: string, args: Record<string, unknown>) {
+export async function readGitHub(prisma: PrismaClient, userId: string, operation: string, args: Record<string, unknown>, maxFileBytes = 200000) {
   if (!['status', 'repositories', 'tree', 'file'].includes(operation)) throw new GitHubReadError(400, 'Unsupported GitHub read operation.');
   const context = await githubChatContext(prisma, userId);
   if (context.status !== 'connected') {
@@ -94,11 +94,17 @@ export async function readGitHub(prisma: PrismaClient, userId: string, operation
   }
   if (!filePath) throw new GitHubReadError(400, 'Choose a file path from list_github_files.');
   const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-  const data = await readJson(`/repositories/${repositoryId}/contents/${encodedPath}?ref=${commit.sha}`, token);
+  let data = await readJson(`/repositories/${repositoryId}/contents/${encodedPath}?ref=${commit.sha}`, token);
   if (Array.isArray(data) || data.type !== 'file') throw new GitHubReadError(400, 'This path is not a readable regular file. List files and choose a file path.');
-  if (data.size > 200000 || data.encoding !== 'base64' || typeof data.content !== 'string') throw new GitHubReadError(413, 'File is too large or binary. Choose a text file up to 200 KB.');
+  if (data.size > maxFileBytes) throw new GitHubReadError(413, `File exceeds the ${maxFileBytes}-byte read limit.`);
+  // GitHub Contents omits base64 for files over 1 MB; read the verified blob
+  // only for the bounded impact-artifact path, preserving existing chat limits.
+  if (data.encoding === 'none' && maxFileBytes > 200000 && /^[a-f0-9]{40,64}$/.test(data.sha)) {
+    data = {...data, ...await readJson(`/repositories/${repositoryId}/git/blobs/${data.sha}`, token)};
+  }
+  if (data.encoding !== 'base64' || typeof data.content !== 'string') throw new GitHubReadError(413, 'File is too large or binary.');
   const bytes = Buffer.from(data.content, 'base64');
-  if (bytes.length > 200000 || bytes.includes(0)) throw new GitHubReadError(413, 'File is too large or binary. Choose a text file up to 200 KB.');
+  if (bytes.length > maxFileBytes || bytes.includes(0)) throw new GitHubReadError(413, 'File is too large or binary.');
   let content: string;
   try { content = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
   catch { throw new GitHubReadError(415, 'Only UTF-8 text files can be read in chat.'); }

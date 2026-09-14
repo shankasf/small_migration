@@ -50,6 +50,7 @@ class ChatRequest(BaseModel):
     turn_id: Optional[str] = None
     # Backend-owned connection metadata for the authenticated actor, never provider secrets.
     github_context: Optional[Dict[str, Any]] = None
+    impact_context: Optional[Dict[str, Any]] = None
 
 class GeneratedFile(BaseModel):
     name: str
@@ -75,6 +76,7 @@ class ChatResponse(BaseModel):
     generated_files: List[GeneratedFile] = []
     usage: Optional[UsageInfo] = None
     guardrail: Optional[GuardrailInfo] = None
+    impact_action: Optional[str] = None
 
 # Session storage
 session_storage: Dict[str, Dict[str, Any]] = {}
@@ -454,12 +456,21 @@ async def _log_model_call(logger: RealtimeLogger, response: Any, started: float)
 def get_or_create_agent(session_id: str) -> "Agent":
     """Get cached agent for session, or create a new one"""
     if session_id not in session_agents:
+        from impact_agent import create_impact_tool
         tools = create_tools(session_id)
         session_agents[session_id] = Agent(
-            name="MigrationAgent",
-            instructions=INSTRUCTIONS,
+            name="Head Agent",
+            instructions='''You are the Head Agent of this migration chatbot. Preserve your existing
+migration capabilities below. For ANY dbt impact analysis, lineage, dependency/affected-column
+review, change-risk assessment or related testing/validation recommendations, immediately call
+impact_analysis_agent. Do not perform that analysis yourself or read evidence first. The tool
+enforces source confirmation and returns either missing questions or the specialist's exact report.
+Return it unchanged, preserving all ten section names, quotations and Evidence-backed/Inferred/Unknown
+labels. Its source and read-only rules override generation instructions for impact requests.
+''' + INSTRUCTIONS,
             model=settings.model_name,
-            tools=tools,
+            tools=[*tools, create_impact_tool(session_id, get_session_storage(session_id))],
+            tool_use_behavior={"stop_at_tool_names": ["impact_analysis_agent"]},
             model_settings=ModelSettings(
                 reasoning=Reasoning(effort="low"),
                 max_tokens=16000,
@@ -579,6 +590,10 @@ async def _chat(request: ChatRequest):
         # writes this turn here — including revisions of files first generated
         # in earlier turns, which a "new filenames only" filter would drop.
         storage["turn_outputs"] = []
+        storage['_impact_context'] = request.impact_context or {}
+        storage['_current_message'] = safe_message
+        storage['_impact_action'] = None
+        storage['_impact_new'] = True
 
         await logger.thinking("Processing your request...")
 
@@ -597,6 +612,21 @@ async def _chat(request: ChatRequest):
             if AGENTS_AVAILABLE:
                 # Bug 3 fix: Reuse cached agent for session continuity
                 agent = get_or_create_agent(request.session_id)
+                from impact_agent import route_request
+                route, routing_input, routing_output = await route_request(
+                    safe_message, request.history or [], request.impact_context or {}, logger)
+                if route.route == 'impact':
+                    storage['_impact_new'] = route.new_analysis
+                    agent = agent.clone(
+                        tools=[tool for tool in agent.tools if tool.name == 'impact_analysis_agent'],
+                        model_settings=ModelSettings(tool_choice='impact_analysis_agent',
+                                                     reasoning=Reasoning(effort='low'), max_tokens=1500, store=False),
+                    )
+                    # No unselected attachments, GitHub hints or earlier evidence
+                    # enter this head run. The specialist reads only granted sources.
+                    messages = [{'role': 'user', 'content': 'Call impact_analysis_agent now for the current request. Return its result unchanged.'}]
+                elif (request.impact_context or {}).get('state'):
+                    storage['_impact_action'] = 'clear'
 
                 await logger.ai_thinking("AI agent is analyzing...")
 
@@ -655,8 +685,8 @@ async def _chat(request: ChatRequest):
                 # Token usage for metering/governance (defensive across SDK versions)
                 try:
                     usage = result.context_wrapper.usage
-                    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-                    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                    input_tokens = routing_input + int(getattr(usage, "input_tokens", 0) or 0)
+                    output_tokens = routing_output + int(getattr(usage, "output_tokens", 0) or 0)
                 except Exception as usage_err:
                     print(f"[USAGE] Could not extract token usage: {usage_err}")
 
@@ -729,6 +759,7 @@ async def _chat(request: ChatRequest):
 
         return ChatResponse(
             response=response_text,
+            impact_action=storage.get('_impact_action'),
             generated_files=generated_files,
             usage=UsageInfo(
                 provider=settings.LLM_PROVIDER,

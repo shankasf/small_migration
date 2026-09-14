@@ -155,6 +155,7 @@ model AiActivityLog {
 }
 
 model Session {
+  impactState Json? // Server-owned source confirmation for the current impact analysis.
   id          String            @id @default(uuid())
   name        String            @default("New Chat")
   ownerUserId String?

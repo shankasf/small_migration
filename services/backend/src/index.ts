@@ -1,4 +1,5 @@
 import chatSearchRouter from './routes/chatSearch.js';
+import impactRouter from './routes/impact.js';
 import { startChatIndexer } from './services/chatSearch.js';
 // OTEL must load first so auto-instrumentation can patch http/express/pg
 import './otel.js';
@@ -104,6 +105,7 @@ app.get('/api/health', (req, res) => {
 // can never inherit an auth exemption implicitly.
 app.use('/api/internal/github', githubAgentRouter);
 app.use('/api/internal/chat-search', chatSearchRouter);
+app.use('/api/internal/impact', impactRouter);
 app.post('/api/logs/:sessionId', requireInternalKey, (req, res) => {
   const { sessionId } = req.params;
   const {

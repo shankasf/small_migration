@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { ImpactState } from './impactState.js';
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8084';
 
@@ -11,6 +12,7 @@ interface ChatRequest {
   user_id?: string;
   turn_id?: string;
   github_context?: { status: string; selectedRepository: { id: number; installationId: number; fullName: string; branch: string } | null };
+  impact_context?: { state: ImpactState | null; just_confirmed: boolean; connections: string[]; history: Array<{role: string; content: string}> };
 }
 
 interface GeneratedFile {
@@ -21,6 +23,7 @@ interface GeneratedFile {
 }
 
 interface ChatResponse {
+  impact_action?: 'request_sources' | 'continue' | 'clear';
   response: string;
   generated_files?: GeneratedFile[];
   status?: {
