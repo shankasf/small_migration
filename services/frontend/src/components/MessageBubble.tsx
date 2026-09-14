@@ -2,6 +2,7 @@ import { Message, UploadedFile } from '../types';
 import { Copy, Check, Terminal, Download, Eye, FileSpreadsheet, FileCode, FileText, File } from 'lucide-react';
 import { useState, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FileReferenceChips from './FileReferenceChips';
@@ -163,7 +164,15 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
           <FileReferenceChips files={message.fileRefs || []} label="Used files" />
           <div className="prose-console max-w-none">
             <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
               components={{
+                table({ children }) {
+                  return (
+                    <div className="markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+                      <table>{children}</table>
+                    </div>
+                  );
+                },
                 a({ href, children }) {
                   // The model must not emit file links, but if one slips
                   // through (a server path or invented URL), a relative href

@@ -296,12 +296,23 @@
 }
 
 /* Tables — header row + hairline borders + subtle zebra striping. */
+.prose-console .markdown-table-scroll {
+  @apply my-5 max-w-full overflow-x-auto rounded-lg border border-hairline;
+  overscroll-behavior-x: contain;
+}
+.prose-console .markdown-table-scroll:focus-visible {
+  @apply outline outline-2 outline-offset-2 outline-brass;
+}
 .prose-console table {
-  @apply my-5 block w-full max-w-full overflow-x-auto border-collapse text-[0.92em];
+  @apply w-max min-w-full border-collapse text-[0.92em];
+  line-height: 1.6;
 }
 .prose-console th,
 .prose-console td {
   @apply border border-hairline px-3 py-2 text-left align-top;
+  min-width: 8rem;
+  max-width: 28rem;
+  overflow-wrap: anywhere;
 }
 .prose-console th {
   @apply bg-elevated font-600 text-ink;
