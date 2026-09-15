@@ -48,6 +48,7 @@ before(async () => {
   app.use(authenticate(prisma));
   app.use('/api/files', (await import('../src/routes/files.js')).default);
   app.use('/api/chat', (await import('../src/routes/chat.js')).default);
+  app.use('/api/feedback', (await import('../src/routes/feedback.js')).default);
   app.use('/api/sessions', (await import('../src/routes/sessions.js')).default);
   app.use('/api/stt', (await import('../src/routes/stt.js')).default);
   app.use('/api/admin', (await import('../src/routes/admin.js')).default);
@@ -191,6 +192,79 @@ test('saving a user without changing role or status keeps their sessions and API
   for (const credential of [holderToken, secret]) assert.equal((await request('/api/sessions', credential)).status, 200);
   assert.equal((await save({role:'admin', status:'restricted', dailyTokenLimit:5000})).status, 200);
   for (const credential of [holderToken, secret]) assert.equal((await request('/api/sessions', credential)).status, 401);
+});
+
+// ---- Response feedback: ratings follow the same row-level scoping as the
+// transcript, and a note is user free text, so it crosses the policy boundary
+// before it is stored.
+const ratableMessage = () => prisma.message.create({data:{sessionId, role:'assistant', content:'Generated the staging model.'}});
+const rate = (id: string, body: object, token = ownerToken) =>
+  request(`/api/feedback/messages/${id}`, token, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+
+test('ratings are refused to other analysts, auditors and non-assistant messages', async () => {
+  screeningMode = 'allow';
+  const message = await ratableMessage();
+  const rival = await prisma.user.create({data:{email:'rival@example.test', role:'analyst'}});
+  assert.equal((await rate(message.id, {rating:'up'}, await issueToken(rival))).status, 403);
+  assert.equal((await rate(message.id, {rating:'up'}, await issueToken(auditor))).status, 403);
+  assert.equal(await prisma.messageFeedback.count({where:{messageId:message.id}}), 0);
+  const prompt = await prisma.message.create({data:{sessionId, role:'user', content:'Generate the staging model'}});
+  assert.equal((await rate(prompt.id, {rating:'up'})).status, 400);
+  assert.equal((await rate(message.id, {rating:'five-stars'})).status, 400);
+  assert.equal((await rate('missing-message', {rating:'up'})).status, 404);
+});
+test('a rating is one per user: switching replaces it and withdrawing removes it', async () => {
+  const message = await ratableMessage();
+  assert.equal((await rate(message.id, {rating:'up'})).status, 200);
+  assert.equal((await rate(message.id, {rating:'down'})).status, 200);
+  assert.equal(await prisma.messageFeedback.count({where:{messageId:message.id}}), 1);
+  assert.equal((await prisma.messageFeedback.findFirstOrThrow({where:{messageId:message.id}})).rating, 'down');
+  assert.equal((await request(`/api/feedback/messages/${message.id}`, ownerToken, {method:'DELETE'})).status, 200);
+  assert.equal(await prisma.messageFeedback.count({where:{messageId:message.id}}), 0);
+});
+test('only screened notes are persisted and a blocked note leaves the rating intact', async () => {
+  const message = await ratableMessage();
+  const saved = await rate(message.id, {rating:'down', note:'reach me at private@example.com'});
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as {note: string}).note, 'reach me at [EMAIL_REDACTED]');
+  screeningMode = 'blocked';
+  assert.equal((await rate(message.id, {rating:'down', note:'sensitive payload'})).status, 422);
+  const stored = await prisma.messageFeedback.findFirstOrThrow({where:{messageId:message.id}});
+  assert.equal(stored.note, 'reach me at [EMAIL_REDACTED]');
+  assert.equal(stored.rating, 'down');
+  screeningMode = 'allow';
+});
+test('a transcript carries the reader\'s own rating and nobody else\'s', async () => {
+  const message = await ratableMessage();
+  assert.equal((await rate(message.id, {rating:'up', note:'exactly what I needed'})).status, 200);
+  const read = async (token: string) => {
+    const res = await request(`/api/sessions/${sessionId}`, token);
+    assert.equal(res.status, 200);
+    const body = await res.json() as {messages: Array<{id: string; feedback: {rating: string; note: string} | null}>};
+    return body.messages.find(m => m.id === message.id)!;
+  };
+  const mine = await read(ownerToken);
+  assert.equal(mine.feedback?.rating, 'up');
+  assert.equal(mine.feedback?.note, 'exactly what I needed');
+  // An admin can read the thread, but ratings are private to whoever left them.
+  assert.equal((await read(await issueToken(admin))).feedback, null);
+});
+test('feedback across all users is admin-only and carries the thread it came from', async () => {
+  const message = await ratableMessage();
+  assert.equal((await rate(message.id, {rating:'up', note:'clear and correct'})).status, 200);
+  for (const token of [ownerToken, await issueToken(auditor)]) {
+    assert.equal((await request('/api/admin/feedback', token)).status, 403);
+  }
+  const res = await request('/api/admin/feedback', await issueToken(admin));
+  assert.equal(res.status, 200);
+  const body = await res.json() as {summary: {total: number; up: number; withNotes: number};
+    entries: Array<{note: string | null; userEmail: string; sessionId: string; prompt: string | null; rating: string}>};
+  const entry = body.entries.find(e => e.note === 'clear and correct');
+  assert.ok(entry, 'the admin view lists the note that was just left');
+  assert.equal(entry!.userEmail, owner.email);
+  assert.equal(entry!.sessionId, sessionId);
+  assert.equal(entry!.rating, 'up');
+  assert.ok(body.summary.total >= 1 && body.summary.withNotes >= 1);
 });
 
 after(async () => {

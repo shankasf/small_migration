@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FileReferenceChips from './FileReferenceChips';
+import MessageFeedback from './MessageFeedback';
 import { CirciniMark } from './Brand';
 
 interface MessageBubbleProps {
@@ -13,6 +14,8 @@ interface MessageBubbleProps {
   sessionFiles?: UploadedFile[];
   onViewFile?: (fileId: string) => void;
   onDownloadFile?: (fileId: string) => void;
+  /** Off for the streaming placeholder, which has no persisted message to rate. */
+  showFeedback?: boolean;
 }
 
 const languageIcons: Record<string, string> = {
@@ -50,7 +53,7 @@ function parseAttachedFiles(content: string): { filenames: string[]; restContent
   return { filenames, restContent };
 }
 
-const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], onViewFile, onDownloadFile }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], onViewFile, onDownloadFile, showFeedback = true }: MessageBubbleProps) {
   const [copiedBlocks, setCopiedBlocks] = useState<Set<number>>(new Set());
   const blockIndexRef = { current: 0 };
   const isUser = message.role === 'user';
@@ -282,6 +285,9 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
               {message.content}
             </ReactMarkdown>
           </div>
+          {showFeedback && (
+            <MessageFeedback messageId={message.id} initial={message.feedback} />
+          )}
         </div>
       </div>
     </div>

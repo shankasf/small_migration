@@ -520,6 +520,97 @@ paths:
                     or GeneratedOutput IDs.
               required:
               - message
+  /api/feedback/messages/{messageId}:
+    put:
+      tags:
+      - Chat
+      operationId: rateMessage
+      summary: Rate an assistant response
+      description: Records the caller's thumb on one assistant response, replacing any rating they
+        left before. The optional note is independent of the thumb - omit the key to leave an existing
+        note untouched, send an empty string to clear it. Notes cross the same guardrail boundary as
+        chat content, so a blocked note returns 422 and leaves the stored rating unchanged. Only
+        assistant messages in a session the caller can read are ratable; read-only and restricted
+        accounts are refused.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageFeedback'
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: messageId
+        in: path
+        required: true
+        description: Assistant message UUID.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rating:
+                  type: string
+                  enum:
+                  - up
+                  - down
+                note:
+                  type: string
+                  nullable: true
+                  maxLength: 2000
+                  description: Optional. Omit to leave an existing note unchanged; empty clears it.
+                  example: Missed the type coercion on ORDER_TS.
+              required:
+              - rating
+    delete:
+      tags:
+      - Chat
+      operationId: withdrawMessageRating
+      summary: Withdraw a rating
+      description: Removes the caller's rating of this response, and any note left with it.
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '503':
+          $ref: '#/components/responses/503'
+      parameters:
+      - name: messageId
+        in: path
+        required: true
+        description: Assistant message UUID.
+        schema:
+          type: string
+          format: uuid
   /api/files/{sessionId}/upload:
     post:
       tags:
@@ -1088,12 +1179,41 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/FileReference'
+        feedback:
+          allOf:
+          - $ref: '#/components/schemas/MessageFeedback'
+          nullable: true
+          description: The calling user's own rating of this response, or null. Never another
+            user's rating.
       required:
       - id
       - sessionId
       - role
       - content
       - createdAt
+    MessageFeedback:
+      type: object
+      properties:
+        rating:
+          type: string
+          enum:
+          - up
+          - down
+        note:
+          type: string
+          nullable: true
+          description: Optional free text the user chose to leave, stored guardrail-screened.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+      - rating
+      - note
+      - createdAt
+      - updatedAt
     UploadedFile:
       type: object
       properties:

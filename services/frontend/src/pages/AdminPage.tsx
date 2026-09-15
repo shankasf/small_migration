@@ -2,16 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Users, BarChart3, ShieldAlert, RefreshCw, UserPlus, Ban, ShieldCheck, AlertTriangle,
-  ScrollText, Activity, Pause, Play,
+  ScrollText, Activity, Pause, Play, ThumbsUp, ThumbsDown, MessageSquareQuote, ExternalLink,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { getToken } from '../services/auth';
 import {
   adminGetUsers, adminGetUsageSummary, adminGetAudit, adminGetSecuritySummary,
-  adminGetAiLogs, adminGetAiLogFacets, adminCreateUser, adminUpdateUser, apiErrorMessage,
+  adminGetAiLogs, adminGetAiLogFacets, adminCreateUser, adminUpdateUser, adminGetFeedback,
+  apiErrorMessage,
 } from '../services/api';
 import type { AdminAiLog, AdminAiLogFacets, AdminAiLogPage } from '../services/api';
-import { AdminUser, AuditEvent, SecuritySummary, UsageSummary, User } from '../types';
+import { AdminFeedbackPage, AdminUser, AuditEvent, FeedbackRating, SecuritySummary, UsageSummary, User } from '../types';
 import { Button, CenterSpinner, Field, Modal, Stat, StatusChip, Spinner, cx } from '../components/ui';
 
 const num = new Intl.NumberFormat('en-NZ');
@@ -23,7 +25,7 @@ const fmtClock = (iso: string) => new Date(iso).toLocaleTimeString('en-NZ', {
   hour: '2-digit', minute: '2-digit', second: '2-digit',
 });
 
-type Tab = 'overview' | 'users' | 'security' | 'audit' | 'ailogs';
+type Tab = 'overview' | 'users' | 'feedback' | 'security' | 'audit' | 'ailogs';
 
 interface AdminPageProps {
   currentUser: User;
@@ -997,6 +999,179 @@ function AiLogsTab() {
   );
 }
 
+// ---------------------------------------------------------------- Feedback
+
+// A rating is two bits of signal — the thumb, and whether the user chose to
+// explain it. Both are rendered plainly: notes are user prose, never markdown,
+// so they are shown as text and never re-interpreted.
+function RatingChip({ rating }: { rating: FeedbackRating }) {
+  const up = rating === 'up';
+  return (
+    <span
+      className={cx(
+        'chip !py-0.5',
+        up ? '!border-success/40 !text-success' : '!border-warn/40 !text-warn',
+      )}
+    >
+      {up ? <ThumbsUp className="h-3 w-3" /> : <ThumbsDown className="h-3 w-3" />}
+      {up ? 'Helpful' : 'Not helpful'}
+    </span>
+  );
+}
+
+function FeedbackTab() {
+  const navigate = useNavigate();
+  const [data, setData] = useState<AdminFeedbackPage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [rating, setRating] = useState<FeedbackRating | ''>('');
+  const [userId, setUserId] = useState('');
+  const [withNote, setWithNote] = useState(false);
+  const [queryInput, setQueryInput] = useState('');
+  const [query, setQuery] = useState('');
+  const [days, setDays] = useState(30);
+  const [limit, setLimit] = useState(100);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setData(await adminGetFeedback({ rating, userId, q: query, withNote, days, limit }));
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Failed to load feedback'));
+    } finally {
+      setLoading(false);
+    }
+  }, [rating, userId, query, withNote, days, limit]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const selectCls = 'field !h-8 !py-0 !px-2 !text-xs !w-auto';
+  const summary = data?.summary;
+  const satisfaction = summary?.satisfaction == null ? '—' : `${Math.round(summary.satisfaction * 100)}%`;
+
+  return (
+    <div className="space-y-4 animate-fade-up">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-display text-lg font-700 text-ink">Response feedback</h2>
+          <p className="mt-0.5 text-xs text-muted">
+            Every thumb left on an assistant response, across all users. Notes are optional, so most rows carry only a rating.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            className="field !h-8 !py-0 !px-2 !text-xs w-48"
+            placeholder="Search notes and responses (Enter)…"
+            value={queryInput}
+            onChange={e => setQueryInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') setQuery(queryInput.trim()); }}
+          />
+          <select className={selectCls} value={rating} onChange={e => setRating(e.target.value as FeedbackRating | '')}>
+            <option value="">All ratings</option>
+            <option value="up">Helpful</option>
+            <option value="down">Not helpful</option>
+          </select>
+          <select className={selectCls} value={userId} onChange={e => setUserId(e.target.value)}>
+            <option value="">All users</option>
+            {(data?.users || []).map(u => (
+              <option key={u.userId || 'none'} value={u.userId || ''}>
+                {u.email} ({u.total})
+              </option>
+            ))}
+          </select>
+          <label className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-hairline px-2 text-xs text-muted transition-colors hover:text-ink">
+            <input type="checkbox" className="accent-brass" checked={withNote} onChange={e => setWithNote(e.target.checked)} />
+            With notes
+          </label>
+          <select className={selectCls} value={days} onChange={e => setDays(Number(e.target.value))}>
+            <option value={7}>7 days</option>
+            <option value={30}>30 days</option>
+            <option value={90}>90 days</option>
+            <option value={365}>365 days</option>
+          </select>
+          <select className={selectCls} value={limit} onChange={e => setLimit(Number(e.target.value))}>
+            <option value={100}>100 rows</option>
+            <option value={200}>200 rows</option>
+            <option value={500}>500 rows</option>
+          </select>
+          <button onClick={load} className="flex h-8 w-8 items-center justify-center rounded-md border border-hairline text-muted hover:bg-elevated hover:text-ink transition-colors" title="Refresh">
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="panel border-danger/40 p-3 text-sm text-danger">{error}</div>}
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Stat label="Ratings" value={num.format(summary?.total || 0)} sub={`Last ${data?.windowDays ?? days} days`} />
+        <Stat label="Helpful" value={num.format(summary?.up || 0)} />
+        <Stat label="Not helpful" value={num.format(summary?.down || 0)} />
+        <Stat label="Satisfaction" value={satisfaction} accent sub={`${num.format(summary?.withNotes || 0)} with a note`} />
+      </div>
+
+      <div className={viewportTablePanelCls}>
+        <table className={cx(tableCls, 'xl:min-w-[76rem]')}>
+          <colgroup className="hidden xl:table-column-group">
+            <col className="w-[10%]" />
+            <col className="w-[14%]" />
+            <col className="w-[10%]" />
+            <col className="w-[23%]" />
+            <col className="w-[20%]" />
+            <col className="w-[23%]" />
+          </colgroup>
+          <thead className="hidden xl:table-header-group">
+            <tr>
+              <th className={thCls}>Time</th>
+              <th className={thCls}>User</th>
+              <th className={thCls}>Rating</th>
+              <th className={thCls}>Note</th>
+              <th className={thCls}>Prompt</th>
+              <th className={thCls}>Response</th>
+            </tr>
+          </thead>
+          <tbody className="block xl:table-row-group">
+            {(data?.entries || []).map(entry => (
+              <tr key={entry.id} className={rowCls}>
+                <ResponsiveCell label="Time" valueClassName="font-mono text-xs text-faint">{fmtDate(entry.createdAt)}</ResponsiveCell>
+                <ResponsiveCell label="User" valueClassName="break-words text-xs text-muted">
+                  {entry.userEmail}
+                  {entry.userName && <span className="mt-0.5 block text-faint">{entry.userName}</span>}
+                </ResponsiveCell>
+                <ResponsiveCell label="Rating"><RatingChip rating={entry.rating} /></ResponsiveCell>
+                <ResponsiveCell label="Note" valueClassName="text-xs">
+                  {entry.note
+                    ? <span className="whitespace-pre-wrap break-words text-ink">{entry.note}</span>
+                    : <span className="text-faint">No note left</span>}
+                </ResponsiveCell>
+                <ResponsiveCell label="Prompt" valueClassName="break-words text-xs text-muted">
+                  {entry.prompt || <span className="text-faint">—</span>}
+                </ResponsiveCell>
+                <ResponsiveCell label="Response" valueClassName="break-words text-xs text-muted">
+                  {entry.response}
+                  <button
+                    onClick={() => navigate(`/chats/${entry.sessionId}`)}
+                    className="mt-1 inline-flex items-center gap-1 text-[11px] text-brass-bright transition-colors hover:underline"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    {entry.sessionName || 'Open thread'}
+                  </button>
+                </ResponsiveCell>
+              </tr>
+            ))}
+            {!loading && (data?.entries.length || 0) === 0 && (
+              <tr className="block xl:table-row">
+                <td colSpan={6} className={emptyCellCls}>No feedback matches these filters</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {loading && <div className="flex justify-center py-6"><Spinner /></div>}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- Shell
 
 export default function AdminPage({ currentUser }: AdminPageProps) {
@@ -1007,6 +1182,7 @@ export default function AdminPage({ currentUser }: AdminPageProps) {
   const tabs: Array<{ id: Tab; label: string; icon: typeof Users; adminOnly: boolean }> = [
     { id: 'overview', label: 'Overview', icon: BarChart3, adminOnly: true },
     { id: 'users', label: 'Users', icon: Users, adminOnly: true },
+    { id: 'feedback', label: 'Feedback', icon: MessageSquareQuote, adminOnly: true },
     { id: 'security', label: 'Security', icon: ShieldAlert, adminOnly: false },
     { id: 'audit', label: 'Audit logs', icon: ScrollText, adminOnly: false },
     { id: 'ailogs', label: 'AI logs', icon: Activity, adminOnly: false },
@@ -1029,6 +1205,7 @@ export default function AdminPage({ currentUser }: AdminPageProps) {
 
         {tab === 'overview' && isAdmin && <OverviewTab days={days} setDays={setDays} />}
         {tab === 'users' && isAdmin && <UsersTab currentUser={currentUser} />}
+        {tab === 'feedback' && isAdmin && <FeedbackTab />}
         {tab === 'security' && <SecurityTab days={days} />}
         {tab === 'audit' && <AuditTab />}
         {tab === 'ailogs' && <AiLogsTab />}

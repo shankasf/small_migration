@@ -10,6 +10,7 @@ import { checkTokenCaps, computeCostUsd, recordUsage } from '../services/usage.j
 import { beginTurn } from '../services/aiLog.js';
 import { attachLibraryRefs, referenceData, resolveFileRefs, snapshotFile } from '../services/fileLibrary.js';
 import { impactState, parseImpactSources, requestImpactSources } from '../services/impactState.js';
+import { ownFeedback } from '../services/feedback.js';
 
 
 const router = Router();
@@ -319,7 +320,11 @@ router.get('/:sessionId/messages', async (req: AuthedRequest, res: Response) => 
       orderBy: { createdAt: 'asc' }
     });
 
-    res.json(await attachLibraryRefs(prisma, messages));
+    // The reader's own thumb rides along with the transcript, so a reload
+    // restores what they rated instead of showing an empty control.
+    const ratings = await ownFeedback(prisma, req.user!.id, sessionId);
+    const withRefs = await attachLibraryRefs(prisma, messages);
+    res.json(withRefs.map(message => ({ ...message, feedback: ratings.get(message.id) ?? null })));
   } catch (error) {
     console.error('Error getting messages:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get messages' });

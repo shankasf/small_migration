@@ -4,6 +4,7 @@ import { AuthedRequest, canAccessSession, requireRole, requireWriteAccess } from
 import { screenPayload, resetAISession } from '../services/aiService.js';
 import { recordAudit } from '../services/audit.js';
 import { attachLibraryRefs } from '../services/fileLibrary.js';
+import { ownFeedback } from '../services/feedback.js';
 
 const router = Router();
 
@@ -112,7 +113,12 @@ router.get('/:id', async (req: AuthedRequest, res: Response, next) => {
       return res.status(403).json({ error: 'You do not have access to this session' });
     }
 
-    res.json({...session, messages: await attachLibraryRefs(prisma, session.messages)});
+    // The reader's own thumb rides along with the transcript, so reopening a
+    // thread restores what they rated instead of showing an empty control.
+    const ratings = await ownFeedback(prisma, req.user!.id, id);
+    const messages = (await attachLibraryRefs(prisma, session.messages))
+      .map(message => ({ ...message, feedback: ratings.get(message.id) ?? null }));
+    res.json({...session, messages});
   } catch (error) {
     console.error('Error getting session:', error instanceof Error ? error.name : 'unknown');
     res.status(500).json({ error: 'Failed to get session' });

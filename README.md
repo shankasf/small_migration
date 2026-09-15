@@ -77,6 +77,7 @@ alone.
 - **Session TTL**: In-memory agent sessions auto-evict after 1 hour of inactivity (max 50 concurrent)
 - **File Re-hydration**: Session files are automatically reloaded from the database when resuming a conversation
 - **Access Control**: Email/password or Microsoft Entra ID sign-in, three roles, per-user token budgets
+- **Response Feedback**: A thumbs up/down on every assistant response, with an optional note; admins read every user's ratings and notes in the portal
 - **Audit Trail**: Every auth, authorisation, chat and file action recorded with a PII-scrubbed detail payload
 - **Guardrails**: Health-PII and secret detection on the way in, redaction on the way out
 
@@ -109,6 +110,8 @@ inherit an auth bypass.
 |---|:--:|:--:|:--:|
 | Own chat sessions, upload, generate | ✅ | ✅ | ❌ |
 | See **all** sessions | ✅ | own only | ❌ |
+| Rate a response, leave an optional note | ✅ | ✅ | ❌ |
+| Read **all users'** feedback | ✅ | ❌ | ❌ |
 | Manage users, set token budgets | ✅ | ❌ | ❌ |
 | Create and revoke API keys | ✅ | ❌ | ❌ |
 | Read audit log and security summary | ✅ | ❌ | ✅ |
@@ -545,6 +548,8 @@ The [OpenAPI YAML](docs/api/openapi.yaml) can be imported into Swagger UI or Pos
 | GET | /api/sessions/:id | user (owner/admin) | Get session with messages |
 | DELETE | /api/sessions/:id | user (owner/admin) | Delete session |
 | POST | /api/chat/:id/messages | user (write) | Send message (proxies to AI) |
+| PUT | /api/feedback/messages/:id | user (write, owner/admin) | Rate an assistant response, optionally with a note |
+| DELETE | /api/feedback/messages/:id | user (write, owner/admin) | Withdraw a rating and its note |
 | POST | /api/files/:id/upload | user (write) | Upload files to session |
 | GET | /api/integrations | user | List the current user's connection states |
 | POST | /api/integrations/:provider/connect | user (write) | Start or validate a connection |
@@ -555,6 +560,7 @@ The [OpenAPI YAML](docs/api/openapi.yaml) can be imported into Swagger UI or Pos
 | POST | /api/admin/users | `admin` | Create user |
 | PATCH | /api/admin/users/:id | `admin` | Update role, status, token caps |
 | GET | /api/admin/usage/summary | `admin` | Token usage per user |
+| GET | /api/admin/feedback | `admin` | Every user's response ratings and notes |
 | GET | /api/admin/audit | `admin`, `auditor` | Audit event log |
 | GET | /api/admin/security/summary | `admin`, `auditor` | Guardrail and denial summary |
 | GET | /api/api-keys | `admin` (session) | List every API key and its status |

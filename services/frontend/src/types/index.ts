@@ -35,6 +35,16 @@ export interface FileReference {
   sourceSessionId: string;
 }
 
+export type FeedbackRating = 'up' | 'down';
+
+/** The signed-in reader's own rating of one response. Never another user's. */
+export interface MessageFeedback {
+  rating: FeedbackRating;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -42,6 +52,7 @@ export interface Message {
   fileRefs?: FileReference[];
   content: string;
   createdAt: string;
+  feedback?: MessageFeedback | null;
 }
 
 export interface UploadedFile {
@@ -177,4 +188,41 @@ export interface SecuritySummary {
   windowDays: number;
   counts: Array<{ action: string; decision: string; count: number }>;
   recent: AuditEvent[];
+}
+
+export interface AdminFeedbackEntry {
+  id: string;
+  rating: FeedbackRating;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  userId: string | null;
+  userEmail: string;
+  userName: string | null;
+  messageId: string;
+  sessionId: string;
+  sessionName: string | null;
+  response: string;
+  prompt: string | null;
+}
+
+export interface AdminFeedbackPage {
+  windowDays: number;
+  summary: {
+    total: number;
+    up: number;
+    down: number;
+    withNotes: number;
+    /** Share of rated responses marked useful, or null before anything is rated. */
+    satisfaction: number | null;
+  };
+  users: Array<{
+    userId: string | null;
+    email: string;
+    name: string | null;
+    up: number;
+    down: number;
+    total: number;
+  }>;
+  entries: AdminFeedbackEntry[];
 }

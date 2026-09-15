@@ -111,6 +111,7 @@ const ChatArea = memo(function ChatArea({
               content: streamingText,
               createdAt: new Date().toISOString(),
             }}
+            showFeedback={false}
           />
         )}
 

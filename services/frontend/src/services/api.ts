@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary, Integration, IntegrationProvider, ApiKey, LibraryFile } from '../types';
+import { Session, Message, ChatResponse, UploadedFile, GeneratedOutput, AdminUser, UsageSummary, AuditEvent, SecuritySummary, Integration, IntegrationProvider, ApiKey, LibraryFile, MessageFeedback, FeedbackRating, AdminFeedbackPage } from '../types';
 import { getToken, clearAuth, refreshIdToken } from './auth';
 
 const API_BASE = '/api';
@@ -82,6 +82,28 @@ export async function getMessages(sessionId: string): Promise<Message[]> {
 export async function sendMessage(sessionId: string, message: string, fileRefs?: string[]): Promise<ChatResponse> {
   const response = await api.post(`/chat/${sessionId}/messages`, { message, fileRefs });
   return response.data;
+}
+
+// Response feedback
+/**
+ * Rate an assistant response. `note` is optional and independent of the thumb:
+ * omit the key to leave an existing note alone, pass '' to clear it.
+ */
+export async function rateMessage(
+  messageId: string,
+  rating: FeedbackRating,
+  note?: string,
+): Promise<MessageFeedback> {
+  const response = await api.put(`/feedback/messages/${messageId}`, {
+    rating,
+    ...(note === undefined ? {} : { note }),
+  });
+  return response.data;
+}
+
+/** Withdraw a rating (and any note left with it). */
+export async function clearMessageRating(messageId: string): Promise<void> {
+  await api.delete(`/feedback/messages/${messageId}`);
 }
 
 // Files
@@ -362,6 +384,24 @@ export async function adminGetAiLogs(filters: AdminAiLogFilters = {}): Promise<A
 /** Users/tools/steps present in the window — drives the log filters. */
 export async function adminGetAiLogFacets(days = 7): Promise<AdminAiLogFacets> {
   const response = await api.get('/admin/ailogs/facets', { params: { days } });
+  return response.data;
+}
+
+export interface AdminFeedbackFilters {
+  rating?: FeedbackRating | '';
+  userId?: string;
+  q?: string;
+  withNote?: boolean;
+  days?: number;
+  limit?: number;
+}
+
+/** Every thumb left by every user, with the prompt and response behind it. */
+export async function adminGetFeedback(filters: AdminFeedbackFilters = {}): Promise<AdminFeedbackPage> {
+  const params = Object.fromEntries(
+    Object.entries(filters).filter(([, v]) => v !== '' && v !== undefined && v !== null && v !== false)
+  );
+  const response = await api.get('/admin/feedback', { params });
   return response.data;
 }
 
