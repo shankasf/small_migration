@@ -67,3 +67,6 @@ node_modules/
 # Local test artifacts
 .playwright-mcp/
 /*.png
+
+# Claude Code local (machine-specific) settings
+.claude/settings.local.json
