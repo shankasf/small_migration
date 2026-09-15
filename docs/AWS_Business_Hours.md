@@ -1,22 +1,22 @@
 # AWS business hours: New Zealand weekdays
 
-The app is scheduled to be publicly available **Monday–Friday, 10 am–8 pm in
+The app is scheduled to be publicly available **Monday–Friday, 8:30 am–7 pm in
 Pacific/Auckland**. This follows New Zealand daylight saving automatically.
 Saturday and Sunday remain closed. Public holidays follow their weekday;
 there is no separate holiday calendar.
 
 | New Zealand local time | Action on weekdays |
 | --- | --- |
-| 9:00 am | Start the existing RDS PostgreSQL instance for warm-up |
-| 9:45 am | Start frontend, backend and AI-service Fargate tasks once RDS is available; keep public traffic closed |
-| 10:00 am | Open the public listener after the database, services and target groups are ready |
-| 8:00 pm | Show the closed-hours page and scale all three services to zero |
+| 7:30 am | Start the existing RDS PostgreSQL instance for warm-up |
+| 8:15 am | Start frontend, backend and AI-service Fargate tasks once RDS is available; keep public traffic closed |
+| 8:30 am | Open the public listener after the database, services and target groups are ready |
+| 7:00 pm | Show the closed-hours page and scale all three services to zero |
 | After tasks drain | Stop the RDS instance when no service or one-off task remains running |
 
 The controller reconciles every minute using AWS EventBridge Scheduler and a
 Lambda function. Scheduler delivery has one-minute precision; resource start,
 drain and stop operations take additional time. The warm-up period improves
-readiness for 10 am but is not a guarantee if AWS startup or health checks fail.
+readiness for 8:30 am but is not a guarantee if AWS startup or health checks fail.
 The listener remains closed if the app is not ready. During closed hours it
 returns HTTP 503 with an opening-hours page, including for API requests and
 webhooks.
@@ -77,7 +77,7 @@ With working AWS CLI credentials, the equivalents are:
 
 ```bash
 python3 scripts/manage-business-hours.py status
-python3 scripts/manage-business-hours.py plan --at 2026-09-11T20:00:00+12:00
+python3 scripts/manage-business-hours.py plan --at 2026-09-11T19:00:00+12:00
 python3 scripts/manage-business-hours.py hold --owner manual-maintenance --minutes 60 --wait
 python3 scripts/manage-business-hours.py release --owner manual-maintenance
 ```
@@ -100,6 +100,9 @@ Sources: [AWS Scheduler timezone and timing](https://docs.aws.amazon.com/schedul
 [RDS stopping, retained storage charges and automatic restart](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_StopInstance.html).
 
 ## Live installation — September 11, 2026
+
+This installation and its checks below used the original 10 am–8 pm window. The
+window moved to 8:30 am–7 pm (warm-up from 7:30 am) on September 16, 2026.
 
 [AWS release 34547420528](https://github.com/shankasf/small_migration/actions/runs/34547420528)
 passed all CI/security gates, image scans, ECS steady state, public smoke tests,

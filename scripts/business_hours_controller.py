@@ -19,9 +19,9 @@ def plan(now, override_until=None):
     return {
         'localTime': local.isoformat(), 'timezone': 'Pacific/Auckland',
         'maintenance': maintenance,
-        'databaseOn': maintenance or (weekday and time(9) <= local.time() < time(20)),
-        'servicesOn': maintenance or (weekday and time(9, 45) <= local.time() < time(20)),
-        'publicOpen': maintenance or (weekday and time(10) <= local.time() < time(20)),
+        'databaseOn': maintenance or (weekday and time(7, 30) <= local.time() < time(19)),
+        'servicesOn': maintenance or (weekday and time(8, 15) <= local.time() < time(19)),
+        'publicOpen': maintenance or (weekday and time(8, 30) <= local.time() < time(19)),
     }
 
 

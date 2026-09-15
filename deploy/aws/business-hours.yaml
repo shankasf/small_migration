@@ -45,7 +45,7 @@ Resources:
           ContentType: text/html
           MessageBody: <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Circini
             opening hours</title><body style="font:18px system-ui;max-width:640px;margin:12vh auto;padding:24px"><h1>Circini migration agent
-            is currently closed</h1><p>Available Monday to Friday, 10 am–8 pm New Zealand time.</p><p>We may be starting up
+            is currently closed</h1><p>Available Monday to Friday, 8:30 am–7 pm New Zealand time.</p><p>We may be starting up
             if you are visiting during those hours. Please try again shortly.</p></body></html>
   Lease:
     Type: AWS::SSM::Parameter

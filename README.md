@@ -609,7 +609,7 @@ The migration agent has access to these tools per session:
 ## Deployment
 
 The [AWS business-hours policy](docs/AWS_Business_Hours.md) schedules public access
-for weekdays 10 am–8 pm in New Zealand, with compute shutdown overnight and
+for weekdays 8:30 am–7 pm in New Zealand, with compute shutdown overnight and
 on weekends. Deployments use an expiring maintenance hold.
 
 Deployment is automated. Pushing to `main` runs CI, builds the three images,
