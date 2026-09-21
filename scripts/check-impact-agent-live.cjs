@@ -13,7 +13,11 @@ async function api(path, body, expected = 200, internal = false) {
   assert.equal(response.status, expected, `${phase}: HTTP status`);
   return response.json();
 }
-const query = 'What breaks downstream if I rename customer_id to customer_key in stg_customers? Review affected models, columns, tests and dashboards. Do not edit or run anything.';
+const query = ['Do not edit or run anything. Answer these in order:',
+  '1. What breaks downstream if I rename customer_id to customer_key in stg_customers?',
+  '2. Which tests and dashboards are affected?',
+  '3. customer_revenue casts order_amount to number(38,0) — is that safe?',
+  '4. We were going to validate by running one dbt build over the whole project. Is that fine?'].join('\n');
 async function chat(message) {
   const value = await api(`/api/chat/${sessionId}/messages`, {message, fileRefs: []});
   assert.equal(value.savedOutputs.length, 0, 'Impact analysis must never generate or edit files');
@@ -31,8 +35,14 @@ async function main() {
     metadata: {project_name: 'impact_demo'},
     nodes: {
       'model.impact_demo.stg_customers': {name: 'stg_customers', resource_type: 'model', original_file_path: 'models/stg_customers.sql',
-        raw_code: "select customer_id from {{ source('crm', 'customers') }}", depends_on: {nodes: ['source.impact_demo.crm.customers']},
-        columns: {customer_id: {name: 'customer_id', description: 'Customer join key'}}},
+        raw_code: "select customer_id, cast(order_amount as number(38,2)) as order_amount from {{ source('crm', 'customers') }}",
+        depends_on: {nodes: ['source.impact_demo.crm.customers']},
+        columns: {customer_id: {name: 'customer_id', description: 'Customer join key'},
+          order_amount: {name: 'order_amount', description: 'Order value in dollars and cents'}}},
+      'model.impact_demo.customer_revenue': {name: 'customer_revenue', resource_type: 'model', original_file_path: 'models/customer_revenue.sql',
+        raw_code: "select customer_id, cast(sum(order_amount) as number(38,0)) as revenue_amount from {{ ref('stg_customers') }} group by customer_id",
+        depends_on: {nodes: ['model.impact_demo.stg_customers']},
+        columns: {customer_id: {name: 'customer_id'}, revenue_amount: {name: 'revenue_amount', description: 'Revenue in dollars'}}},
       'model.impact_demo.customer_mart': {name: 'customer_mart', resource_type: 'model', original_file_path: 'models/customer_mart.sql',
         raw_code: "select customer_id, count(*) as customer_count from {{ ref('stg_customers') }} group by customer_id",
         depends_on: {nodes: ['model.impact_demo.stg_customers']}, columns: {customer_id: {name: 'customer_id'}}},
@@ -49,7 +59,7 @@ async function main() {
   mark('confirm sources before any analysis');
   const start = new Date();
   const first = await chat(query);
-  assert.match(first, /which evidence sources/i); assert.doesNotMatch(first, /## 2\. Change Summary/);
+  assert.match(first, /which evidence sources/i); assert.doesNotMatch(first, /Readiness Check|### 1\./i);
   const pending = await state(); assert.equal(pending.phase, 'awaiting_sources'); assert.deepEqual(pending.sources, []);
   await api(`/api/internal/impact/${sessionId}`, {user_id: user.id, analysis_id: pending.id, source: 'uploads', operation: 'list', args: {}}, 403, true);
   assert.equal(await prisma.aiActivityLog.count({where: {sessionId, createdAt: {gte: start}, step: 'tool.call', tool: 'read_impact_evidence'}}), 0);
@@ -59,10 +69,23 @@ async function main() {
   mark('delegate confirmed uploads and inspect grounded report');
   const report = await chat('Use uploads');
   const confirmed = await state(); assert.equal(confirmed.phase, 'confirmed'); assert.deepEqual(confirmed.sources, ['uploads']);
-  for (const heading of ['Readiness Check', 'Change Summary', 'Hard Evidence Used', 'Likely Impact Level', 'Lineage Summary',
-    'Columns to Review', 'Assumptions and Gaps', 'Tests and Documentation to Check', 'Recommended Validation Steps']) assert.ok(report.includes(heading), `Missing section: ${heading}`);
-  assert.match(report, /customer_mart/); assert.match(report, /customer_dashboard/); assert.match(report, /Evidence-backed/);
+  // The reply answers the four questions in the order they were asked, and
+  // carries none of the old fixed-section / confidence-label scaffolding.
+  const order = [1, 2, 3, 4].map(n => {
+    const at = report.indexOf(`### ${n}.`);
+    assert.notEqual(at, -1, `Missing answer ${n}`);
+    return at;
+  });
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'Answers are out of order');
+  for (const scaffolding of [/Readiness Check/i, /Change Summary/i, /Hard Evidence Used/i, /Lineage Summary/i,
+    /Assumptions and Gaps/i, /Evidence-backed/i]) assert.doesNotMatch(report, scaffolding, `Audit-report scaffolding: ${scaffolding}`);
+  assert.ok(report.split(/\s+/).length < 900, 'Reply is too long to read as an answer');
+  assert.match(report, /customer_mart/); assert.match(report, /customer_dashboard/);
   assert.match(report, /customer_id/); assert.match(report, /stg_customers/);
+  // Both mandatory checks: Snowflake scale truncation and a staged build plan.
+  assert.match(report, /truncat|round|cents|decimal place|scale/i, 'Missing the number(38,0) truncation warning');
+  assert.match(report, /--select/, 'Missing a selective dbt build plan');
+  assert.match(report, /dbt compile|state:modified|--defer/, 'Missing the staged validation sequence');
   const calls = await prisma.aiActivityLog.findMany({where: {sessionId, createdAt: {gte: start}, step: 'tool.call'}, select: {tool: true}});
   assert.ok(calls.some(c => c.tool === 'impact_analysis_agent')); assert.ok(calls.some(c => c.tool === 'read_impact_evidence'));
   assert.ok(!calls.some(c => ['generate_output', 'read_file', 'read_github_file'].includes(c.tool)));
@@ -76,7 +99,8 @@ async function main() {
   assert.equal(await prisma.generatedOutput.count({where: {sessionId}}), 0);
   await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); keyId = null; token = null;
   console.log(JSON.stringify({impactProductionCheck: 'passed', sessionId, model: 'gpt-6-astra',
-    sourceConfirmation: 'passed', internalDelegation: 'passed', evidenceScope: 'passed', reportSections: 'passed', readOnly: 'passed'}));
+    sourceConfirmation: 'passed', internalDelegation: 'passed', evidenceScope: 'passed', answerFormat: 'passed',
+    mandatoryChecks: 'passed', readOnly: 'passed'}));
 }
 main().catch(error => {console.error(JSON.stringify({impactProductionCheck: 'failed', phase, reason: error.code || error.name})); process.exitCode = 1;})
   .finally(async () => {if (keyId) await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); await prisma.$disconnect();});

@@ -29,13 +29,19 @@ def grant(**kwargs):
 
 
 def report(**kwargs):
-    fields = {field: '' for field in impact.ImpactReport.model_fields}
-    fields.update(ready=True, readiness_check='Ready. Uploaded manifest confirmed.', change_summary='Rename customer_id.',
-                  hard_evidence_used="Evidence-backed: `ref('stg_customers')`", likely_impact_level='High: confirmed child model.',
-                  lineage_summary='| Model | Status |\n| --- | --- |\n| customer_mart | Evidence-backed |',
-                  columns_to_review='| Column | Status |\n| --- | --- |\n| customer_id | Evidence-backed |',
-                  assumptions_and_gaps='Unknown: dashboard owners.', tests_and_documentation_to_check='Review uniqueness tests.',
-                  recommended_validation_steps='Recommended, not executed: `dbt build --select stg_customers+`.', **kwargs)
+    fields = dict(
+        ready=True, missing_information='',
+        answers=[
+            impact.Answer(question='What breaks downstream?',
+                          answer="`customer_mart` breaks: it selects `customer_id` from "
+                                 "`ref('stg_customers')` (models/customer_mart.sql:3)."),
+            impact.Answer(question='How do I validate it?',
+                          answer='`dbt compile --select stg_customers`, then '
+                                 '`dbt build --select stg_customers+ --defer --state prod`.'),
+        ],
+        critical_warnings='- Do not validate this with one project-wide `dbt build`.',
+        gaps='Dashboard consumers are not in the manifest.')
+    fields.update(kwargs)
     return impact.ImpactReport(**fields)
 
 
@@ -75,7 +81,7 @@ def test_no_confirmation_means_no_specialist_model_or_evidence_reads(monkeypatch
     result = run(tool.on_invoke_tool(context(tool), '{}'))
     assert 'which evidence sources' in result
     assert 'GitHub repositories' in result and 'dbt Cloud' in result and 'Snowflake' in result
-    assert 'Change Summary' not in result
+    assert 'Readiness Check' not in result and '### 1.' not in result
 
 
 def test_new_analysis_requires_fresh_confirmation_even_after_an_earlier_grant(monkeypatch):
@@ -114,9 +120,9 @@ def test_real_sdk_nested_run_returns_exact_report_to_head_and_counts_both_models
     assert not storage.get('turn_outputs')
 
 
-def test_missing_inputs_return_only_readiness_questions():
-    value = report(); value.ready = False; value.readiness_check = 'Which column and proposed change should I analyze?'
-    assert value.markdown() == '## 1. Readiness Check\n\nWhich column and proposed change should I analyze?'
+def test_missing_inputs_return_only_the_missing_questions():
+    value = report(ready=False, missing_information='Which column and proposed change should I analyze?')
+    assert value.markdown() == 'Which column and proposed change should I analyze?'
 
 
 def test_unverified_model_report_is_replaced_with_an_evidence_gap(monkeypatch):
@@ -125,15 +131,36 @@ def test_unverified_model_report_is_replaced_with_an_evidence_gap(monkeypatch):
     tool = impact.create_impact_tool('chat', {'_impact_context': grant(), '_current_message': 'Use uploads'})
     output = run(tool.on_invoke_tool(context(tool), '{}'))
     assert 'could not verify a dbt reference' in output
-    assert 'Change Summary' not in output
+    assert 'customer_mart' not in output and '### 1.' not in output
 
 
-def test_report_preserves_all_sections_quotes_and_evidence_labels():
-    value = report(); value.open_questions = 'Who owns this dashboard?'
-    rendered = value.markdown()
-    assert rendered.count('## ') == 10
-    assert "`ref('stg_customers')`" in rendered
-    assert 'Unknown: dashboard owners.' in rendered
+def test_report_answers_the_users_questions_in_their_order_without_audit_scaffolding():
+    rendered = report().markdown()
+    assert rendered.index('### 1. What breaks downstream?') < rendered.index('### 2. How do I validate it?')
+    # The citation survives; the per-finding confidence labels and the old
+    # fixed-section template do not.
+    assert "`ref('stg_customers')`" in rendered and 'models/customer_mart.sql:3' in rendered
+    for banned in ('Evidence-backed', 'Inferred', 'Readiness Check', 'Change Summary',
+                   'Hard Evidence Used', 'Lineage Summary', 'Assumptions and Gaps'):
+        assert banned not in rendered
+    # One warning block and one gaps line — each caveat is stated exactly once.
+    assert rendered.count('### Watch out') == 1 and rendered.count('**Gaps:**') == 1
+
+
+def test_optional_blocks_disappear_when_there_is_nothing_to_warn_about():
+    rendered = report(critical_warnings='', gaps='  ').markdown()
+    assert 'Watch out' not in rendered and 'Gaps:' not in rendered
+    assert rendered.endswith('--defer --state prod`.')
+
+
+def test_both_mandatory_checks_are_carried_by_the_specialist_and_the_chatbot():
+    """The two findings the analyst had to add by hand stay in the prompts."""
+    from routes.migration import INSTRUCTIONS
+    for prompt in (impact.PROMPT, INSTRUCTIONS):
+        assert 'state:modified+' in prompt and '--defer' in prompt
+        assert 'dbt compile --select' in prompt
+        assert 'NUMBER(38,0)' in prompt
+        assert 'scale' in prompt.lower() and 'truncat' in prompt.lower()
 
 
 def test_evidence_reader_cannot_broaden_sources_or_accept_model_supplied_actor(monkeypatch):

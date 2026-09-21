@@ -2,7 +2,22 @@
 
 The existing migration chatbot is now the **Head Agent**. It retains SQL/dbt generation and file tools for ordinary migration requests. For impact, lineage, dependency, affected-column and related validation requests, it calls **Impact Analysis Agent** as an internal tool. Both use the deployment's `OPENAI_MODEL` (`gpt-6-astra`). There is no conversational handoff.
 
-The user's specialist prompt is preserved in `services/ai-service/prompts/impact_analysis.md`. The confirmed operating rules extend evidence access to the selected connected sources and keep analysis read-only. A structured report is rendered through the head without paraphrasing: nine required sections plus **Open Questions** when needed. Incomplete inputs produce only **Readiness Check** and the missing questions.
+The specialist prompt lives in `services/ai-service/prompts/impact_analysis.md`. The confirmed operating rules extend evidence access to the selected connected sources and keep analysis read-only.
+
+## Answer shape
+
+The reply is rendered through the head without paraphrasing, from a structured `ImpactReport`: one `### N. <question>` block per question the user asked, in their order and their wording, then **Watch out** and a one-line **Gaps** when they carry real information. Incomplete inputs produce only the missing questions.
+
+This replaced a fixed ten-section report (Readiness Check, Change Summary, Hard Evidence Used, Lineage Summary and so on) in which every finding also carried an Evidence-backed / Inferred / Unknown label. A practitioner review of a five-question analysis found the substance correct but the delivery unreadable: the agent had imposed its own section template instead of answering the questions asked, labelled every line, and repeated the same caveats in three places. Evidence is now cited inline (`models/customer_mart.sql:3`, `ref('stg_customers')`, commit SHA, run ID) and a hedge appears only where it changes what the user should do, once.
+
+## Mandatory checks
+
+The same review found two omissions that cost real money, so both prompts — the specialist's and the head's migration instructions — now carry them as checks to run on every analysis, reported only when they apply:
+
+- **No single whole-project `dbt build`.** It rebuilds unrelated models, costs hours of warehouse time, and a failing test skips everything downstream of it, so the run reports an incomplete picture. The recommendation is the staged sequence `dbt compile --select <model>` → `dbt build --select <model>` → `dbt build --select <model>+ --defer --state <prod artifacts>` → `dbt build --select state:modified+` in CI.
+- **Snowflake precision and scale.** Snowflake does not error when the target scale is smaller than the source scale; it silently rounds to the target, so rows land, row counts match and dollar amounts are wrong. Bare `NUMBER`/`DECIMAL`/`INT` means `NUMBER(38,0)` and drops every decimal place. The validation is a `SUM()`/`MIN`/`MAX`/sampled row-diff reconciliation — row counts cannot detect it.
+
+`scripts/check-impact-agent-live.cjs` gates both against production: its synthetic manifest carries a `number(38,2)` money column narrowed to `number(38,0)` downstream, and the check asserts the truncation warning, a selective build plan, answers numbered in the order asked, and the absence of the old scaffolding.
 
 ## Source confirmation
 
