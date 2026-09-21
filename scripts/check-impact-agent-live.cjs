@@ -6,6 +6,23 @@ const prisma = new PrismaClient();
 const base = new URL(process.env.PUBLIC_APP_URL || process.env.CORS_ORIGIN).origin;
 let token, keyId, sessionId, phase = 'initialize';
 function mark(value) {phase = value; console.log(JSON.stringify({impactProgress: value}));}
+// Assertion messages written in this file are safe to log; a generated one
+// quotes the compared values, which may be chat content, so report only a code.
+function failureReason(error) {
+  return error instanceof assert.AssertionError && error.generatedMessage === false
+    ? error.message : (error?.code || error?.name || 'unknown');
+}
+// This check owns its fixtures: synthetic analyses from earlier runs are chat
+// history for the same user, so leaving them behind grows the corpus that the
+// chat-search gate ranks against. Deletes cascade to messages, chunks, uploads
+// and outputs; usage and audit records denormalise sessionId and are kept.
+const FIXTURE_PREFIX = 'E2E impact analysis ';
+async function purgeFixtures(ownerUserId) {
+  const stale = await prisma.session.findMany({
+    where: {ownerUserId, name: {startsWith: FIXTURE_PREFIX}}, select: {id: true}});
+  for (const session of stale) await prisma.session.delete({where: {id: session.id}});
+  return stale.length;
+}
 async function api(path, body, expected = 200, internal = false) {
   const response = await fetch(base + path, {method: 'POST', headers: {'content-type': 'application/json',
     ...(internal ? {'x-internal-key': process.env.INTERNAL_API_KEY} : {Authorization: `Bearer ${token}`})},
@@ -30,7 +47,8 @@ async function main() {
   const minted = generateApiKey(); token = minted.key;
   const key = await prisma.apiKey.create({data: {userId: user.id, name: 'E2E impact analysis', prefix: minted.prefix,
     keyHash: minted.keyHash, expiresAt: new Date(Date.now() + 3600000)}}); keyId = key.id;
-  const session = await api('/api/sessions', {name: `E2E impact analysis ${Date.now()}`}, 201); sessionId = session.id;
+  console.log(JSON.stringify({impactProgress: 'clear fixtures from earlier runs', purgedFixtures: await purgeFixtures(user.id)}));
+  const session = await api('/api/sessions', {name: `${FIXTURE_PREFIX}${Date.now()}`}, 201); sessionId = session.id;
   const manifest = {
     metadata: {project_name: 'impact_demo'},
     nodes: {
@@ -102,5 +120,5 @@ async function main() {
     sourceConfirmation: 'passed', internalDelegation: 'passed', evidenceScope: 'passed', answerFormat: 'passed',
     mandatoryChecks: 'passed', readOnly: 'passed'}));
 }
-main().catch(error => {console.error(JSON.stringify({impactProductionCheck: 'failed', phase, reason: error.code || error.name})); process.exitCode = 1;})
+main().catch(error => {console.error(JSON.stringify({impactProductionCheck: 'failed', phase, reason: failureReason(error)})); process.exitCode = 1;})
   .finally(async () => {if (keyId) await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); await prisma.$disconnect();});

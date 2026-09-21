@@ -7,6 +7,12 @@ const prisma = new PrismaClient();
 const base = new URL(process.env.PUBLIC_APP_URL || process.env.CORS_ORIGIN).origin;
 let token, keyId, phase = 'initialize';
 const evidence = {};
+// Assertion messages written in this file are safe to log; a generated one
+// quotes the compared values, which may be chat content, so report only a code.
+function failureReason(error) {
+  return error instanceof assert.AssertionError && error.generatedMessage === false
+    ? error.message : (error?.code || error?.name || 'unknown');
+}
 function mark(value) { phase = value; console.log(JSON.stringify({ chatSearchProgress: value })); }
 async function api(path, body, expected = 200, internal = false) {
   const response = await fetch(base + path, { method: 'POST',
@@ -15,17 +21,35 @@ async function api(path, body, expected = 200, internal = false) {
   assert.equal(response.status, expected, `${phase}: HTTP status`);
   return response.json();
 }
+const FIXTURE_PREFIX = 'E2E chat search ';
+// Each run used to leave its synthetic chats behind, and the paraphrase check
+// below searches for words the saved message never contains ("mapping sheet"),
+// so it is ranked purely semantically. Earlier runs' recall QUESTIONS — "the
+// mapping sheet filename for the synthetic cedar <nonce> migration" — are a
+// near-exact match for that query and outrank this run's saved message, which
+// only ever says "crosswalk workbook". Every deploy added two more of them, so
+// the target eventually fell past the LIMIT 10 and the gate began failing on a
+// ranking artefact of its own debris. The check now clears its own fixtures
+// first. Deletes cascade to messages, chunks, file assets and outputs; usage
+// and audit records denormalise sessionId and are kept.
+async function purgeFixtures(ownerUserId) {
+  const stale = await prisma.session.findMany({
+    where: { ownerUserId, name: { startsWith: FIXTURE_PREFIX } }, select: { id: true } });
+  for (const session of stale) await prisma.session.delete({ where: { id: session.id } });
+  return stale.length;
+}
 async function main() {
   const user = await prisma.user.findUnique({ where: { email: 'sagar@callsphere.ai' } });
   assert.equal(user?.role, 'admin'); assert.equal(user.status, 'active');
+  evidence.purgedFixtures = await purgeFixtures(user.id);
   const minted = generateApiKey(); token = minted.key;
   const key = await prisma.apiKey.create({ data: { userId: user.id, name: 'E2E chat history search', prefix: minted.prefix,
     keyHash: minted.keyHash, expiresAt: new Date(Date.now() + 1800000) } }); keyId = key.id;
   const nonce = crypto.randomBytes(4).toString('hex');
   const filename = `crosswalk_${nonce}.csv`;
   const project = `synthetic cedar ${nonce}`;
-  const source = await api('/api/sessions', { name: `E2E chat search ${nonce} source` }, 201);
-  const target = await api('/api/sessions', { name: `E2E chat search ${nonce} recall` }, 201);
+  const source = await api('/api/sessions', { name: `${FIXTURE_PREFIX}${nonce} source` }, 201);
+  const target = await api('/api/sessions', { name: `${FIXTURE_PREFIX}${nonce} recall` }, 201);
   evidence.sourceSessionId = source.id; evidence.targetSessionId = target.id;
   mark('prepare synthetic earlier chat');
   const form = new FormData();
@@ -39,8 +63,10 @@ async function main() {
   const search = (query, scope) => api(`/api/internal/chat-search/${target.id}`, { user_id: user.id, operation: 'history', args: { query, scope, offset: 0 } }, 200, true);
   mark('verify immediate history and scope');
   const immediate = await search(filename, 'all');
-  assert.ok(immediate.matches.some(m => m.messageId === saved.id && m.files.some(f => f.assetId === asset.id)));
-  assert.ok(!(await search(filename, 'current')).matches.some(m => m.messageId === saved.id));
+  assert.ok(immediate.matches.some(m => m.messageId === saved.id && m.files.some(f => f.assetId === asset.id)),
+    'Filename search missed the saved message or its attachment');
+  assert.ok(!(await search(filename, 'current')).matches.some(m => m.messageId === saved.id),
+    'scope=current leaked a message from another session');
   assert.equal((await fetch(`${base}/api/internal/chat-search/${target.id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401);
   const foreign = await prisma.session.findFirst({ where: { ownerUserId: { not: user.id } }, select: { id: true } });
   if (foreign) await api(`/api/internal/chat-search/${foreign.id}`, { user_id: user.id, operation: 'history', args: { query: filename, scope: 'all', offset: 0 } }, 403, true);
@@ -51,7 +77,7 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 10000));
   }
   const semantic = await search(`mapping sheet for ${project}`, 'all');
-  assert.equal(semantic.semanticAvailable, true);
+  assert.equal(semantic.semanticAvailable, true, 'Query embedding failed, so only keyword search was available');
   assert.ok(semantic.matches.some(m => m.messageId === saved.id), 'Paraphrased history query missed saved message');
   evidence.semanticSearch = 'passed';
   mark('ask chatbot to recall file without attaching it');
@@ -70,7 +96,7 @@ async function main() {
   keyId = undefined; token = undefined;
   console.log(JSON.stringify({ chatSearchProductionCheck: 'passed', ...evidence }));
 }
-main().catch(() => { console.error(JSON.stringify({ chatSearchProductionCheck: 'failed', phase })); process.exitCode = 1; })
+main().catch(error => { console.error(JSON.stringify({ chatSearchProductionCheck: 'failed', phase, reason: failureReason(error) })); process.exitCode = 1; })
   .finally(async () => {
     try { if (keyId) await prisma.apiKey.update({ where: { id: keyId }, data: { revokedAt: new Date() } }); }
     catch { console.error('Chat search test key revocation failed; key expires automatically'); process.exitCode = 1; }
