@@ -14,8 +14,12 @@ function failureReason(error) {
 }
 // This check owns its fixtures: synthetic analyses from earlier runs are chat
 // history for the same user, so leaving them behind grows the corpus that the
-// chat-search gate ranks against. Deletes cascade to messages, chunks, uploads
-// and outputs; usage and audit records denormalise sessionId and are kept.
+// chat-search gate ranks against. A session is renamed to the first 50
+// characters of its first message (routes/chat.ts:272), so this sweep only
+// catches runs that never got as far as chatting; the run also deletes its own
+// session by id once its assertions have passed. Deletes cascade to messages,
+// chunks, uploads and outputs; usage and audit records denormalise sessionId
+// and are kept, and a failed run is left in place for inspection.
 const FIXTURE_PREFIX = 'E2E impact analysis ';
 async function purgeFixtures(ownerUserId) {
   const stale = await prisma.session.findMany({
@@ -116,6 +120,7 @@ async function main() {
   assert.match(next, /which evidence sources/i); assert.equal((await state()).phase, 'awaiting_sources');
   assert.equal(await prisma.generatedOutput.count({where: {sessionId}}), 0);
   await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); keyId = null; token = null;
+  await prisma.session.delete({where: {id: sessionId}});
   console.log(JSON.stringify({impactProductionCheck: 'passed', sessionId, model: 'gpt-6-astra',
     sourceConfirmation: 'passed', internalDelegation: 'passed', evidenceScope: 'passed', answerFormat: 'passed',
     mandatoryChecks: 'passed', readOnly: 'passed'}));

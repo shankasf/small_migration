@@ -32,9 +32,18 @@ const FIXTURE_PREFIX = 'E2E chat search ';
 // ranking artefact of its own debris. The check now clears its own fixtures
 // first. Deletes cascade to messages, chunks, file assets and outputs; usage
 // and audit records denormalise sessionId and are kept.
+// A prefix alone does not find them: a session is renamed to the first 50
+// characters of its first message (routes/chat.ts:272), so the recall session
+// — the one holding the question that outranks the target — has dropped the
+// prefix by the time the run ends. Sweep on the invented project phrase too,
+// which nothing but this fixture ever writes.
+const FIXTURE_PHRASE = 'synthetic cedar ';
 async function purgeFixtures(ownerUserId) {
   const stale = await prisma.session.findMany({
-    where: { ownerUserId, name: { startsWith: FIXTURE_PREFIX } }, select: { id: true } });
+    where: { ownerUserId, OR: [
+      { name: { startsWith: FIXTURE_PREFIX } },
+      { messages: { some: { content: { contains: FIXTURE_PHRASE } } } },
+    ] }, select: { id: true } });
   for (const session of stale) await prisma.session.delete({ where: { id: session.id } });
   return stale.length;
 }
