@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate the candidate Bedrock key before storing it; never print credentials."""
 import json
-import http.client
+import requests
 import os
 from pathlib import Path
 import re
@@ -14,17 +14,12 @@ def aws(*args):
 
 
 def post(host, path, key, body):
-    # HTTPSConnection has no file:// support and never follows redirects.
-    connection = http.client.HTTPSConnection(host, timeout=90)
-    try:
-        connection.request('POST', path, body=json.dumps(body).encode(),
-            headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
-        response = connection.getresponse()
-        if response.status != 200:
+    # TLS verification stays enabled; credentials must never follow a redirect.
+    with requests.post(f'https://{host}{path}', json=body, timeout=90, allow_redirects=False,
+                       headers={'Authorization': 'Bearer ' + key}) as response:
+        if response.status_code != 200:
             raise RuntimeError('Provider preflight did not return HTTP 200')
-        return json.loads(response.read())
-    finally:
-        connection.close()
+        return response.json()
 
 
 def main():

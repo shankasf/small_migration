@@ -170,7 +170,9 @@ jobs:
           BEDROCK_BOOTSTRAP_KEY: ${{ secrets.CIRCINI_BEDROCK_BOOTSTRAP_KEY }}
           BEDROCK_REGION: ${{ vars.BEDROCK_REGION || 'ap-southeast-2' }}
           BEDROCK_MODEL: ${{ vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0' }}
-        run: python3 scripts/configure-bedrock.py
+        run: |
+          python3 -m pip install --user 'requests>=2.32.5,<3'
+          python3 scripts/configure-bedrock.py
 
       - name: Apply additive security schema before replacing tasks
         run: python3 scripts/preflight-security-schema.py
