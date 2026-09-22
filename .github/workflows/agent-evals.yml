@@ -85,11 +85,16 @@ jobs:
           echo "::add-mask::$KEY"
           echo "AWS_BEARER_TOKEN_BEDROCK=$KEY" >> "$GITHUB_ENV"
 
+      # Inputs reach the shell through the environment, never by interpolation
+      # into the script, so a crafted value cannot inject commands.
       - name: Run agent evals
+        env:
+          EVAL_SUITE: ${{ inputs.suite || 'all' }}
+          EVAL_REPETITIONS: ${{ inputs.repetitions || '1' }}
         run: >-
           python -m evals.run --gate
-          --suite "${{ inputs.suite || 'all' }}"
-          --repetitions "${{ inputs.repetitions || '1' }}"
+          --suite "$EVAL_SUITE"
+          --repetitions "$EVAL_REPETITIONS"
           --report evals-report.json
 
       - name: Upload eval report
