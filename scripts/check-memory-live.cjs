@@ -24,7 +24,11 @@ const FIXTURE_PREFIX = 'E2E memory ';
 // (routes/chat.ts), so by the end of a run the prefix is gone and a sweep by
 // name finds nothing. Chats are deleted by the ids this run created, and the
 // sweep also matches the invented schema name, which only this check writes.
-const FIXTURE_PHRASE = 'RAW_VAULT_';
+// Two markers, because the last chat of a run is the one that proves an erased
+// instruction is NOT applied — so nothing in it carries the schema name. Its
+// question is the second marker; only this check ever asks it.
+const RECALL_QUESTION = 'Which Snowflake schema should a new staging model target?';
+const FIXTURE_PHRASES = ['RAW_VAULT_', RECALL_QUESTION];
 const created = [];
 
 async function request(method, path, body, expected = 200) {
@@ -41,7 +45,7 @@ async function purgeFixtures() {
   const stale = await prisma.session.findMany({where: {ownerUserId: userId, OR: [
     {id: {in: created}},
     {name: {startsWith: FIXTURE_PREFIX}},
-    {messages: {some: {content: {contains: FIXTURE_PHRASE}}}},
+    ...FIXTURE_PHRASES.map(phrase => ({messages: {some: {content: {contains: phrase}}}})),
   ]}, select: {id: true}});
   for (const session of stale) {
     // Through the API where possible: deleting a chat there also deletes its
@@ -85,7 +89,7 @@ async function main() {
   mark('verify a different chat recalls it');
   const second = (await api('/api/sessions', {name: `${FIXTURE_PREFIX}${nonce} recall`}, 201)).id;
   created.push(second);
-  const recalled = await chat(second, 'Which Snowflake schema should a new staging model target?');
+  const recalled = await chat(second, RECALL_QUESTION);
   assert.ok(recalled.assistantMessage.content.includes(schema),
     'A new chat did not recall the standing instruction');
   evidence.recalledInNewChat = true;
@@ -97,7 +101,7 @@ async function main() {
   assert.equal(empty.memories.length, 0, 'Memory survived erasure');
   const third = (await api('/api/sessions', {name: `${FIXTURE_PREFIX}${nonce} after-erase`}, 201)).id;
   created.push(third);
-  const after = await chat(third, 'Which Snowflake schema should a new staging model target?');
+  const after = await chat(third, RECALL_QUESTION);
   assert.ok(!after.assistantMessage.content.includes(schema), 'An erased instruction was still applied');
   evidence.erased = forgotten;
 
