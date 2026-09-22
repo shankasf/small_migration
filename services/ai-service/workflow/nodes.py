@@ -82,10 +82,12 @@ async def policy_gate(state: TurnState, runtime: Runtime[TurnContext]) -> Comman
             await context.logger.guardrail("inbound", "blocked", [reason], [])
         return Command(update={"guardrail": verdict, "response": guardrails.block_message([reason])}, goto=END)
     route = state["route"]
-    # A confirmed grant covers the analysis it was given for; continuity is
-    # re-asked on its own unless the backend just recorded this grant.
-    recheck = (route["route"] == Route.IMPACT and not route["new_analysis"]
-               and context.impact_state.get("phase") == "confirmed" and not context.impact.get("just_confirmed"))
+    # A confirmed grant covers the analysis it was given for. Whether this turn
+    # is still that analysis is the Grant Judge's decision, not the router's:
+    # the judge sees the confirmed sources and the pending question, and a
+    # message naming an unconfirmed source fails closed without a model call.
+    recheck = (route["route"] == Route.IMPACT and context.impact_state.get("phase") == "confirmed"
+               and not context.impact.get("just_confirmed"))
     return Command(goto="grant_judge" if recheck else "dispatch")
 
 

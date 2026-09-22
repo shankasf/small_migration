@@ -62,10 +62,13 @@ def test_no_confirmation_means_no_specialist_model_or_evidence_reads(harness, st
 
 
 def test_new_analysis_requires_fresh_confirmation_even_after_an_earlier_grant(harness):
+    """With a confirmed grant the Grant Judge decides continuity, and a different target fails closed."""
     harness.models.script("router", route("impact", new_analysis=True))
+    harness.models.script("grant_judge", call("AnalysisContinuity", continues_confirmed_analysis=False))
     result = harness.turn("New impact analysis: drop customer_count", impact_context=impact(grant()))
     assert result.impact_action == "request_sources" and "which evidence sources" in result.response
-    assert not harness.models.requests("investigator") and not harness.models.requests("grant_judge")
+    assert harness.models.requests("grant_judge") and not harness.models.requests("investigator")
+    assert not harness.gateway.requests
 
 
 def test_just_confirmed_sources_skip_classification_and_produce_a_grounded_report(harness):

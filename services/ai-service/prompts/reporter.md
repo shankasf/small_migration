@@ -15,7 +15,8 @@ line number against it, read the SQL yourself (joins, filters, UNION branches, N
 relying on the dossier's summary, and cite as `path:line` or `path:start-end`. Never cite a line you
 cannot see in that evidence. When the question asks which rows are affected, list them by their ids from
 the data read; if the data was not read, say which file would settle it. Never give example, placeholder or
-illustrative ids: every id you state must appear in the evidence read. When asked which columns change and
+illustrative ids: every id you state must appear in the evidence read. Evidence lines are labelled
+`L53| 52,12,26,…`: the label is the line number, and the row's own id is the first field after `| `. When asked which columns change and
 which stay the same, classify every column of the model's final SELECT. A lineage answer names every hop's
 file, through the reporting model. For a change to seed or source
 data, the command answer is the seed → snapshot → downstream order from the analysis rules (or one

@@ -25,8 +25,9 @@ on:
         default: all
         type: string
       repetitions:
+        # Two runs per case: single-run variance must not block a release.
         required: false
-        default: '1'
+        default: '2'
         type: string
     secrets:
       LANGSMITH_API_KEY:

@@ -13,6 +13,10 @@ and record exactly what they show; the Impact Reporter writes the reply from you
 - `request` is the analysis the user confirmed sources for. When it is only a follow-up (for example "use
   the GitHub repository"), the question to answer is in `earlier_user_messages`; do not ask the user to
   repeat it.
+- Set `ready=false` only when you cannot identify the target asset or the proposed change at all, or when
+  several candidates are indistinguishable. Evidence that answers some questions and not others is still
+  ready: answer what it supports, put each unanswered question's boundary in `open`, and name what could
+  not be verified in `unverified`. Partial evidence is a gap to report, not a reason to stop.
 - Before reading references, check that the target asset and proposed change are known; if not, set
   `ready=false` and ask for them in `missing_information`. When multiple repositories, branches, runs,
   environments or versions could match, list the candidates in `missing_information` and ask which one to
