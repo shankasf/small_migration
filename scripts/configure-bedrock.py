@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 """Validate the candidate Bedrock key before storing it; never print credentials."""
 import json
+import http.client
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
-import urllib.request
 
 
 def aws(*args):
     return json.loads(subprocess.check_output(['aws', *args, '--output', 'json'], text=True))
+
+
+def post(host, path, key, body):
+    # HTTPSConnection has no file:// support and never follows redirects.
+    connection = http.client.HTTPSConnection(host, timeout=90)
+    try:
+        connection.request('POST', path, body=json.dumps(body).encode(),
+            headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise RuntimeError('Provider preflight did not return HTTP 200')
+        return json.loads(response.read())
+    finally:
+        connection.close()
 
 
 def main():
@@ -21,15 +35,12 @@ def main():
     bootstrap = os.environ.get('BEDROCK_BOOTSTRAP_KEY', '').strip()
     key = bootstrap or aws('secretsmanager', 'get-secret-value', '--secret-id', 'circini/bedrock-api-key')['SecretString']
     assert key.startswith('ABSK') and '\n' not in key, 'Bedrock bearer key is missing or invalid'
-    url = f'https://bedrock-runtime.{region}.amazonaws.com/openai/v1/chat/completions'
+    host = f'bedrock-runtime.{region}.amazonaws.com'
 
     def call(messages, **extra):
-        body = json.dumps({'model': model, 'messages': messages, 'max_tokens': 512,
-                           'reasoning_effort': 'low', 'store': False, **extra}).encode()
-        request = urllib.request.Request(url, data=body,
-            headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
-        with urllib.request.urlopen(request, timeout=90) as response:
-            return json.load(response)
+        return post(host, '/openai/v1/chat/completions', key,
+                    {'model': model, 'messages': messages, 'max_tokens': 512,
+                     'reasoning_effort': 'low', 'store': False, **extra})
 
     messages = [{'role': 'user', 'content': 'Call readiness_check with value 7.'}]
     result = call(messages, tools=[{'type': 'function', 'function': {'name': 'readiness_check',
@@ -46,11 +57,9 @@ def main():
 
     # Keep the existing embedding space: do not replace its OpenAI credential.
     embedding_key = aws('secretsmanager', 'get-secret-value', '--secret-id', 'circini/openai-api-key')['SecretString']
-    request = urllib.request.Request('https://api.openai.com/v1/embeddings',
-        data=json.dumps({'model': 'text-embedding-3-small', 'input': ['readiness check'], 'dimensions': 1536}).encode(),
-        headers={'Authorization': 'Bearer ' + embedding_key, 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(request, timeout=45) as response:
-        assert len(json.load(response)['data'][0]['embedding']) == 1536
+    response = post('api.openai.com', '/v1/embeddings', embedding_key,
+                    {'model': 'text-embedding-3-small', 'input': ['readiness check'], 'dimensions': 1536})
+    assert len(response['data'][0]['embedding']) == 1536
     if bootstrap:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'key'
