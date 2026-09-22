@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: rep_dispensing
+    description: Thin reporting model selecting all transformed dispensing fields from stg_dispensing.
+    columns:
+      - name: patient_id
+        data_type: number
+        tests:
+          - not_null
+      - name: patient_name
+        data_type: varchar
+      - name: gender
+        data_type: varchar
+      - name: nhi
+        data_type: varchar
+      - name: drug_name
+        data_type: varchar
+      - name: drug_cost
+        data_type: decimal
+      - name: prescription_id
+        data_type: number
+      - name: drug_frequency
+        data_type: decimal
+      - name: prescription_cost
+        data_type: decimal
+      - name: subsidy_amount
+        data_type: decimal

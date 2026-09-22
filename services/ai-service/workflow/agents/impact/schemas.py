@@ -1,6 +1,8 @@
 """Typed results passed between the impact agents."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -10,10 +12,23 @@ class EvidenceItem(BaseModel):
     excerpt: str = Field(description="Verbatim evidence text")
 
 
+class Coverage(BaseModel):
+    question: str = Field(description="One of the user's questions, in a few words, in their order")
+    evidence: list[str] = Field(description="Locators (path:line) of the evidence that answers it")
+    open: str = Field(description="What is still unknown for this question and which file would settle it; "
+                                  "empty when the evidence answers it")
+
+
 class EvidenceDossier(BaseModel):
     """What the Evidence Investigator established from the confirmed sources."""
 
     ready: bool = Field(description="False when the target, the change or the right artifact version is unclear")
+    change_kind: Literal["model_sql", "seed_or_source_data", "config_or_yaml", "other"] = Field(
+        default="other", description="What the proposed change edits: model SQL, seed or source data, project "
+                                     "config/YAML, or something else")
+    changed_file: str = Field(default="", description="Path of the file the change edits, e.g. seeds/pharma/drugs.csv")
+    coverage: list[Coverage] = Field(default_factory=list,
+                                     description="Every question the user asked, with the evidence that answers it")
     missing_information: str = Field(description="Only when ready is false: the questions or artifacts needed")
     evidence: list[EvidenceItem] = Field(description="Every relevant fact, cited")
     lineage_notes: str = Field(description="Upstream/downstream paths traced, by node or file")

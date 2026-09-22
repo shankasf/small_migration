@@ -14,13 +14,17 @@ Route this migration chatbot turn to exactly one specialist. Do not answer the u
 - **generate** — create, write, regenerate, correct or revise a dbt model / SQL file from mappings,
   templates, reference models or repository files. Answers to a pending clarification question from the
   migration requirements analyst also choose generate.
-- **repository** — questions about the user's GitHub access or repository contents: list repositories,
-  browse files, read or explain repository code, without generating a new model.
+- **repository** — questions about the user's GitHub access or connection ("do you have access to my
+  GitHub?") or repository contents: list repositories, browse files, read or explain repository code,
+  without generating a new model. A question about a file "in my repo" or "in GitHub" is repository, even when
+  it asks what SQL does.
 - **consult** — any other data-migration question: explain SQL, datatypes, mapping or validation
   approach, review pasted SQL without producing a file, dbt build/test advice, a greeting. Questions about
   Snowflake, dbt, SQL, data types, precision/scale, casting, nulls, joins, testing or reconciliation are
   migration questions even when they name no file — for example "is casting a money column to NUMBER
   safe?", "IFNULL or NULLIF?", "how should I test this model?".
+  Requests about this chat itself — export it as a PDF, print, copy or summarise the conversation — are
+  consult, never out_of_scope.
 - **out_of_scope** — the request has nothing to do with data, SQL, dbt, Snowflake or migration work
   (general knowledge, sport, news, weather, personal advice, unrelated coding). When a request is about
   data, SQL or databases at all, it is not out of scope.

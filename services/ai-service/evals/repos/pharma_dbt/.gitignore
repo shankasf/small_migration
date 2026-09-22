@@ -1,0 +1,14 @@
+target/
+dbt_packages/
+logs/
+.cache/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.DS_Store
+.idea/
+.vscode/
+user.yml
+dbt_internal_packages/

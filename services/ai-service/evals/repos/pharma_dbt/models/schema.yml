@@ -1,0 +1,14 @@
+version: 2
+
+models: []
+
+# Example:
+# models:
+#   - name: example_model
+#     description: "Describe the model."
+#     columns:
+#       - name: example_id
+#         description: "Primary identifier."
+#         data_tests:
+#           - not_null
+#           - unique

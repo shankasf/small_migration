@@ -37,7 +37,7 @@ class ModelProfile:
     reasoning_effort: str = "low"
 
 
-# SQL generation and review get more reasoning; classification stays cheap.
+# Generation, review and impact analysis get more reasoning; classification stays cheap.
 PROFILES: dict[ModelRole, ModelProfile] = {
     ModelRole.ROUTER: ModelProfile(max_tokens=1500),
     ModelRole.GUARD: ModelProfile(max_tokens=1000),
@@ -48,8 +48,9 @@ PROFILES: dict[ModelRole, ModelProfile] = {
     ModelRole.ANALYST: ModelProfile(max_tokens=16000),
     ModelRole.AUTHOR: ModelProfile(max_tokens=16000, reasoning_effort="medium"),
     ModelRole.REVIEWER: ModelProfile(max_tokens=8000, reasoning_effort="medium"),
-    ModelRole.INVESTIGATOR: ModelProfile(max_tokens=16000),
-    ModelRole.REPORTER: ModelProfile(max_tokens=16000),
+    # Impact analysis is multi-hop reasoning over code and data: medium effort.
+    ModelRole.INVESTIGATOR: ModelProfile(max_tokens=16000, reasoning_effort="medium"),
+    ModelRole.REPORTER: ModelProfile(max_tokens=16000, reasoning_effort="medium"),
 }
 
 

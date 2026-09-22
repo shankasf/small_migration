@@ -1,0 +1,16 @@
+id,name,cost,unit,type,deleted_flg
+1,Paracetamol,4.50,100,Analgesic,false
+2,Amoxicillin,12.30,20,Antibiotic,false
+3,Metformin,8.75,60,Antidiabetic,false
+4,Atorvastatin,15.20,30,Statin,false
+5,Lisinopril,9.40,30,ACE Inhibitor,false
+6,Omeprazole,11.10,28,PPI,false
+7,Salbutamol,18.60,1,Bronchodilator,false
+8,Sertraline,14.25,30,SSRI,false
+9,Ibuprofen,5.80,100,NSAID,false
+10,Warfarin,7.95,28,Anticoagulant,false
+11,Insulin Glargine,42.00,1,Insulin,false
+12,Losartan,10.60,30,ARB,false
+13,Simvastatin,9.90,30,Statin,true
+14,Citalopram,13.40,30,SSRI,false
+15,Amlodipine,8.20,30,Calcium Channel Blocker,false

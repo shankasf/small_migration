@@ -19,62 +19,87 @@ flowchart LR
     U["🖥️ Browser<br/>React + Vite"]
 
     subgraph edge["Edge — TLS termination"]
-        IG["Application Load Balancer<br/>migration-agent.uat.signify.net.nz<br/>ACM certificate · HTTP→HTTPS"]
+        IG["Application Load Balancer<br/>migration-agent.uat.signify.net.nz<br/>ACM · TLS 1.3 policy · HTTP→HTTPS"]
     end
 
     subgraph cluster["ECS Fargate — cluster circini-demo · Service Connect"]
         FE["frontend :5173<br/>React 18 · Vite · Tailwind"]
         BE["backend :3001<br/>Express · Prisma · Socket.IO<br/>🔐 Cognito JWT + RBAC"]
-        AI["ai-service :8084<br/>FastAPI · LangGraph<br/>🔐 x-internal-key"]
-        PV[("task scratch volume<br/>/data/outputs")]
+        AI["ai-service :8084<br/>FastAPI · LangGraph turn graph<br/>10 agents + Injection Guard<br/>🔐 x-internal-key · internal only"]
+        OT["ADOT collector sidecars<br/>traces → X-Ray · metrics → CloudWatch"]
     end
 
-    subgraph managed["Managed data services"]
-        DB[("RDS PostgreSQL 16<br/>users · sessions · messages<br/>audit_events · usage_records")]
+    subgraph data["AWS data services"]
+        DB[("RDS PostgreSQL 16<br/>users · sessions · messages · files<br/>audit · usage · AI activity logs")]
+        CK[("DynamoDB circini-agent-checkpoints<br/>LangGraph thread state · TTL 30 days")]
+        S3[("S3 checkpoint offload<br/>items over 350 KB · lifecycle 30 days")]
+        SM["Secrets Manager<br/>circini/*"]
     end
 
-    OAI["☁️ OpenAI API<br/>chat + Whisper"]
+    subgraph models["Model providers"]
+        BR["☁️ AWS Bedrock ap-southeast-2<br/>GPT-OSS 120B · Converse API"]
+        EMB["☁️ OpenAI embeddings<br/>file and chat search vectors"]
+    end
+
+    subgraph integrations["User-connected integrations · read-only"]
+        GH["GitHub App · GitLab"]
+        DW["dbt Cloud · Snowflake"]
+    end
+
+    LS["☁️ LangSmith (US)<br/>redacted traces · eval experiments"]
 
     U -- HTTPS --> IG
     IG -- "/" --> FE
-    IG -- "/api" --> BE
-    IG -- "/ai" --> AI
-    BE <-- "Prisma" --> DB
-    BE -- "x-internal-key" --> AI
-    AI -- "logs: x-internal-key" --> BE
-    BE -. "Socket.IO<br/>live logs" .-> U
-    AI -- "generated SQL" --> PV
-    AI -- "TLS" --> OAI
+    IG -- "/api/* · /socket.io/*" --> BE
+    BE <-- Prisma --> DB
+    BE -- "POST /ai/chat · x-internal-key" --> AI
+    AI -- "evidence · GitHub · chat search<br/>/api/internal/* · x-internal-key" --> BE
+    AI -- "activity log events" --> BE
+    BE -. "Socket.IO live logs" .-> U
+    BE -- "installation / OAuth tokens" --> GH
+    BE -- "fixed metadata reads" --> DW
+    AI -- "IAM task role" --> CK
+    AI -- "IAM task role" --> S3
+    AI -- "approved regional host" --> BR
+    AI -- "search embeddings" --> EMB
+    AI -. "anonymised callback" .-> LS
+    AI --> OT
+    BE --> OT
+    SM -. "injected at task start" .-> AI
+    SM -. "injected at task start" .-> BE
 
     classDef svc fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
     classDef data fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
     classDef ext fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
     classDef client fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#0f172a
-    class FE,BE,AI svc
-    class DB,PV data
-    class OAI,IG ext
+    class FE,BE,AI,OT svc
+    class DB,CK,S3,SM data
+    class BR,EMB,LS,IG,GH,DW ext
     class U client
 ```
 
-Both `/api` and `/ai` are reachable at the edge. `/api` requires a user JWT;
-`/ai` is guarded by a **fail-closed** shared-secret middleware — an unset
-`INTERNAL_API_KEY` returns `503` rather than skipping the check, and a missing
-or wrong key returns `401`. The AI service is never reachable with a user token
-alone.
+Only `/api/*` and `/socket.io/*` are routed to the backend at the edge; everything
+else is the frontend. The AI service has **no public route**: the backend reaches
+it over ECS Service Connect, and every `/ai` call except `/ai/health` must carry
+the shared `x-internal-key`. The middleware is **fail-closed** — an unset
+`INTERNAL_API_KEY` returns `503`, a missing or wrong key `401`. The AI service in
+turn reads GitHub, chat history and impact evidence only through the backend's
+`/api/internal/*` gateway, under the authenticated user of the turn.
 
 ## Features
 
 - **Chat Interface**: ChatGPT-style UI with persistent conversation history stored in PostgreSQL
 - **Session Management**: Create, switch, search, rename, and delete chat sessions with a resizable sidebar
 - **File Upload**: Attach up to 10 files per message (CSV, XLSX, SQL, JSON, YAML, TXT, XML, MD, PY, JS, TS, LOG)
-- **Voice Input**: Record audio in the browser, transcribed server-side via OpenAI Whisper (`gpt-4o-transcribe`)
+- **Voice Input**: Disabled — `/ai/stt` refuses until an approved transcription boundary exists
 - **AI Migration Agent**: Analyzes template and mapping documents, then generates Snowflake-compatible DBT SQL models through a LangGraph pipeline (analyst → author → validator → reviewer)
 - **Realtime Logs**: Live status updates streamed from the AI service to the frontend via Socket.IO during processing
 - **File Downloads**: Export generated SQL output files directly from chat messages
 - **Workspace Integrations**: Connect GitHub/GitLab with OAuth, Snowflake with
   key-pair authentication, and dbt Cloud with a scoped service token; connection
   credentials are encrypted server-side and never returned to the browser
-- **Session TTL**: In-memory agent sessions auto-evict after 1 hour of inactivity (max 50 concurrent)
+- **Resumable conversations**: Each chat is a LangGraph thread checkpointed in DynamoDB — a question the assistant asked (a missing base model, which evidence sources to use) pauses the thread and your reply resumes it; checkpoints expire after 30 days
+- **Impact Analysis**: dbt lineage and change-risk answers from sources you confirm (uploads, saved chats, GitHub, GitLab, dbt Cloud, Snowflake metadata), cited as `file:line`
 - **File Re-hydration**: Session files are automatically reloaded from the database when resuming a conversation
 - **Access Control**: Email/password or Microsoft Entra ID sign-in, three roles, per-user token budgets
 - **Response Feedback**: A thumbs up/down on every assistant response, with an optional note; admins read every user's ratings and notes in the portal
@@ -150,59 +175,80 @@ sequenceDiagram
     participant U as Browser
     participant B as backend
     participant D as PostgreSQL
-    participant A as ai-service
-    participant O as OpenAI
+    participant A as ai-service (LangGraph)
+    participant K as DynamoDB checkpoints
+    participant M as Bedrock GPT-OSS
 
     U->>B: POST /api/chat/:id/messages<br/>Authorization: Bearer JWT
-    B->>B: authenticate → user, status
-    B->>B: requireWriteAccess<br/>(auditor / restricted → 403)
-    B->>D: load session + files
-    B->>B: canAccessSession<br/>(not owner & not admin → 403 + audit)
-    B->>D: checkTokenCaps<br/>(over daily/monthly → 429 + audit)
-
-    B->>A: POST /ai/chat + x-internal-key
-    A->>A: guardrails.check_inbound<br/>secrets · health-PII · injection
-    alt blocked (PHI mode A)
-        A-->>B: blocked + reason
-        B->>D: audit guardrail.block
-        B-->>U: refusal, no model call
-    else allowed or redacted
-        A->>O: prompt (redacted payload)
-        O-->>A: response + tool calls
-        A->>A: generate_output → _safe_join<br/>allowlisted filename only
-        A->>A: guardrails outbound redaction
-        A-->>B: response + usage
-        B->>D: recordUsage + recordAudit
-        B-->>U: reply, generated files
+    B->>B: authenticate · requireWriteAccess · canAccessSession
+    B->>D: checkTokenCaps (over budget → 429 + audit)
+    B->>A: POST /ai/policy/check — screen before anything is stored
+    B->>D: save screened message · parse an explicit evidence-source reply
+    B->>A: POST /ai/chat + x-internal-key (history, files, impact grant)
+    A->>K: load the chat's thread
+    alt thread paused on a question
+        A->>A: Command(resume) — reply re-enters at intake
+    else
+        A->>A: start a new run
     end
+    A->>A: screen_input — injection · deny-list · health PII · secrets
+    alt blocked
+        A-->>B: refusal + reasons (no model call)
+    else allowed or redacted
+        par routing
+            A->>M: Router Agent
+        and model-based guardrail
+            A->>M: Injection Guard
+        end
+        A->>A: policy_gate — flagged → refusal
+        opt impact on a confirmed grant
+            A->>M: Grant Judge — same analysis?
+        end
+        A->>M: specialist agent(s) and their tool loops
+        A->>B: read-only tools via /api/internal/* (screened, grant re-checked)
+        alt a user-input step
+            A-->>A: interrupt() — the question is the reply
+        else
+            A->>A: screen_output — redact · strip active content · canary check
+        end
+        A->>K: one checkpoint per turn (durability = exit)
+        A-->>B: reply · files · usage · impact_action
+    end
+    B->>D: recordUsage · audit · impact grant state
+    B-->>U: reply and generated files
 ```
 
 ### Defence in depth
 
 ```mermaid
 flowchart TD
-    L1["🌐 Edge<br/>TLS via cert-manager · HTTP→HTTPS redirect · CORS allowlist"]
-    L2["🔐 Identity<br/>JWT (HS256, ≥32-char secret) or Entra ID JWKS<br/>startup fails on a weak secret"]
-    L3["👤 Authorisation<br/>role guards · write guard · per-row session ownership"]
+    L1["🌐 Edge<br/>ALB TLS 1.3 policy · HTTP→HTTPS · only /api and /socket.io exposed"]
+    L2["🔐 Identity<br/>Cognito OIDC JWT or admin API key · fail-closed x-internal-key between services"]
+    L3["👤 Authorisation<br/>role guards · write guard · per-session ownership"]
     L4["📊 Quota<br/>per-user daily and monthly token caps → 429"]
-    L5["🛡️ Guardrails<br/>inbound secret + health-PII detection · outbound redaction"]
-    L6["📁 Runtime<br/>allowlisted output names · resolved-parent check<br/>non-root · read-only rootfs · no capabilities"]
-    L7["📝 Audit<br/>every allow/deny recorded with PII-scrubbed detail"]
+    L5["🛡️ Input guardrails — screen_input<br/>injection + deny patterns · encoded obfuscation · health PII blocked · PII and secrets redacted"]
+    L6["🧠 Model-based guardrail — Injection Guard<br/>paraphrased extraction · overrides · exfiltration · hidden instructions in files → policy_gate, fail-closed"]
+    L7["🧰 Least-privilege agents<br/>per-agent tool allow-list · every tool read-only · identity from the turn, never the model<br/>evidence sources only after the user confirms (interrupt) · backend re-checks the grant"]
+    L8["🔎 Tool results<br/>backend payloads screened like uploads · ToolNode wrapper redacts and caps every result"]
+    L9["📤 Output<br/>PII and secret redaction · images and HTML stripped · system-prompt canary<br/>SQL static checks: one read-only SELECT, no DDL/DML, allow-listed file names"]
+    L10["📦 Runtime and state<br/>checkpoints in DynamoDB SSE + TTL · strict msgpack deserialisation<br/>IAM task role scoped to one table and bucket · non-root read-only containers"]
+    L11["📝 Audit and observability<br/>audit trail · per-call activity logs · OTEL · LangSmith traces anonymised, env-level tracing refused"]
 
-    L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7 --> L8 --> L9 --> L10 --> L11
 
     classDef layer fill:#e0e7ff,stroke:#4f46e5,stroke-width:2px,color:#0f172a
-    class L1,L2,L3,L4,L5,L6,L7 layer
+    class L1,L2,L3,L4,L5,L6,L7,L8,L9,L10,L11 layer
 ```
 
 ### Secrets
 
-`DATABASE_URL`, `OPENAI_API_KEY`, `JWT_SECRET`, `INTERNAL_API_KEY`,
-`INTEGRATION_ENCRYPTION_KEY`, external OAuth client secrets,
-`SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` live in the
-`migration-agent-secret` Kubernetes Secret and reach pods via `secretKeyRef` —
-never baked into images or manifests. `.env` is gitignored and no longer mounted
-into pods.
+`DATABASE_URL`, `JWT_SECRET`, `INTERNAL_API_KEY`, `INTEGRATION_ENCRYPTION_KEY`,
+`AWS_BEARER_TOKEN_BEDROCK`, `OPENAI_API_KEY` (embeddings), `LANGSMITH_API_KEY`,
+the GitHub App and GitLab OAuth credentials, `SEED_ADMIN_EMAIL` and
+`SEED_ADMIN_PASSWORD` live in AWS Secrets Manager under `circini/*` and are
+injected into the ECS task definitions — never baked into images. The AI
+service reaches its DynamoDB checkpoints and S3 offload bucket through its IAM
+task role, so it holds no database credential at all. `.env` is gitignored.
 
 The initial admin is seeded **only** when no admin exists and
 `SEED_ADMIN_PASSWORD` is at least 12 characters. There is no default password:
@@ -262,28 +308,21 @@ run against a real tenant** — the live deployment is `AUTH_MODE=local`.
 
 ### 2. Client-hosted models — partial
 
-There is a provider seam in `services/ai-service/llm.py`: switching hosts is an
-environment change, not a code change. What exists today:
+Model access is a provider strategy in `services/ai-service/workflow/models.py`
+behind `llm.configure_llm()`, which refuses to start unless the configured host,
+region and model are the approved ones. Switching hosts is an environment change.
 
 | Host | Status |
 |---|---|
-| OpenAI (direct) | ✅ In use live (`gpt-6-astra`) |
-| Azure OpenAI / AI Foundry | ⚠️ Implemented, never exercised against a real tenant |
-| AWS Bedrock | ❌ Not built |
+| AWS Bedrock (`ap-southeast-2`) | ✅ In use live — GPT-OSS 120B through the Converse API (`ChatBedrockConverse`) |
+| OpenAI (direct) | ✅ Implemented, selectable with `LLM_PROVIDER=openai`; embeddings still use OpenAI |
+| Azure OpenAI / AI Foundry | ⚠️ Implemented (`AzureChatOpenAI`), never exercised against a real tenant |
 | Google Vertex AI | ❌ Not built |
-| Org model registry | ❌ Not built — model is a plain env string, not a registry lookup |
+| Org model registry | ❌ Not built — the model is an approved env value, not a registry lookup |
 
-The Azure path installs an `AsyncAzureOpenAI` client and covers **OpenAI models
-hosted in Foundry**. It does not cover Foundry's non-OpenAI catalogue, which
-speaks a different API.
-
-To close this properly the seam needs one adapter per host behind the existing
-interface (Bedrock and Vertex both use their own SDKs and auth — IAM roles and
-workload identity respectively, not API keys), plus a registry lookup so the
-model is resolved by registered identifier and version rather than a free-text
-env var. The seam is the right shape for that; the adapters simply do not exist
-yet. **Treat multi-host support as unproven until it has been run against a real
-subscription in each target.**
+Search embeddings still go to OpenAI (`text-embedding-3-small`) to keep the
+existing vector space, so the live deployment is not yet an all-Bedrock data
+boundary.
 
 ### 3. OTEL — instrumented but not exporting
 
@@ -311,7 +350,8 @@ without passing, and every layer is currently clean.
 | Static analysis (SAST) | Semgrep, 569 rules | any finding blocks | ✅ 0 findings |
 | Secrets in history | Gitleaks | any finding blocks | ✅ clean |
 | Kubernetes manifests | policy checks | hostPath, `:latest`, secret literals or `--reload` block | ✅ pass |
-| Security controls | pytest | any failure blocks | ✅ 44 tests |
+| Security, guardrail and agent-graph tests | pytest | any failure blocks | ✅ 184 tests |
+| Agent quality | LangSmith evals (live model) | below threshold blocks the deploy | ✅ gate passing |
 
 Reaching clean required fixing rather than suppressing:
 
@@ -342,49 +382,51 @@ single line with the reasoning recorded, not by relaxing the ruleset.
 
 ### 5. Guardrails — live
 
-Enforced server-side in `services/ai-service/guardrails.py` on every chat call,
-inbound and outbound. Detects NZ NHI, IRD, email, phone, DOB-in-context,
-generic secrets (OpenAI/AWS keys, private keys), prompt-injection patterns and
-denied-intent patterns. Outbound responses are redacted for PII and secrets.
+Layered around the LangGraph agents (`services/ai-service/workflow/security.py`),
+following LangChain's guardrail guidance — before the agent, around tools, human
+in the loop, and after the agent:
+
+| Layer | Where | What it does |
+|---|---|---|
+| Deterministic input | `screen_input` node · `guardrails.py` | NZ NHI, IRD, email, phone, DOB-in-context, secrets, prompt-injection and denied-intent patterns, encoded obfuscation; health PII blocked (Mode A) |
+| Model-based input | Injection Guard (parallel with the router) → `policy_gate` | Catches paraphrased extraction, overrides, exfiltration requests and instructions hidden in uploads; fails closed |
+| Around tools | gateway screening + `ToolNode(awrap_tool_call=…)` | Backend payloads screened like uploads; every result redacted and capped; read-only tools only |
+| Human in the loop | `ask_sources` / `clarify` / `ask_user` (`interrupt()`) | Evidence is read only from sources the user confirmed; the backend re-checks the grant |
+| Output | `screen_output` node | PII and secret redaction, images/HTML stripped, system-prompt canary |
 
 Live config is `GUARDRAILS_ENABLED=true`, `PHI_MODE=false` — **Mode A**, meaning
-health-identifiable data is blocked outright rather than redacted. Mode B
-(`PHI_MODE=true`) redacts and proceeds instead.
+health-identifiable data is blocked outright rather than redacted.
 
-Verified against the running app with synthetic data:
-
-| Input | Decision |
-|---|---|
-| Fake NHI + date of birth | `blocked` — `health_pii_blocked_mode_a`, findings `nhi`, `dob` |
-| "Ignore all previous instructions…" | `blocked` — `prompt_injection` |
-| Benign migration question | `allow` |
-
-Detection is regex-based. The interface is designed for Microsoft Presidio to
-drop in behind it if richer NER is required for the production CnA build.
+The model-based guard is measured by the LangSmith eval suite: 28/28 attacks
+caught and 0/40 false positives on the last calibration run (see
+[docs/Agent_Evals.md](docs/Agent_Evals.md)).
 
 ## CI/CD
 
 Every push to `main` runs the same gated pipeline. There is no manual build or
-deploy path.
+deploy path. The agent evals also run nightly against the live model.
 
 ```mermaid
 flowchart LR
-    P(["push to main"]) --> CI["CI<br/>typecheck · lint · 44 tests<br/>dep audit · secret scan<br/>manifest policy"]
-    CI -- pass --> B["Build 3 images<br/>tag sha-&lt;commit&gt;<br/>push to ECR"]
+    P(["push to main"]) --> CI["CI<br/>typecheck · lint · build<br/>AI tests incl. DynamoDB checkpoints<br/>backend security integration tests<br/>pip-audit · Trivy fs · Semgrep · Gitleaks"]
     CI -- fail --> X1["❌ stop"]
-    B --> SC["Trivy scan<br/>CRITICAL blocks"]
-    SC -- fail --> X2["❌ stop, nothing deployed"]
-    SC -- pass --> D["Deploy<br/>self-hosted runner"]
-    D --> SM["Smoke test<br/>19 assertions"]
-    SM -- pass --> OK(["✅ live"])
-    SM -- fail --> RB["↩️ automatic<br/>rollout undo"]
+    CI -- pass --> EV["Agent evals<br/>LangSmith · live Bedrock<br/>router · guard · grant judge · generation<br/>impact · history · repository · consult"]
+    CI -- pass --> B["Build 3 images<br/>tag sha-&lt;commit&gt; · push to ECR"]
+    EV -- "below thresholds" --> X2["❌ nothing deployed"]
+    B --> SC["Trivy image scan<br/>CRITICAL blocks"]
+    SC -- fail --> X2
+    EV -- pass --> D
+    SC -- pass --> D["Deploy<br/>OIDC role · business-hours hold<br/>network · data · cognito stacks<br/>Bedrock preflight · LangSmith key<br/>app stack: ECS · DynamoDB · S3 · IAM<br/>schema sync · roll services"]
+    D --> V["Production checks<br/>smoke · GitHub · chat search<br/>impact agent · agent graph"]
+    V -- pass --> OK(["✅ live"])
+    V -- fail --> RB["❌ job fails<br/>redeploy the last good tag"]
 
     classDef ok fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
     classDef bad fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
     classDef step fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
     class OK ok
     class X1,X2,RB bad
-    class CI,B,SC,D,SM step
+    class CI,EV,B,SC,D,V step
 ```
 
 **Why GitHub-hosted runners.** CD runs on standard GitHub-hosted runners and
@@ -426,18 +468,33 @@ small_migration/
 │   │       ├── routes/        # auth, admin, sessions, chat, files, stt
 │   │       ├── services/      # aiService proxy, audit, usage metering
 │   │       └── otel.ts        # OpenTelemetry tracing
-│   └── ai-service/            # Python FastAPI
+│   └── ai-service/            # Python FastAPI + LangGraph
 │       ├── routes/
-│       │   ├── migration.py   # Chat and migration endpoints
-│       │   └── stt.py         # Speech-to-text (Whisper)
-│       ├── utils/             # Realtime log broadcasting
-│       ├── guardrails.py      # Input/output policy checks
-│       ├── llm.py             # Centralised LLM client
+│       │   ├── migration.py   # /ai/chat and the other /ai endpoints
+│       │   └── stt.py         # Voice input — refuses until an approved boundary exists
+│       ├── workflow/          # The agent runtime
+│       │   ├── orchestrator.py    # Turn graph + specialist registry
+│       │   ├── nodes.py           # screen_input · policy_gate · dispatch · screen_output
+│       │   ├── agents/            # Router, Injection Guard, Grant Judge, History, Repository,
+│       │   │                      # Consultant, migration/ and impact/ subgraphs, tool-loop base
+│       │   ├── tools/             # Read-only tools (files, GitHub, chat search, evidence)
+│       │   ├── gateway.py         # Backend gateway — identity from the turn, payloads screened
+│       │   ├── models.py          # Provider strategy + per-agent model profiles
+│       │   ├── security.py        # Guardrail layers around the agents
+│       │   ├── checkpointing.py   # DynamoDB checkpointer (memory for local runs)
+│       │   ├── tracing.py         # Anonymised LangSmith tracing
+│       │   └── runner.py          # TurnRunner: resume or start a thread, map the result
+│       ├── prompts/           # System prompts per agent + shared security rules
+│       ├── evals/             # LangSmith datasets, evaluators, thresholds, runner
+│       ├── tests/             # pytest: graph, pipelines, guardrails, DynamoDB (moto)
+│       ├── guardrails.py      # Pattern-based input/output policy checks
+│       ├── validation.py      # Static SQL/dbt checks (sqlglot)
+│       ├── llm.py             # Approved-provider validation, security status
 │       ├── telemetry.py       # OpenTelemetry tracing
 │       └── config.py          # Settings from environment
 ├── deploy/
 │   └── aws/                   # CloudFormation stacks: network, data, cognito, app
-├── docs/                      # ARCHITECTURE.md, CNA_IMPLEMENTATION.md
+├── docs/                      # ARCHITECTURE.md, LangGraph_Agent_Architecture.md, Agent_Evals.md, …
 ├── scripts/
 │   ├── start-dev.sh           # Start all 3 services for local development
 │   └── generate_*_doc.py      # Build .docx deliverables from docs/*.md
@@ -474,8 +531,16 @@ GITLAB_CLIENT_SECRET=
 **AI Service** (`services/ai-service/.env`):
 
 ```
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-6-astra
+LLM_PROVIDER=bedrock
+BEDROCK_REGION=ap-southeast-2
+BEDROCK_MODEL=openai.gpt-oss-120b-1:0
+APPROVED_LLM_HOST=bedrock-runtime.ap-southeast-2.amazonaws.com
+PROCESSING_REGION=ap-southeast-2
+AWS_BEARER_TOKEN_BEDROCK=
+OPENAI_API_KEY=                 # search embeddings
+INTERNAL_API_KEY=               # shared with the backend
+CHECKPOINT_BACKEND=memory       # dynamodb in AWS
+LANGGRAPH_STRICT_MSGPACK=true
 PORT=8084
 OUTPUT_DIR=/path/to/output
 BACKEND_URL=http://localhost:3001
@@ -498,7 +563,7 @@ npm install
 cd ../ai-service
 python -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime + tests + evals
 ```
 
 ### 3. Run Locally
@@ -581,21 +646,109 @@ wrong key `401`.
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | GET | /ai/health | public | Health check |
-| POST | /ai/chat | `x-internal-key` | Process message with migration agent |
-| GET | /ai/status/:id | `x-internal-key` | Get session file status |
-| POST | /ai/reset/:id | `x-internal-key` | Reset session state and agent |
-| POST | /ai/stt | `x-internal-key` | Transcribe audio to text (Whisper) |
+| POST | /ai/chat | `x-internal-key` | Run one chat turn through the LangGraph turn graph |
+| POST | /ai/policy/check | `x-internal-key` | Screen a message, files and history before the backend stores them |
+| GET | /ai/status/:id | `x-internal-key` | Model files generated in the chat's thread |
+| POST | /ai/reset/:id | `x-internal-key` | Delete the chat's checkpoints and legacy output folder |
+| POST | /ai/cancel/user/:id | `x-internal-key` | Cancel a user's running turns (access revoked) |
+| POST | /ai/files/embed | `x-internal-key` | Screened search embeddings |
+| POST | /ai/validation/test | `x-internal-key` | Static checks + sandboxed synthetic fixture test for SQL |
+| GET | /ai/security/status | `x-internal-key` | Provider boundary, guardrail and tracing configuration |
+| POST | /ai/stt | `x-internal-key` | Refuses — voice input is unavailable |
 
-## Agent Tools
+## AI agents (LangGraph)
 
-The migration agent has access to these tools per session:
+Each chat turn is one run of a LangGraph `StateGraph`; each chat is a thread.
+Every step is one of four kinds — **LLM**, **data**, **action** or **user input**
+(`interrupt()`). Full design: [docs/LangGraph_Agent_Architecture.md](docs/LangGraph_Agent_Architecture.md).
 
-| Tool | Description |
-|------|-------------|
-| `read_file` | Store an uploaded file in session memory |
-| `generate_output` | Write a generated SQL model to disk and return it |
-| `list_files` | List all input and output files in the session |
-| `get_file_content` | Retrieve content of a stored input or output file |
+```mermaid
+flowchart TD
+    S(["chat turn"]) --> SI["screen_input · action<br/>guardrails in"]
+    SI -- blocked --> BL(["refusal"])
+    SI --> R["Router Agent · LLM"]
+    SI --> G["Injection Guard · LLM"]
+    R --> PG{"policy_gate"}
+    G --> PG
+    PG -- flagged --> BL
+    PG -- "impact on a confirmed grant" --> GJ["Grant Judge · LLM"]
+    PG --> DI{"dispatch"}
+    GJ --> DI
+    DI -- generate --> MIG[["Migration pipeline"]]
+    DI -- impact --> IMP[["Impact pipeline"]]
+    DI -- consult --> CON["Migration Consultant<br/>LLM + file tools"]
+    DI -- repository --> REP["Repository Agent<br/>LLM + GitHub tools"]
+    DI -- history --> HIS["History Agent<br/>LLM + chat search"]
+    DI -- out_of_scope --> SG["scope_guard · action"]
+    MIG --> SO["screen_output · action<br/>guardrails out"]
+    IMP --> SO
+    CON --> SO
+    REP --> SO
+    HIS --> SO
+    SG --> SO
+    MIG -. "paused question answered" .-> SI
+    IMP -. "paused question answered" .-> SI
+    SO --> E(["reply + files"])
+
+    classDef llm fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef act fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef sub fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    class R,G,GJ,CON,REP,HIS llm
+    class SI,SO,SG,PG,DI act
+    class MIG,IMP sub
+```
+
+**Migration pipeline** — evaluator-optimizer loop, one build per target model:
+
+```mermaid
+flowchart LR
+    AN["Requirements Analyst<br/>LLM + GitHub reads"]
+    CL["clarify<br/>user input · interrupt()"]
+    PL["plan_builds"]
+    subgraph BUILD["build_model × N · Send · up to 3 in parallel"]
+        AU["Model Author · LLM"] --> VA["validate · data<br/>sqlglot static checks"]
+        VA -- "rejected: exact reason" --> AU
+        VA -- passed --> RV["Model Reviewer · LLM<br/>12-point checklist"]
+        RV -- "defects · up to 2 revisions" --> AU
+    end
+    PUB["publish · action<br/>files + reply"]
+    AN -- "blocking questions" --> CL
+    AN -- targets --> PL --> AU
+    AN -- "nothing to build" --> PUB
+    RV -- "approved or budget spent" --> PUB
+```
+
+**Impact pipeline** — evidence only from sources the user confirmed:
+
+```mermaid
+flowchart LR
+    PS["plan_sources · data<br/>backend grant"] -- "not confirmed" --> AS["ask_sources<br/>user input · interrupt()"]
+    PS -- confirmed --> IN["Evidence Investigator<br/>LLM + read_impact_evidence<br/>line-numbered files"]
+    IN --> EG{"evidence_gate · data"}
+    EG -- "nothing read yet · once" --> IN
+    EG -- "open questions it can read · once" --> IN
+    EG -- grounded --> RP["Impact Reporter · LLM<br/>answers in order · file:line"]
+    EG -- "needs the user" --> AK["ask_user<br/>user input · interrupt()"]
+    RP --> FI["finish · action"]
+```
+
+| Agent | Steps | Tools (all read-only) |
+|---|---|---|
+| Router Agent | LLM | — |
+| Injection Guard | LLM | — |
+| Grant Judge | LLM | — |
+| History Agent | LLM + data | `search_chat_history`, `search_chat_files` |
+| Repository Agent | LLM + data | `github_connection_status`, `list_github_repositories`, `list_github_files`, `read_github_file` |
+| Migration Consultant | LLM + data | `list_files`, `get_file_content` |
+| Requirements Analyst | LLM + data, user input | GitHub tools, `submit_migration_spec` |
+| Model Author | LLM | — (one per target model) |
+| Model Reviewer | LLM | — |
+| Evidence Investigator | LLM + data, user input | `read_impact_evidence`, `submit_evidence_dossier` |
+| Impact Reporter | LLM | — |
+
+Tool names are part of the activity-log contract: the admin AI log and the
+release checks key on them. `generate_output` and `impact_analysis_agent` still
+appear in the log for a published file and an impact analysis.
 
 ## Supported File Types
 

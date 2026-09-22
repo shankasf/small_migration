@@ -150,3 +150,30 @@ def test_invalid_tool_arguments_come_back_to_the_model_as_an_error():
     message = run_tool(EVIDENCE_TOOLS, turn_context(FakeRegistry()), "read_impact_evidence",
                        source="warehouse", operation="read")
     assert message.status == "error"
+
+
+def test_file_reads_are_line_numbered_for_citations():
+    from workflow.tools import number_file_lines
+    numbered = json.loads(number_file_lines(json.dumps({"path": "a.sql", "content": "select\n  cost\nfrom t"})))
+    assert numbered["content"].splitlines() == ["L1| select", "L2|   cost", "L3| from t"]
+    page = json.loads(number_file_lines(json.dumps({"content": "x\ny", "offset": 900, "startLine": 41})))
+    assert page["content"].splitlines() == ["L41| x", "L42| y"]
+    # A later page without its start line is left unnumbered rather than numbered wrongly.
+    unknown = json.dumps({"content": "x", "offset": 900})
+    assert number_file_lines(unknown) == unknown
+    for untouched in (json.dumps({"error": "blocked"}), "not json", json.dumps({"entries": []})):
+        assert number_file_lines(untouched) == untouched
+
+
+def test_github_file_tools_return_numbered_lines(backend):
+    gateway, replies, _ = backend
+    replies["data"] = {"repository": "demo/dbt", "path": "models/a.sql", "commitSha": "c" * 40, "content": "select 1\nfrom t"}
+    message = run_tool(GITHUB_TOOLS, turn_context(FakeRegistry(), gateway), "read_github_file", path="models/a.sql")
+    assert "L2| from t" in json.loads(message.content)["content"]
+
+
+def test_harmony_tool_names_are_cleaned():
+    from workflow.agents.base import clean_tool_name
+    for raw in ("read_impact_evidence<|channel|>commentary", "functions.read_impact_evidence",
+                "functions.read_impact_evidence <|constrain|>json", " read_impact_evidence "):
+        assert clean_tool_name(raw) == "read_impact_evidence"

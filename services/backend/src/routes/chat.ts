@@ -9,7 +9,7 @@ import { recordAudit } from '../services/audit.js';
 import { checkTokenCaps, computeCostUsd, recordUsage } from '../services/usage.js';
 import { beginTurn } from '../services/aiLog.js';
 import { attachLibraryRefs, referenceData, resolveFileRefs, snapshotFile } from '../services/fileLibrary.js';
-import { impactState, parseImpactSources, requestImpactSources } from '../services/impactState.js';
+import { impactBrief, impactState, parseImpactSources, requestImpactSources } from '../services/impactState.js';
 import { ownFeedback } from '../services/feedback.js';
 
 
@@ -168,11 +168,9 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     const model = aiResponse.usage?.model || 'unknown';
     const provider = aiResponse.usage?.provider || 'openai';
     if (aiResponse.impact_action === 'request_sources') {
-      // An explicit source switch keeps the original brief; a new analysis uses
-      // the new user request. Earlier consent is never carried into this grant.
-      const brief = impact && (parseImpactSources(message) || /\b(sources?|instead|switch)\b/i.test(message))
-        ? `${impact.request}\n\nFollow-up: ${message}` : message;
-      impact = requestImpactSources(user.id, brief, userMessage.createdAt);
+      // A source switch keeps the original brief; a new analysis uses the new
+      // user request. Earlier consent is never carried into this grant.
+      impact = requestImpactSources(user.id, impactBrief(impact, message), userMessage.createdAt);
       await prisma.session.update({where: {id: sessionId}, data: {impactState: {...impact}}});
     } else if (aiResponse.impact_action === 'clear' && impact) {
       await prisma.session.update({where: {id: sessionId}, data: {impactState: {}}});

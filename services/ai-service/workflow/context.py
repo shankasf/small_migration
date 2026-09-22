@@ -39,6 +39,8 @@ class TurnWorkspace:
     history: list[dict[str, str]] = field(default_factory=list)
     impact_history: list[dict[str, str]] = field(default_factory=list)
     github_hint: str = ""
+    # Verbatim evidence the investigator read this turn, for the reporter to cite from.
+    evidence: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: land_prescription
+    description: Landing model for prescription data, including the prescription event timestamp.
+    columns:
+      - name: id
+        data_type: number
+        tests:
+          - not_null
+      - name: drug_id
+        data_type: number
+      - name: patient_id
+        data_type: number
+      - name: drug_frequency
+        data_type: number
+      - name: total_cost
+        data_type: decimal
+      - name: subsidy_amount
+        data_type: decimal
+      - name: prescription_dt
+        data_type: timestamp_tz
+      - name: deleted_flg
+        data_type: boolean

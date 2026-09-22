@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: land_raw
+    description: "Raw Snowflake source."
+    database: "{{ env_var('DBT_SNOWFLAKE_DATABASE') }}"
+    schema: pharma
+    tables:
+      - name: drugs
+        description: "Drugs source table."
+      - name: patient
+        description: "Patient source table."
+      - name: prescription
+        description: "Prescription source table."

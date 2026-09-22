@@ -69,6 +69,20 @@ def final_text(messages: Sequence[BaseMessage]) -> str:
     return ""
 
 
+def clean_tool_name(name: str) -> str:
+    """GPT-OSS can leave Harmony markers on a tool name (`lookup<|channel|>commentary`,
+    `functions.lookup`); keep only the name itself."""
+    name = name.split("<|", 1)[0].strip()
+    return name[len("functions."):] if name.startswith("functions.") else name
+
+
+def clean_tool_names(reply: AIMessage) -> AIMessage:
+    if not reply.tool_calls:
+        return reply
+    calls = [{**call, "name": clean_tool_name(call["name"])} for call in reply.tool_calls]
+    return reply if calls == reply.tool_calls else reply.model_copy(update={"tool_calls": calls})
+
+
 def submit_tool(schema: type[BaseModel]) -> BaseTool:
     name = "submit_" + re.sub(r"(?<!^)(?=[A-Z])", "_", schema.__name__).lower()
 
@@ -135,7 +149,7 @@ class ToolLoopAgent:
         if state.get("rounds", 0) >= self.spec.max_rounds:
             # Budget spent: the instruction is shown for this call only.
             messages.append(HumanMessage(self._finish_instruction()))
-        reply = await model.ainvoke(messages)
+        reply = clean_tool_names(await model.ainvoke(messages))
         return {"messages": [reply], "rounds": state.get("rounds", 0) + 1}
 
     def _nudge(self, state: LoopState) -> dict[str, Any]:

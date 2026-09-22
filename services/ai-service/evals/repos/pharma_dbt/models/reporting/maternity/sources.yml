@@ -1,0 +1,13 @@
+version: 2
+
+sources: []
+
+# Example:
+# sources:
+#   - name: raw
+#     description: "Raw Snowflake source."
+#     database: "{{ env_var('DBT_SNOWFLAKE_DATABASE') }}"
+#     schema: RAW
+#     tables:
+#       - name: example_table
+#         description: "Describe the source table."

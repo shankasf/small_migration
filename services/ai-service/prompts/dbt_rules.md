@@ -34,7 +34,7 @@
   all land, the row counts match, and the dollar amounts are quietly wrong. Before emitting a decimal,
   currency, rate or quantity column, compare the source precision/scale with the template's:
   - Bare `NUMBER`, `DECIMAL`, `NUMERIC`, `INT` or `INTEGER` in Snowflake means `NUMBER(38,0)` — **every
-    value is rounded to a whole number** (12.345 becomes 12, 12.5 becomes 13). Never declare or cast a money
+    value is rounded to a whole number** (12.345 is stored as 12). Never declare or cast a money
     column that way; make the scale explicit.
   - A target scale smaller than the source scale (e.g. `NUMBER(38,4)` into `NUMBER(38,2)`) loses digits.
     Flag the mismatch to the user instead of silently narrowing it.

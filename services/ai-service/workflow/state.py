@@ -36,7 +36,7 @@ class RouteDecision(TypedDict):
 class PendingInput(TypedDict):
     """A question the assistant asked and is waiting on (user-input step)."""
 
-    kind: Literal["clarification", "impact_sources"]
+    kind: Literal["clarification", "impact_sources", "impact_question"]
     question: str
     route: str
 

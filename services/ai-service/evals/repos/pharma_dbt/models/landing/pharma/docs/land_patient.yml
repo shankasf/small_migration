@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: land_patient
+    description: Landing model for patient data.
+    columns:
+      - name: id
+        data_type: number
+        tests:
+          - not_null
+      - name: name
+        data_type: varchar
+      - name: gender
+        data_type: varchar
+      - name: nhi
+        data_type: varchar
+      - name: deleted_flg
+        data_type: boolean

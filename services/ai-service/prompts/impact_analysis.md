@@ -61,6 +61,12 @@ Recommend a staged sequence instead, narrowest first, stopping at the first fail
 3. `dbt build --select <model>+` — adds downstream, with `--defer --state <prod artifacts>` so unchanged parents are read from prod instead of rebuilt.
 4. In CI, `dbt build --select state:modified+ --defer --state <prod manifest path>`.
 
+When the change is to seed data or a snapshotted source, nothing downstream moves until each step runs in
+DAG order: `dbt seed --select <seed>` loads the new value; the models the snapshot selects from are rebuilt;
+`dbt snapshot --select <snapshot>` records the change (a snapshot only captures what its source shows when it
+runs); then the staging and reporting models are rebuilt. `dbt build --select <seed>+` runs all of these in
+DAG order in one command.
+
 Add `--full-refresh` where an incremental model's grain or schema changed, and `--exclude` or
 `--indirect-selection=cautious` where the selector drags in unrelated tests.
 
@@ -74,7 +80,7 @@ counts match, and the dollar amounts are quietly wrong.
 
 Call it out when you see any of these:
 
-- A target column declared as bare `NUMBER`, `DECIMAL`, `NUMERIC`, `INT` or `INTEGER`. In Snowflake all of these mean `NUMBER(38,0)` — **every value is rounded to a whole number** (12.345 becomes 12, 12.5 becomes 13), so cents disappear from money columns.
+- A target column declared as bare `NUMBER`, `DECIMAL`, `NUMERIC`, `INT` or `INTEGER`. In Snowflake all of these mean `NUMBER(38,0)` — **every value is rounded to a whole number** (12.345 is stored as 12), so cents disappear from money columns.
 - A target scale smaller than the source scale (for example `NUMBER(38,4)` into `NUMBER(38,2)`).
 - Multiplication or division in the transform: Snowflake re-derives the result scale and reduces it to stay inside precision 38, so rates, unit costs and FX conversions can lose digits before they are even stored.
 - An aggregate (`SUM`, `AVG`) over a column that was already rounded upstream — the error compounds per row.

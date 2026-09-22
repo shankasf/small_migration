@@ -54,3 +54,15 @@ uploads `evals-report.json` as an artifact. Results appear in LangSmith under th
 agents achieve today; single-scenario checks that mirror the production release
 checks stay at 1.0. The file's `_notes` list the known misses at calibration.
 Raise a threshold when a fix lands; never lower one to make a regression pass.
+
+
+## Production-feedback cases
+
+`impact` replays a real support conversation against `evals/repos/pharma_dbt` — a snapshot of the
+synthetic dbt test project (seed → landing → snapshot → staging → reporting): the Losartan cost change
+traced through `rep_dispensing`, in three variants (saved repository; choosing between two repositories;
+a wrong source first, then "use the integrated dbt repository in github"). Each is scored against a
+reference answer written from the fixture's actual lines, plus checks for `file:line` citations, the
+affected prescription ids, and the seed → snapshot build order. `guard` and `grant_judge` carry the same
+conversation's replies ("#3 github repositories", "3", "<repo> using the main branch") as benign and
+continuing cases.

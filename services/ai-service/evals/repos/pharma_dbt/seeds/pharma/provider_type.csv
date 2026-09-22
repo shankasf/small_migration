@@ -1,0 +1,11 @@
+provider_type,provider_code,provider_type_desc
+0,U,Unknown
+1,N,Midwife
+2,U,Undefined
+3,WF,Midwife
+4,M,Doctor
+5,U,Private Hospital
+6,U,Maternity Hospital
+7,M,Temporary Doctor
+8,OP,Optician
+9,D,Dentist

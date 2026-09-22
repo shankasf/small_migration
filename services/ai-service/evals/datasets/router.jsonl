@@ -24,3 +24,4 @@
 {"inputs": {"message": "What's the capital of France?"}, "outputs": {"route": "out_of_scope"}, "metadata": {"case_id": "oos-capital", "tags": ["out_of_scope"]}}
 {"inputs": {"message": "Write me a poem about autumn leaves."}, "outputs": {"route": "out_of_scope"}, "metadata": {"case_id": "oos-poem", "tags": ["out_of_scope"]}}
 {"inputs": {"message": "Will it rain in Wellington tomorrow?"}, "outputs": {"route": "out_of_scope"}, "metadata": {"case_id": "oos-weather", "tags": ["out_of_scope"]}}
+{"inputs": {"message": "can you export a pdf of this chat so i can send the output for debugging"}, "outputs": {"route": "consult"}, "metadata": {"case_id": "export-chat-pdf", "tags": ["consult", "user-feedback"]}}

@@ -6,12 +6,15 @@ from typing import Any
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 
-from workflow.tools import logged, turn
+from workflow.tools import logged, number_file_lines, turn
 
 
 async def _read(runtime: ToolRuntime[Any], name: str, operation: str, args: dict[str, Any]) -> str:
     context = turn(runtime)
-    return await logged(context, name, args, lambda: context.gateway.github(operation, args))
+
+    async def body() -> str:
+        return number_file_lines(await context.gateway.github(operation, args))
+    return await logged(context, name, args, body)
 
 
 @tool

@@ -13,6 +13,7 @@ from functools import lru_cache
 from typing import Any
 
 from validation import validate_output
+from workflow.tools.evidence import READ_OPERATIONS
 
 Feedback = dict[str, Any]
 
@@ -83,7 +84,8 @@ def turn_expectations(outputs: dict, reference_outputs: dict) -> Feedback:
 
 
 ASKING = re.compile(r"\?|\b(?:please|kindly)\s+(?:specify|provide|confirm|identify|share|tell|let me know|upload|clarify)\b"
-                    r"|\bi need (?:you to|to know)\b|\bbefore i\b", re.IGNORECASE)
+                    r"|(?:^|[.!:]\s+)(?:specify|provide|confirm|identify|share|tell me|upload|clarify|describe|name)\b"
+                    r"|\b(?:i need|need the|need you to)\b|\bbefore i\b", re.IGNORECASE | re.MULTILINE)
 
 
 def asks_user(text: str) -> bool:
@@ -133,7 +135,7 @@ def impact_report(outputs: dict, reference_outputs: dict) -> list[Feedback]:
     checks = {name: re.search(pattern, report, re.IGNORECASE) is not None
               for name, pattern in reference_outputs["checks"].items()}
     evidence_reads = sum(1 for call in outputs["tool_calls"]
-                         if call["name"] == "read_impact_evidence" and call["args"].get("operation") == "read")
+                         if call["name"] == "read_impact_evidence" and call["args"].get("operation") in READ_OPERATIONS)
     return [
         feedback("required_assets", 1 - len(missing) / len(required), f"missing: {missing}"),
         feedback("answers_in_order", in_order, f"heading positions {positions}"),
@@ -253,8 +255,43 @@ async def report_groundedness(inputs: dict, outputs: dict, reference_outputs: di
     if reference_outputs.get("expect") == "missing_input":
         return feedback("groundedness", None, "no report expected")
     from evals.fixtures import resolve
-    context = "\n\n".join(upload["content"] for upload in resolve(inputs.get("backend", {})).get("uploads", []))
-    return await _judged("LINEAGE_GROUNDEDNESS_PROMPT", "groundedness", context=context, outputs=outputs["response"])
+    backend = resolve(inputs.get("backend", {}))
+    parts = [upload["content"] for upload in backend.get("uploads", [])]
+    if backend.get("github_repo"):
+        # The repository files the agent actually read, with line numbers as the agent saw them.
+        from evals.gateway import RepoSnapshot
+        repo = RepoSnapshot(backend["github_repo"])
+        for path in read_paths(outputs["tool_calls"]):
+            content = repo.files.get(path)
+            if isinstance(content, str):
+                numbered = "\n".join(f"L{n}| {line}" for n, line in enumerate(content.split("\n"), 1))
+                parts.append(f"=== {path}\n{numbered}")
+    # The user's question states the proposed change; restating it is not a claim about the project.
+    question = f"=== The user's question (the proposed change, not project evidence)\n{inputs['turns'][0]['message']}"
+    return await _judged("LINEAGE_GROUNDEDNESS_PROMPT", "groundedness", context="\n\n".join([question, *parts]),
+                         outputs=outputs["response"])
+
+
+def read_paths(tool_calls: list[dict]) -> list[str]:
+    paths = []
+    for call in tool_calls:
+        if call["name"] != "read_impact_evidence" or call["args"].get("operation") != "file":
+            continue
+        try:
+            path = json.loads(call["args"].get("parameters") or "{}").get("path")
+        except (TypeError, ValueError):
+            continue
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+async def impact_correctness(inputs: dict, outputs: dict, reference_outputs: dict) -> Feedback:
+    """Scored against a reference answer written from the fixture's actual lines."""
+    if not reference_outputs.get("reference_answer"):
+        return feedback("correctness", None, "no reference answer for this case")
+    return await _judged("CORRECTNESS_PROMPT", "correctness", inputs=inputs["turns"][0]["message"],
+                         outputs=outputs["response"], reference_outputs=reference_outputs["reference_answer"])
 
 
 # --- summary evaluators (experiment-level, shown in LangSmith) ---------------

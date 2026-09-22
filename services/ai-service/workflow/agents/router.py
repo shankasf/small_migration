@@ -43,22 +43,31 @@ class RouterAgent:
             SystemMessage(prompt("router")),
             HumanMessage(json.dumps(self.brief(state, context), ensure_ascii=False)),
         ])
-        return {"route": RouteDecision(route=self.continuity(state, choice.route),
-                                       new_analysis=choice.new_analysis if choice.route == Route.IMPACT else False)}
+        return {"route": self.continuity(state, RouteDecision(
+            route=choice.route, new_analysis=choice.new_analysis if choice.route == Route.IMPACT else False))}
 
     @staticmethod
-    def continuity(state: TurnState, chosen: str) -> str:
-        """A reply to the analyst's pending question goes back to generation.
+    def continuity(state: TurnState, decision: RouteDecision) -> RouteDecision:
+        """A reply to a pending question goes back to the step that asked it.
 
         GPT-OSS sometimes classifies an answer such as "use in_scope_contracts"
-        as a general question. While a clarification is pending, "consult" is
-        read as the answer; a reply that changes topic (history, repository,
-        impact, out of scope) still routes on its own merits.
+        as a general question, "use the dbt repository in GitHub" as a
+        repository request, or a repository name as a new analysis. While a
+        question is pending, those readings are treated as the answer; a reply
+        that changes topic (history, generation, out of scope) still routes on
+        its own merits. Whether an answer keeps the evidence grant is left to
+        the Grant Judge, which sees the confirmed sources and the question.
         """
-        pending = state.get("pending")
-        if pending and pending["kind"] == "clarification" and chosen == Route.CONSULT:
-            return pending["route"]
-        return chosen
+        pending, chosen = state.get("pending"), decision["route"]
+        if not pending:
+            return decision
+        if pending["kind"] == "clarification" and chosen == Route.CONSULT:
+            return RouteDecision(route=pending["route"], new_analysis=False)
+        if pending["kind"] == "impact_question" and chosen in (Route.CONSULT, Route.REPOSITORY, Route.IMPACT):
+            return RouteDecision(route=Route.IMPACT.value, new_analysis=False)
+        if pending["kind"] == "impact_sources" and chosen in (Route.CONSULT, Route.REPOSITORY):
+            return RouteDecision(route=Route.IMPACT.value, new_analysis=decision["new_analysis"])
+        return decision
 
     @staticmethod
     def brief(state: TurnState, context: TurnContext) -> dict:

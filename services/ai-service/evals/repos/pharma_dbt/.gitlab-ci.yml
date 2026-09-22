@@ -1,0 +1,43 @@
+image: python:3.11-slim
+
+stages:
+  - validate
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  DBT_PROFILES_DIR: "$CI_PROJECT_DIR"
+
+cache:
+  paths:
+    - .cache/pip/
+    - dbt_packages/
+
+before_script:
+  - python --version
+  - pip install --upgrade pip
+  - pip install "dbt-snowflake>=1.8,<2.0"
+  - dbt deps
+
+validate:
+  stage: validate
+  script:
+    - dbt debug --target dev
+    - dbt parse --target dev
+
+build:
+  stage: test
+  script:
+    - dbt build --target dev
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+# Configure these as masked/protected GitLab CI/CD variables where appropriate:
+# DBT_SNOWFLAKE_ACCOUNT
+# DBT_SNOWFLAKE_USER
+# DBT_SNOWFLAKE_PASSWORD
+# DBT_SNOWFLAKE_ROLE
+# DBT_SNOWFLAKE_DATABASE
+# DBT_SNOWFLAKE_WAREHOUSE
+# DBT_SNOWFLAKE_SCHEMA
+# Optional: DBT_THREADS

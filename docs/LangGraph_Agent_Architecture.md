@@ -41,8 +41,8 @@ START → screen_input ─┬→ route_intent ────┬→ policy_gate ─
 | Requirements Analyst | `analyst` | GitHub tools (data); `clarify` (user input: `interrupt()`) |
 | Model Author ×N | `author` | fan-out with `Send`, one per target model; `validate` (data: sqlglot static checks) |
 | Model Reviewer | `reviewer` | the 12-point checklist; defects loop back to the author (at most 2 revisions); `publish` (action) |
-| Evidence Investigator | `investigator` | `read_impact_evidence` (data); `plan_sources` / `ask_sources` (user input: `interrupt()`); `evidence_gate` (data) |
-| Impact Reporter | `reporter` | `finish` (action) |
+| Evidence Investigator | `investigator` | `read_impact_evidence` (data, line-numbered file reads); `plan_sources` / `ask_sources` and `ask_user` (user input: `interrupt()`); `evidence_gate` (data) |
+| Impact Reporter | `reporter` | `finish` (action); a data change reported without `dbt seed` is sent back once |
 
 **Tool-using agents** (`workflow/agents/base.py`) are built from LangGraph primitives: a model node, a
 `ToolNode` and conditional edges.
@@ -53,6 +53,23 @@ START → screen_input ─┬→ route_intent ────┬→ policy_gate ─
   - a malformed submission comes back as a validation error the model can fix;
   - a model that keeps answering in prose is nudged;
   - if nudging fails, one structured-output call records the prose as the result.
+
+## Impact pipeline details
+
+- **Evidence is read, not summarised away.** Every file the investigator reads is kept verbatim for the
+  turn (per-turn workspace, never checkpointed) and handed to the reporter, which checks each claim and
+  line number against it. File content arrives labelled `L12| …`; the label is not data.
+- **Coverage before questions.** The dossier maps each of the user's questions to the evidence that answers
+  it. Anything still open, or anything the investigator was about to ask the user for, sends it back once
+  to read what a confirmed source already holds (for example a seed CSV for "which rows are affected").
+  Only what no confirmed source contains becomes a question, and that question is a paused user-input step.
+- **Change kind drives the build plan.** The dossier records whether the change edits model SQL or seed/
+  source data; a seed change must be reported as `dbt seed` → landing → `dbt snapshot` → downstream (or one
+  `dbt build --select <seed>+`).
+- **Replies to a pending question return to it.** The router treats an answer to a pending clarification or
+  impact question as that pipeline's input; whether it keeps the evidence grant is the Grant Judge's call,
+  which sees the confirmed sources and the question. Naming a repository or branch inside a confirmed
+  source continues the analysis; adding a new source category needs fresh confirmation.
 
 ## Error handling by type
 

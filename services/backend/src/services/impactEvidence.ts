@@ -58,7 +58,9 @@ export function artifactPage(content: string, args: Record<string, unknown>) {
     } catch { /* A SQL/YAML file remains an exact, paginated text reference. */ }
   }
   const page = content.slice(offset, offset + 24000);
-  return {content: page, offset, totalCharacters: content.length, nextOffset: offset + page.length < content.length ? offset + page.length : null,
+  // 1-based line number of the page's first character, for exact file:line citations.
+  const startLine = content.slice(0, offset).split('\n').length;
+  return {content: page, offset, startLine, totalCharacters: content.length, nextOffset: offset + page.length < content.length ? offset + page.length : null,
     partial: offset > 0 || page.length < content.length};
 }
 

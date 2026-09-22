@@ -129,9 +129,10 @@ def test_same_analysis_follow_up_keeps_the_grant(harness):
 
 
 def test_investigator_asking_for_inputs_returns_only_the_questions(harness):
+    not_ready = dossier(ready=False, missing_information="Which column should I analyse?", evidence=[])
+    # One self-serve pass first; the question reaches the user only if it survives it.
     harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
-                                               parameters="{}"),
-                          dossier(ready=False, missing_information="Which column should I analyse?", evidence=[]))
+                                               parameters="{}"), not_ready, not_ready)
     result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
     assert result.response == "Which column should I analyse?"
     assert not harness.models.requests("reporter")
@@ -196,3 +197,101 @@ def test_a_second_ungrounded_conclusion_is_answered_not_looped(harness):
     result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
     assert result.response == "Which column?"
     assert len(harness.models.requests("investigator")) == 2 and not harness.models.requests("reporter")
+
+
+# --- production feedback: GitHub-based impact analysis -----------------------
+
+def test_an_invented_tool_name_is_an_error_the_investigator_recovers_from(harness):
+    """The old runtime failed the turn with "Tool github.tree not found"."""
+    harness.models.script("investigator",
+                          call("github.tree", path="models"),
+                          call("read_impact_evidence<|channel|>commentary", source="uploads", operation="read",
+                               parameters="{}"),
+                          dossier())
+    harness.models.script("reporter", report())
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert "### 1." in result.response
+    invalid = next(m for m in harness.models.requests("investigator")[1]["messages"] if m.type == "tool")
+    assert invalid.status == "error" and "not a valid tool" in invalid.content
+    # The Harmony-suffixed name was cleaned and dispatched.
+    assert harness.gateway.requests == [("evidence:uploads", "read", {})]
+
+
+def test_the_brief_keeps_the_users_question_when_the_request_is_a_follow_up(harness):
+    question = "Trace the impact of changing Losartan cost to $15 on rep_dispensing, citing file:line."
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters="{}"), dossier())
+    harness.models.script("reporter", report())
+    harness.turn("3", history=[{"role": "user", "content": question},
+                               {"role": "assistant", "content": "Before I analyze the impact, which evidence sources?"}],
+                 impact_context=impact(grant(request="use the integrated dbt repository in github"), just_confirmed=True))
+    brief = json.loads(harness.models.requests("investigator")[0]["messages"][1].content)
+    assert brief["earlier_user_messages"] == [question]
+    assert "which evidence sources" not in json.dumps(brief["earlier_user_messages"])
+
+
+def test_an_investigator_question_pauses_and_the_answer_resumes_the_analysis(harness):
+    """Production feedback: the answer "<repo> using the main branch" went to the Repository Agent."""
+    which = dossier(ready=False, missing_information="Which repository holds the dbt project?", evidence=[])
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters="{}"), which, which)
+    first = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert first.paused and first.response == "Which repository holds the dbt project?"
+
+    harness.models.script("router", route("repository"))  # the misreading seen in production
+    harness.models.script("grant_judge", call("AnalysisContinuity", continues_confirmed_analysis=True))
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters="{}"), dossier())
+    harness.models.script("reporter", report())
+    second = harness.turn("circini-demo/pharma_dbt_repo using the main branch", impact_context=impact(grant()))
+    assert second.route == "impact" and "### 1." in second.response
+    assert not harness.models.requests("repository")
+    router_brief = json.loads(harness.models.requests("router")[0]["messages"][-1].content)
+    assert router_brief["pending_question"]["kind"] == "impact_question"
+
+
+def test_the_reporter_reads_the_evidence_verbatim_with_line_numbers(harness):
+    harness.gateway.replies["evidence:uploads"] = {"path": "models/stg.sql", "content": "select cost\nfrom drugs\nwhere current"}
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters='{"id": "f"}'), dossier())
+    harness.models.script("reporter", report())
+    harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    brief = harness.models.requests("reporter")[0]["messages"][-1].content
+    assert "=== [uploads] models/stg.sql" in brief and "L3| where current" in brief
+
+
+def test_open_questions_in_the_dossier_send_the_investigator_back_once(harness):
+    """Production feedback: rows were never listed because the data file was never read."""
+    open_q = dossier(coverage=[{"question": "Which rows are affected?", "evidence": [],
+                                "open": "needs seeds/pharma/prescription.csv"}])
+    harness.models.script("investigator",
+                          call("read_impact_evidence", source="uploads", operation="read", parameters="{}"), open_q,
+                          call("read_impact_evidence", source="uploads", operation="read", parameters='{"id": "rx"}'),
+                          dossier(), dossier())
+    harness.models.script("reporter", report())
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert "### 1." in result.response
+    second_pass = harness.models.requests("investigator")[2]["messages"]
+    assert any("needs seeds/pharma/prescription.csv" in m.content for m in second_pass if m.type == "human")
+    assert len(harness.gateway.requests) == 2
+
+
+def test_a_seed_change_report_without_dbt_seed_is_sent_back_once(harness):
+    seed_change = dossier(change_kind="seed_or_source_data", changed_file="seeds/pharma/drugs.csv")
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters="{}"), seed_change)
+    harness.models.script("reporter", report(), report(answers=[
+        {"question": "Which commands?", "answer": "`dbt seed --select drugs`, then `dbt build --select drugs+`."}]))
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert "dbt seed --select drugs" in result.response
+    first_brief = harness.models.requests("reporter")[0]["messages"][-1].content
+    assert "`dbt seed --select drugs`" in first_brief
+    assert len(harness.models.requests("reporter")) == 2
+
+
+@pytest.mark.parametrize("message", ["check GitHub too", "use Snowflake metadata as well", "switch to the dbt Cloud run"])
+def test_naming_an_unconfirmed_source_needs_fresh_confirmation_without_a_model_call(harness, message):
+    harness.models.script("router", route("impact", new_analysis=False))
+    result = harness.turn(message, impact_context=impact(grant()))
+    assert result.impact_action == "request_sources" and result.paused
+    assert not harness.models.requests("grant_judge")

@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: land_drugs
+    description: Landing model for drug reference data.
+    config:
+      contract:
+        enforced: false
+    columns:
+      - name: id
+        data_type: number
+        tests:
+          - not_null
+      - name: name
+        data_type: varchar
+      - name: cost
+        data_type: decimal
+      - name: unit
+        data_type: decimal
+      - name: type
+        data_type: varchar
+      - name: deleted_flg
+        data_type: boolean

@@ -80,7 +80,10 @@ async def grant_judge_target(inputs: dict[str, Any]) -> dict[str, Any]:
     context, blocked = await screened_context({**inputs, "impact_context": {"state": grant}})
     if blocked:
         return {"continues": None, "blocked": True}
-    command = await GrantJudgeAgent()({"route": {"route": "impact", "new_analysis": False}}, Runtime(context=context))
+    pending = ({"kind": "impact_question", "question": inputs["pending_question"], "route": "impact"}
+               if inputs.get("pending_question") else None)
+    command = await GrantJudgeAgent()({"route": {"route": "impact", "new_analysis": False}, "pending": pending},
+                                      Runtime(context=context))
     return {"continues": not command.update["route"]["new_analysis"]}
 
 
@@ -96,13 +99,16 @@ def turn_runner() -> TurnRunner:
     return TurnRunner(graph, registry(), TraceExporter(), gateway_factory=lambda session, actor: _gateways[session])
 
 
-def _fill(value: Any, previous: str) -> Any:
+def _fill(value: Any, responses: list[str]) -> Any:
+    """Substitute earlier replies: ``@previous_response`` or ``@response:N`` (turn N, 1-based)."""
     if value == PREVIOUS:
-        return previous
+        return responses[-1] if responses else ""
+    if isinstance(value, str) and value.startswith("@response:"):
+        return responses[int(value.split(":", 1)[1]) - 1]
     if isinstance(value, dict):
-        return {key: _fill(item, previous) for key, item in value.items()}
+        return {key: _fill(item, responses) for key, item in value.items()}
     if isinstance(value, list):
-        return [_fill(item, previous) for item in value]
+        return [_fill(item, responses) for item in value]
     return value
 
 
@@ -113,14 +119,14 @@ async def conversation_target(inputs: dict[str, Any]) -> dict[str, Any]:
     recorder = ActivityRecorder()
     _gateways[session] = EvalGateway(inputs.get("backend"))
     turns: list[dict[str, Any]] = []
-    previous = ""
+    responses: list[str] = []
     try:
         for number, turn in enumerate(inputs["turns"], 1):
-            result = await runner.run(request_from(_fill(turn, previous)), session_id=session, actor_id=ACTOR,
+            result = await runner.run(request_from(_fill(turn, responses)), session_id=session, actor_id=ACTOR,
                                       turn_id=f"turn-{number}", logger=recorder)
             # The HTTP layer's final outbound pass (routes/migration.py) applies to every reply.
             response = harden_reply(guardrails.check_outbound(result.response).text).text
-            previous = response
+            responses.append(response)
             turns.append({"response": response, "files": result.files, "paused": result.paused,
                           "impact_action": result.impact_action, "route": result.route,
                           "guardrail": result.guardrail.get("decision", "allow"),
