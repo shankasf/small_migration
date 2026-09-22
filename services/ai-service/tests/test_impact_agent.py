@@ -206,3 +206,53 @@ def test_explicit_source_reply_continues_without_reclassifying_or_expanding_the_
     monkeypatch.setattr(impact, 'Agent', lambda **kwargs: pytest.fail('Unnecessary classifier call'))
     route, inputs, outputs = run(impact.route_request('Use uploads', [], {**grant(), 'just_confirmed': True}, None))
     assert route.route == 'impact' and not route.new_analysis and inputs == outputs == 0
+
+
+def _routing_result(final_output, inputs=7, outputs=3):
+    return SimpleNamespace(final_output=final_output, raw_responses=[],
+                           context_wrapper=SimpleNamespace(usage=SimpleNamespace(
+                               input_tokens=inputs, output_tokens=outputs)))
+
+
+@pytest.mark.parametrize('continues, expected_new_analysis', [(False, True), (True, False)])
+def test_confirmed_grant_is_rechecked_before_it_covers_a_later_turn(monkeypatch, continues, expected_new_analysis):
+    """GPT-OSS reused a confirmed grant for a different target roughly half the time."""
+    replies = [impact.HeadRoute(route='impact', new_analysis=False),
+               impact.AnalysisContinuity(continues_confirmed_analysis=continues)]
+    seen = []
+    async def fake_run(agent, payload, **kwargs):
+        seen.append(json.loads(payload))
+        return _routing_result(replies[len(seen) - 1])
+    monkeypatch.setattr(impact.Runner, 'run', fake_run)
+    route, inputs, outputs = run(impact.route_request(
+        'New impact analysis: what breaks if I drop customer_count from customer_mart?', [], grant(), None))
+    assert route.new_analysis is expected_new_analysis
+    assert len(seen) == 2
+    assert seen[1]['confirmed_analysis_request'] == 'Rename customer_id in stg_customers'
+    # Both classifier calls are metered, not just the router's.
+    assert (inputs, outputs) == (14, 6)
+
+
+@pytest.mark.parametrize('context_kwargs, router_new_analysis', [
+    ({'phase': 'awaiting_sources'}, False),  # No grant exists yet to protect.
+    ({}, True),                              # The router already fails closed.
+])
+def test_continuity_recheck_is_skipped_when_it_cannot_change_the_outcome(monkeypatch, context_kwargs, router_new_analysis):
+    calls = []
+    async def fake_run(agent, payload, **kwargs):
+        calls.append(payload)
+        return _routing_result(impact.HeadRoute(route='impact', new_analysis=router_new_analysis))
+    monkeypatch.setattr(impact.Runner, 'run', fake_run)
+    route, inputs, outputs = run(impact.route_request('What breaks?', [], grant(**context_kwargs), None))
+    assert route.new_analysis is router_new_analysis
+    assert len(calls) == 1 and (inputs, outputs) == (7, 3)
+
+
+def test_continuity_recheck_does_not_run_for_non_impact_routes(monkeypatch):
+    calls = []
+    async def fake_run(agent, payload, **kwargs):
+        calls.append(payload)
+        return _routing_result(impact.HeadRoute(route='history', new_analysis=False))
+    monkeypatch.setattr(impact.Runner, 'run', fake_run)
+    route, _, _ = run(impact.route_request('Which file did I upload?', [], grant(), None))
+    assert route.route == 'history' and len(calls) == 1
