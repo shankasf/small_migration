@@ -8,7 +8,7 @@ from agents import Agent, ModelSettings, OpenAIChatCompletionsModel, RunConfig, 
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from bedrock import AnswerFilter, BedrockCompletions, FINAL_TOOL
+from bedrock import AnswerFilter, BedrockCompletions, FINAL_TOOL, clean_tool_name
 from config import settings
 from llm import configure_llm
 import guardrails
@@ -137,4 +137,64 @@ def test_stream_preserves_tool_deltas_usage_and_closes_transport():
             assert chunks[-2].choices[0].delta.tool_calls[0].function.name == 'lookup'
             assert chunks[-1].usage.total_tokens == 15
             assert seen[0]['stream_options'] == {'include_usage': True}
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('returned', [
+    'read_impact_evidence<|channel|>commentary',
+    'functions.read_impact_evidence',
+    'functions.read_impact_evidence <|constrain|>json',
+    ' read_impact_evidence ',
+])
+def test_harmony_control_tokens_are_stripped_from_tool_names(returned):
+    assert clean_tool_name(returned) == 'read_impact_evidence'
+
+
+def test_tool_call_with_harmony_suffix_still_reaches_the_tool_and_final_schema():
+    """GPT-OSS returned `lookup<|channel|>commentary`; the SDK called it unknown."""
+    requests = []
+    invoked = []
+
+    @function_tool
+    async def lookup() -> int:
+        invoked.append(True)
+        return 42
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        name, arguments = (('lookup<|channel|>commentary', '{}') if len(requests) == 1
+                           else (f'functions.{FINAL_TOOL}<|constrain|>json', '{"value":42}'))
+        return httpx.Response(200, json={
+            'id': 'synthetic', 'object': 'chat.completion', 'created': 1, 'model': 'openai.gpt-oss-120b-1:0',
+            'choices': [{'index': 0, 'finish_reason': 'tool_calls', 'message': {
+                'role': 'assistant', 'content': None,
+                'tool_calls': [{'id': f'call_{len(requests)}', 'type': 'function',
+                                'function': {'name': name, 'arguments': arguments}}]}}],
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15},
+        })
+
+    async def scenario():
+        async with AsyncOpenAI(api_key='synthetic', http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond))) as client:
+            client.chat.completions = BedrockCompletions(client)
+            agent = Agent(name='test', model=OpenAIChatCompletionsModel('openai.gpt-oss-120b-1:0', client),
+                          output_type=FinalAnswer, tools=[lookup], model_settings=ModelSettings(store=False))
+            result = await Runner.run(agent, 'Look up the value', run_config=RunConfig(tracing_disabled=True))
+            assert result.final_output.value == 42
+            assert len(invoked) == 1
+    asyncio.run(scenario())
+
+
+def test_streamed_tool_name_is_cleaned_before_the_sdk_dispatches_it():
+    def respond(request):
+        payloads = [{'id': 's', 'object': 'chat.completion.chunk', 'created': 1, 'model': 'test',
+            'choices': [{'index': 0, 'delta': {'tool_calls': [{'index': 0, 'id': 'call1', 'type': 'function',
+                'function': {'name': 'lookup<|channel|>commentary', 'arguments': '{}'}}]}, 'finish_reason': 'tool_calls'}]}]
+        body = ''.join('data: ' + json.dumps(p) + '\n\n' for p in payloads) + 'data: [DONE]\n\n'
+        return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
+
+    async def scenario():
+        async with AsyncOpenAI(api_key='synthetic', http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond))) as client:
+            stream = await BedrockCompletions(client).create(model='test', messages=[], stream=True)
+            chunks = [chunk async for chunk in stream]
+            assert chunks[0].choices[0].delta.tool_calls[0].function.name == 'lookup'
     asyncio.run(scenario())

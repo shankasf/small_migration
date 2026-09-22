@@ -189,7 +189,8 @@ def create_impact_tool(session_id: str, storage: dict):
 
             specialist = Agent(
                 name='Impact Analysis Agent', model=settings.model_name, output_type=ImpactReport,
-                model_settings=ModelSettings(reasoning=Reasoning(effort='low'), max_tokens=16000, store=False),
+                model_settings=ModelSettings(reasoning=Reasoning(effort='low'), max_tokens=16000, store=False,
+                                             temperature=0 if settings.LLM_PROVIDER == 'bedrock' else None),
                 instructions=PROMPT + '''
 
 ## Confirmed operating rules
@@ -209,7 +210,9 @@ Use the read_impact_evidence tool to inspect actual references; listing a filena
 For large artifacts inspect target nodes and traverse their parent/child IDs, handling pagination.
 Track exact paths, immutable versions/commit SHAs/run IDs so every claim can be cited inline.
 No tools can write files, run SQL supplied by you, execute dbt, trigger jobs, or change data.
-Recommend the staged dbt compile/build sequence, SQL checks and tests but NEVER claim they were executed.
+Recommend the staged dbt sequence as literal commands the user can run — `dbt compile`, then a
+narrowed `dbt build --select <target>+` (use `state:modified+` with `--defer` against a production
+manifest) — plus SQL checks and tests, but NEVER claim any of them were executed.
 Answer the user's questions in their order: one `answers` entry per question they asked, their
 wording as the heading, the conclusion in the first sentence, evidence cited inline. Do not label
 findings Evidence-backed/Inferred/Unknown and do not emit Readiness Check / Change Summary /

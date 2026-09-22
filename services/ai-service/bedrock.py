@@ -10,6 +10,21 @@ from openai.resources.chat.completions import AsyncCompletions
 FINAL_TOOL = "emit_structured_response"
 
 
+def clean_tool_name(name: str) -> str:
+    """Strip Harmony control tokens the endpoint can leave glued to a tool name.
+
+    GPT-OSS writes calls as `commentary to=functions.NAME <|constrain|>json`, and
+    the runtime sometimes returns the trailing marker as part of the name — e.g.
+    `read_impact_evidence<|channel|>commentary` — which the SDK then reports as an
+    unknown tool. Keep only the name itself.
+    """
+    at = name.find("<|")
+    if at >= 0:
+        name = name[:at]
+    name = name.strip()
+    return name[len("functions."):] if name.startswith("functions.") else name
+
+
 class AnswerFilter:
     """Remove reasoning even when either delimiter spans several SSE chunks."""
     def __init__(self):
@@ -73,6 +88,8 @@ class BedrockCompletions(AsyncCompletions):
             message = choice.message
             if message.content:
                 message.content = AnswerFilter().feed(message.content, final=True)
+            for call in message.tool_calls or []:
+                call.function.name = clean_tool_name(call.function.name)
             if structured:
                 final_calls = [call for call in message.tool_calls or [] if call.function.name == FINAL_TOOL]
                 if final_calls:
@@ -94,6 +111,9 @@ class BedrockCompletions(AsyncCompletions):
                     filter_ = filters.setdefault(choice.index, AnswerFilter())
                     content = filter_.feed(choice.delta.content or "", final=choice.finish_reason is not None)
                     choice.delta.content = content or None
+                    for call in choice.delta.tool_calls or []:
+                        if call.function and call.function.name:
+                            call.function.name = clean_tool_name(call.function.name)
                 yield chunk
         finally:
             await stream.close()
