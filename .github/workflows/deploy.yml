@@ -164,6 +164,14 @@ jobs:
           GITHUB_APP_BOOTSTRAP_JSON: ${{ secrets.CIRCINI_GITHUB_APP_BOOTSTRAP_JSON }}
         run: node scripts/configure-github-app.mjs
 
+      - name: Configure and preflight Bedrock GPT-OSS
+        if: ${{ vars.LLM_PROVIDER == 'bedrock' }}
+        env:
+          BEDROCK_BOOTSTRAP_KEY: ${{ secrets.CIRCINI_BEDROCK_BOOTSTRAP_KEY }}
+          BEDROCK_REGION: ${{ vars.BEDROCK_REGION || 'ap-southeast-2' }}
+          BEDROCK_MODEL: ${{ vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0' }}
+        run: python3 scripts/configure-bedrock.py
+
       - name: Apply additive security schema before replacing tasks
         run: python3 scripts/preflight-security-schema.py
 
@@ -191,6 +199,8 @@ jobs:
               AppDomain="${{ vars.APP_DOMAIN || 'migration-agent.uat.signify.net.nz' }}" \
               OpenAiModel="${{ vars.OPENAI_MODEL || 'gpt-6-astra' }}" \
               LlmProvider="${{ vars.LLM_PROVIDER || 'openai' }}" \
+              BedrockRegion="${{ vars.BEDROCK_REGION || 'ap-southeast-2' }}" \
+              BedrockModel="${{ vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0' }}" \
               ApprovedLlmHost="${{ vars.APPROVED_LLM_HOST || 'api.openai.com' }}" \
               ProcessingRegion="${{ vars.PROCESSING_REGION || 'unverified' }}" \
               ProviderApprovalReference="${{ vars.PROVIDER_APPROVAL_REFERENCE }}" \
@@ -244,6 +254,9 @@ jobs:
         run: python3 scripts/verify-chat-search-production.py
 
       - name: Verify head and impact analysis agents
+        env:
+          EXPECTED_LLM_MODEL: ${{ vars.LLM_PROVIDER == 'bedrock' && (vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0') || (vars.OPENAI_MODEL || 'gpt-6-astra') }}
+          EXPECTED_LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'openai' }}
         run: python3 scripts/verify-impact-agent-production.py
 
       - name: Deploy Auckland business-hours schedule

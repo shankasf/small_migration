@@ -52,6 +52,7 @@ DOB_PATTERN = re.compile(
 SECRET_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("bedrock_key", re.compile(r"\bABSK[A-Za-z0-9+/=_-]{20,}")),
     ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)")),
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}\b")),

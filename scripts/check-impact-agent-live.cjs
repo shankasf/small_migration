@@ -4,6 +4,8 @@ const {PrismaClient} = require(process.cwd() + '/node_modules/@prisma/client');
 const {generateApiKey} = require(process.cwd() + '/dist/services/apiKeys.js');
 const prisma = new PrismaClient();
 const base = new URL(process.env.PUBLIC_APP_URL || process.env.CORS_ORIGIN).origin;
+const expectedModel = process.env.EXPECTED_LLM_MODEL || 'gpt-6-astra';
+const expectedProvider = process.env.EXPECTED_LLM_PROVIDER || 'openai';
 let token, keyId, sessionId, phase = 'initialize';
 function mark(value) {phase = value; console.log(JSON.stringify({impactProgress: value}));}
 // Assertion messages written in this file are safe to log; a generated one
@@ -114,14 +116,14 @@ async function main() {
   await api(`/api/internal/impact/${sessionId}`, {user_id: user.id, analysis_id: confirmed.id, source: 'github', operation: 'repositories', args: {}}, 403, true);
   const usage = await prisma.usageRecord.findMany({where: {sessionId}});
   assert.ok(usage.length >= 3, 'Every head/specialist turn must be metered');
-  assert.ok(usage.every(u => u.model === 'gpt-6-astra' && u.totalTokens > 0));
+  assert.ok(usage.every(u => u.model === expectedModel && u.provider === expectedProvider && u.totalTokens > 0));
   mark('require fresh confirmation for another change');
   const next = await chat('New impact analysis: what breaks if I drop customer_count from customer_mart?');
   assert.match(next, /which evidence sources/i); assert.equal((await state()).phase, 'awaiting_sources');
   assert.equal(await prisma.generatedOutput.count({where: {sessionId}}), 0);
   await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); keyId = null; token = null;
   await prisma.session.delete({where: {id: sessionId}});
-  console.log(JSON.stringify({impactProductionCheck: 'passed', sessionId, model: 'gpt-6-astra',
+  console.log(JSON.stringify({impactProductionCheck: 'passed', sessionId, model: expectedModel, provider: expectedProvider,
     sourceConfirmation: 'passed', internalDelegation: 'passed', evidenceScope: 'passed', answerFormat: 'passed',
     mandatoryChecks: 'passed', readOnly: 'passed'}));
 }

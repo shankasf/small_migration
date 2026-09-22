@@ -3,6 +3,7 @@
 import base64
 import gzip
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -27,7 +28,9 @@ source = Path('scripts/check-impact-agent-live.cjs').read_bytes()
 encoded = base64.b64encode(gzip.compress(source, mtime=0)).decode()
 # /tmp is the task's explicitly writable ephemeral volume. The code is trusted repository code.
 command = "require('node:fs').writeFileSync('/tmp/impact-agent-check.cjs',require('node:zlib').gunzipSync(Buffer.from('" + encoded + "','base64')));require('/tmp/impact-agent-check.cjs')"
-overrides = {'containerOverrides': [{'name': 'backend', 'command': ['node', '-e', command]}]}
+overrides = {'containerOverrides': [{'name': 'backend', 'command': ['node', '-e', command],
+    'environment': [{'name': 'EXPECTED_LLM_MODEL', 'value': os.environ.get('EXPECTED_LLM_MODEL', 'gpt-6-astra')},
+                    {'name': 'EXPECTED_LLM_PROVIDER', 'value': os.environ.get('EXPECTED_LLM_PROVIDER', 'openai')}]}]}
 serialized = json.dumps(overrides, separators=(',', ':'))
 assert len(serialized.encode()) <= 8192, 'ECS overrides exceed the 8192-byte limit'
 with tempfile.TemporaryDirectory(prefix='circini-impact-agent-') as directory:

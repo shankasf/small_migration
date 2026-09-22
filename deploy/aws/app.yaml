@@ -20,7 +20,13 @@ Parameters:
   LlmProvider:
     Type: String
     Default: openai
-    AllowedValues: [openai, azure]
+    AllowedValues: [openai, azure, bedrock]
+  BedrockRegion:
+    Type: String
+    Default: ap-southeast-2
+  BedrockModel:
+    Type: String
+    Default: openai.gpt-oss-120b-1:0
   ApprovedLlmHost:
     Type: String
     Default: api.openai.com
@@ -58,6 +64,7 @@ Conditions:
   HasAdditionalCertificate: !And [!Condition HasCertificate, !Not [!Equals [!Ref AdditionalCertificateArn, '']]]
   HasIntegrationAppDomain: !Not [!Equals [!Ref IntegrationAppDomain, '']]
   UseAzure: !Equals [!Ref LlmProvider, azure]
+  UseBedrock: !Equals [!Ref LlmProvider, bedrock]
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
 Resources:
@@ -523,6 +530,10 @@ Resources:
             - { Name: PORT, Value: '8084' }
             - { Name: OPENAI_MODEL, Value: !Ref OpenAiModel }
             - { Name: LLM_PROVIDER, Value: !Ref LlmProvider }
+            - { Name: BEDROCK_REGION, Value: !Ref BedrockRegion }
+            - { Name: BEDROCK_MODEL, Value: !Ref BedrockModel }
+            - { Name: EMBEDDING_PROVIDER, Value: !If [UseBedrock, openai, ''] }
+            - { Name: APPROVED_EMBEDDING_HOST, Value: !If [UseBedrock, api.openai.com, ''] }
             - { Name: APPROVED_LLM_HOST, Value: !Ref ApprovedLlmHost }
             - { Name: PROCESSING_REGION, Value: !Ref ProcessingRegion }
             - { Name: PROVIDER_APPROVAL_REFERENCE, Value: !Ref ProviderApprovalReference }
@@ -542,6 +553,10 @@ Resources:
               - UseAzure
               - { Name: AZURE_OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretAzureOpenAi }
               - { Name: OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretOpenAi }
+            - !If
+              - UseBedrock
+              - { Name: AWS_BEARER_TOKEN_BEDROCK, ValueFrom: !ImportValue circini-SecretBedrock }
+              - !Ref AWS::NoValue
             - { Name: INTERNAL_API_KEY, ValueFrom: !ImportValue circini-SecretInternalApiKey }
           LogConfiguration:
             LogDriver: awslogs

@@ -1,5 +1,6 @@
 """Explicit provider selection; SDK tracing is never allowed to export content."""
 from urllib.parse import urlparse
+import re
 from config import settings
 
 
@@ -7,6 +8,8 @@ def security_status() -> dict:
     return {
         "provider": settings.LLM_PROVIDER,
         "model": settings.model_name,
+        "embedding_provider": settings.EMBEDDING_PROVIDER or settings.LLM_PROVIDER,
+        "embedding_host": settings.APPROVED_EMBEDDING_HOST or settings.APPROVED_LLM_HOST,
         "approved_host": settings.APPROVED_LLM_HOST,
         "processing_region": settings.PROCESSING_REGION,
         "provider_approval_reference": settings.PROVIDER_APPROVAL_REFERENCE or None,
@@ -43,10 +46,24 @@ def configure_llm() -> str:
                                  api_key=settings.AZURE_OPENAI_API_KEY,
                                  api_version=settings.AZURE_OPENAI_API_VERSION)
         set_default_openai_api("chat_completions")
+    elif settings.LLM_PROVIDER == "bedrock":
+        host = f"bedrock-runtime.{settings.BEDROCK_REGION}.amazonaws.com"
+        if (not re.fullmatch(r"[a-z]{2}-[a-z]+-\d", settings.BEDROCK_REGION)
+                or settings.APPROVED_LLM_HOST != host
+                or settings.PROCESSING_REGION != settings.BEDROCK_REGION
+                or not settings.AWS_BEARER_TOKEN_BEDROCK
+                or settings.BEDROCK_MODEL != "openai.gpt-oss-120b-1:0"):
+            raise RuntimeError("Bedrock requires the approved regional host, region, API key and GPT-OSS 120B model")
+        from bedrock import BedrockCompletions
+        client = AsyncOpenAI(api_key=settings.AWS_BEARER_TOKEN_BEDROCK,
+                             base_url=f"https://{host}/openai/v1", timeout=180)
+        client.chat.completions = BedrockCompletions(client)
+        set_default_openai_api("chat_completions")
     elif settings.LLM_PROVIDER == "openai":
         if settings.APPROVED_LLM_HOST != "api.openai.com":
             raise RuntimeError("OpenAI endpoint does not match the approved host")
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, base_url="https://api.openai.com/v1")
+        set_default_openai_api("responses")
     else:
         raise RuntimeError("Unsupported LLM provider")
     set_default_openai_client(client, use_for_tracing=False)

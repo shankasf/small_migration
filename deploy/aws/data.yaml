@@ -139,7 +139,17 @@ Resources:
       Name: circini/openai-api-key
       SecretString: REPLACE_ME
 
+  BedrockApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: circini/bedrock-api-key
+      Description: Bedrock bearer key for regional GPT-OSS inference
+      SecretString: REPLACE_ME
+
 Outputs:
+  BedrockApiKeySecretArn:
+    Value: !Ref BedrockApiKeySecret
+    Export: { Name: circini-SecretBedrock }
   AzureOpenAiApiKeySecretArn:
     Value: !Ref AzureOpenAiApiKeySecret
     Export: { Name: circini-SecretAzureOpenAi }

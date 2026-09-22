@@ -19,6 +19,8 @@ interface ModelPrice {
  * shape) when the provider price list changes — config, not code.
  */
 const DEFAULT_PRICING: Record<string, ModelPrice> = {
+  // Bedrock Sydney standard tier, USD/1M tokens. aws.amazon.com/bedrock/pricing/
+  'openai.gpt-oss-120b-1:0': { input: 0.1545, output: 0.6180 },
   'gpt-6-astra': { input: 10, output: 50 },
   'gpt-5.2': { input: 1.25, output: 10 },
   'gpt-5.1': { input: 1.25, output: 10 },

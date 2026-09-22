@@ -23,10 +23,12 @@ async def embed_files(request: EmbeddingRequest):
         if checked['guardrail']['decision'] == 'blocked':
             raise HTTPException(422, 'Search content blocked by policy')
         texts.append(checked['files']['search.txt'])
-    if settings.LLM_PROVIDER == 'openai' and settings.APPROVED_LLM_HOST == 'api.openai.com':
+    provider = settings.EMBEDDING_PROVIDER or settings.LLM_PROVIDER
+    host = settings.APPROVED_EMBEDDING_HOST or settings.APPROVED_LLM_HOST
+    if provider == 'openai' and host == 'api.openai.com':
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, base_url='https://api.openai.com/v1', timeout=45)
         model = 'text-embedding-3-small'
-    elif settings.LLM_PROVIDER == 'azure' and os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT'):
+    elif provider == 'azure' and settings.LLM_PROVIDER == 'azure' and os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT'):
         # configure_llm validates this endpoint during startup.
         client = AsyncAzureOpenAI(api_key=settings.AZURE_OPENAI_API_KEY,
                                  azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,

@@ -88,3 +88,15 @@ def test_unapproved_openai_host_never_calls_provider(client, provider, monkeypat
     monkeypatch.setattr(settings, 'APPROVED_LLM_HOST', 'unapproved.example.test')
     assert post(client, ['SELECT 1;']).status_code == 503
     provider[0].assert_not_called()
+
+
+def test_bedrock_keeps_explicitly_configured_existing_embedding_space(client, provider, monkeypatch):
+    monkeypatch.setattr(settings, 'LLM_PROVIDER', 'bedrock')
+    monkeypatch.setattr(settings, 'APPROVED_LLM_HOST', 'bedrock-runtime.ap-southeast-2.amazonaws.com')
+    assert post(client, ['SELECT 1;']).status_code == 503
+    provider[0].assert_not_called()
+    monkeypatch.setattr(settings, 'EMBEDDING_PROVIDER', 'openai')
+    monkeypatch.setattr(settings, 'APPROVED_EMBEDDING_HOST', 'api.openai.com')
+    assert post(client, ['SELECT 1;']).status_code == 200
+    assert provider[0].call_args.kwargs['api_key'] == settings.OPENAI_API_KEY
+    assert provider[1].embeddings.create.call_args.kwargs['dimensions'] == 1536

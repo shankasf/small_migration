@@ -18,7 +18,13 @@ def _bool(name: str, default: str = "false") -> bool:
 class Settings:
     # --- LLM provider (config-gated so the client's in-tenant models, e.g.
     # HNZ Azure OpenAI, can be used with no code change) ---
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()  # openai | azure
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai").strip().lower()  # openai | azure | bedrock
+    BEDROCK_REGION: str = os.getenv("BEDROCK_REGION", "ap-southeast-2")
+    BEDROCK_MODEL: str = os.getenv("BEDROCK_MODEL", "openai.gpt-oss-120b-1:0")
+    AWS_BEARER_TOKEN_BEDROCK: str = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "")
+    # Preserve the existing vector space when chat uses a text-only model.
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "")
+    APPROVED_EMBEDDING_HOST: str = os.getenv("APPROVED_EMBEDDING_HOST", "")
 
     # OpenAI (LLM_PROVIDER=openai)
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -66,6 +72,8 @@ class Settings:
         """Model (or Azure deployment) the agent should run against."""
         if self.LLM_PROVIDER == "azure":
             return self.AZURE_OPENAI_DEPLOYMENT or self.OPENAI_MODEL
+        if self.LLM_PROVIDER == "bedrock":
+            return self.BEDROCK_MODEL
         return self.OPENAI_MODEL
 
     def __init__(self):
