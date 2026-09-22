@@ -20,6 +20,12 @@ function failureReason(error) {
     ? error.message : (error?.code || error?.name || 'unknown');
 }
 const FIXTURE_PREFIX = 'E2E memory ';
+// A session is renamed to the first 50 characters of its first message
+// (routes/chat.ts), so by the end of a run the prefix is gone and a sweep by
+// name finds nothing. Chats are deleted by the ids this run created, and the
+// sweep also matches the invented schema name, which only this check writes.
+const FIXTURE_PHRASE = 'RAW_VAULT_';
+const created = [];
 
 async function request(method, path, body, expected = 200) {
   const response = await fetch(base + path, {method,
@@ -32,9 +38,19 @@ const api = (path, body, expected = 200) => request('POST', path, body, expected
 const chat = (session, message) => api(`/api/chat/${session}/messages`, {message, fileRefs: []});
 
 async function purgeFixtures() {
-  const stale = await prisma.session.findMany({where: {ownerUserId: userId, name: {startsWith: FIXTURE_PREFIX}},
-    select: {id: true}});
-  for (const session of stale) await prisma.session.delete({where: {id: session.id}});
+  const stale = await prisma.session.findMany({where: {ownerUserId: userId, OR: [
+    {id: {in: created}},
+    {name: {startsWith: FIXTURE_PREFIX}},
+    {messages: {some: {content: {contains: FIXTURE_PHRASE}}}},
+  ]}, select: {id: true}});
+  for (const session of stale) {
+    // Through the API where possible: deleting a chat there also deletes its
+    // LangGraph checkpoints, which a direct row delete would leave to expire.
+    const deleted = await fetch(`${base}/api/sessions/${session.id}`,
+      {method: 'DELETE', headers: {Authorization: `Bearer ${token}`}});
+    if (!deleted.ok) await prisma.session.delete({where: {id: session.id}});
+  }
+  created.length = 0;
   const {forgotten} = await request('DELETE', `/api/admin/users/${userId}/memory`);
   return {sessions: stale.length, memories: forgotten};
 }
@@ -56,6 +72,7 @@ async function main() {
   const schema = `RAW_VAULT_${nonce.toUpperCase()}`;
   mark('state a standing instruction in one chat');
   const first = (await api('/api/sessions', {name: `${FIXTURE_PREFIX}${nonce} source`}, 201)).id;
+  created.push(first);
   const saved = await chat(first, `From now on, every model we build must target the Snowflake schema `
     + `${schema}. Please remember that for all my future chats.`);
   assert.ok(saved.assistantMessage.content, 'No reply to the instruction');
@@ -67,6 +84,7 @@ async function main() {
 
   mark('verify a different chat recalls it');
   const second = (await api('/api/sessions', {name: `${FIXTURE_PREFIX}${nonce} recall`}, 201)).id;
+  created.push(second);
   const recalled = await chat(second, 'Which Snowflake schema should a new staging model target?');
   assert.ok(recalled.assistantMessage.content.includes(schema),
     'A new chat did not recall the standing instruction');
@@ -78,6 +96,7 @@ async function main() {
   const empty = await request('GET', `/api/admin/users/${userId}/memory`);
   assert.equal(empty.memories.length, 0, 'Memory survived erasure');
   const third = (await api('/api/sessions', {name: `${FIXTURE_PREFIX}${nonce} after-erase`}, 201)).id;
+  created.push(third);
   const after = await chat(third, 'Which Snowflake schema should a new staging model target?');
   assert.ok(!after.assistantMessage.content.includes(schema), 'An erased instruction was still applied');
   evidence.erased = forgotten;
