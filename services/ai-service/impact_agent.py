@@ -27,7 +27,7 @@ RUN_CONFIG = RunConfig(tracing_disabled=True, trace_include_sensitive_data=False
 
 
 class HeadRoute(BaseModel):
-    route: Literal['migration', 'impact']
+    route: Literal['migration', 'impact', 'history']
     new_analysis: bool
 
 
@@ -80,8 +80,14 @@ async def route_request(message: str, history: list, context: dict, logger) -> t
         return HeadRoute(route='impact', new_analysis=False), 0, 0
     router = Agent(
         name='Head Agent', model=settings.model_name, output_type=HeadRoute,
-        model_settings=ModelSettings(reasoning=Reasoning(effort='low'), max_tokens=1500, store=False),
+        model_settings=ModelSettings(reasoning=Reasoning(effort='low'), max_tokens=1500, store=False,
+                                     temperature=0 if settings.LLM_PROVIDER == 'bedrock' else None),
         instructions='''Route this migration chatbot turn; do not answer or analyze evidence.
+Choose history when the user asks to find or recall a filename, mapping sheet, upload,
+generated file, or discussion from saved/earlier chats. This is file discovery, NOT impact
+analysis. Follow-up corrections like "no, from the chat" or "give me its exact filename"
+also choose history. Set new_analysis=false for history. Merely mentioning a migration,
+mapping, model, or file does NOT request impact analysis.
 Choose impact for ANY dbt impact analysis, lineage, dependencies, upstream/downstream consumers,
 affected columns/models/tests/exposures/dashboards, proposed-change risk, or validation/test
 recommendations for a dbt change, including paraphrases such as "what breaks if I rename this?".

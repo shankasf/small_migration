@@ -12,7 +12,7 @@ from agents.usage import Usage
 from openai.types.responses import ResponseOutputMessage, ResponseOutputText, ResponseFunctionToolCall
 
 import impact_agent as impact
-from routes.migration import get_or_create_agent
+from routes.migration import get_or_create_agent, agent_for_route
 
 
 def run(coro):
@@ -71,6 +71,18 @@ def test_head_retains_migration_tools_and_routes_impact_as_a_tool_without_handof
     assert {'generate_output', 'get_file_content', 'impact_analysis_agent'} <= names
     assert head.handoffs == []
     assert head.tool_use_behavior == {'stop_at_tool_names': ['impact_analysis_agent']}
+
+
+def test_history_routing_requires_message_search_and_excludes_unrelated_tools():
+    head = get_or_create_agent('history-route-boundary')
+    history = agent_for_route(head, 'history')
+    assert {tool.name for tool in history.tools} == {'search_chat_history', 'search_chat_files'}
+    assert history.model_settings.tool_choice == 'search_chat_history'
+    assert history.reset_tool_choice is True  # Only the first call is forced.
+    assert 'impact_analysis_agent' in {tool.name for tool in head.tools}
+    migration = agent_for_route(head, 'migration')
+    assert 'generate_output' in {tool.name for tool in migration.tools}
+    assert 'impact_analysis_agent' not in {tool.name for tool in migration.tools}
 
 
 @pytest.mark.parametrize('state', [None, grant(phase='awaiting_sources')['state']])
