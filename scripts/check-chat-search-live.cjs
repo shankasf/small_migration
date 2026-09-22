@@ -92,8 +92,14 @@ async function main() {
   mark('ask chatbot to recall file without attaching it');
   const since = new Date();
   const reply = await api(`/api/chat/${target.id}/messages`, { message: `Can you share the mapping sheet filename for the ${project} migration from my earlier chats?`, fileRefs: [] });
+  // Diagnostics before the assertion: a recall failure otherwise leaves no trace of what was searched.
+  // Everything logged here is this check's own synthetic fixture.
+  const searches = await prisma.aiActivityLog.findMany({ where: { sessionId: target.id, createdAt: { gte: since }, step: 'tool.call' }, select: { tool: true, detail: true } });
+  console.log(JSON.stringify({ chatSearchProgress: 'recall diagnostics',
+    searches: searches.map(s => ({ tool: s.tool, args: JSON.stringify(s.detail?.arguments || {}).slice(0, 200) })),
+    replyExcerpt: (reply.assistantMessage.content || '').slice(0, 300) }));
   assert.ok(reply.assistantMessage.content.includes(filename), 'Chatbot did not identify earlier chat filename');
-  const tools = await prisma.aiActivityLog.findMany({ where: { sessionId: target.id, createdAt: { gte: since }, step: 'tool.call' }, select: { tool: true } });
+  const tools = searches;
   assert.ok(tools.some(t => t.tool === 'search_chat_history'), 'Chatbot did not search saved messages');
   assert.ok(!tools.some(t => /github/.test(t.tool || '')), 'Chat lookup incorrectly switched to GitHub');
   mark('verify short follow-up keeps topic and source');

@@ -139,9 +139,14 @@ class EvalGateway:
 
     async def chat_search(self, operation: str, args: dict[str, Any]) -> str:
         self.requests.append(("chat_search", operation, args))
-        data = (self.backend.get("chat_search") or {}).get(operation, {"matches": [], "files": [], "nextOffset": None})
+        empty = {"matches": [], "files": [], "nextOffset": None}
+        data = (self.backend.get("chat_search") or {}).get(operation, empty)
+        if isinstance(data, list):
+            # Successive replies: a first search that misses, then one that finds it.
+            index = sum(1 for kind, op, _ in self.requests[:-1] if kind == "chat_search" and op == operation)
+            data = data[min(index, len(data) - 1)]
         if isinstance(data, dict) and {"current", "all"} & set(data):
-            data = data.get(args.get("scope", "current"), {"matches": [], "files": [], "nextOffset": None})
+            data = data.get(args.get("scope", "current"), empty)
         return screen_json("chat-search.json", data, "Chat search content was blocked by data policy.")
 
     async def impact_evidence(self, grant: dict[str, Any], source: str, operation: str, args: dict[str, Any]) -> str:
