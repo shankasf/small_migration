@@ -156,6 +156,22 @@ def text_expectations(outputs: dict, reference_outputs: dict) -> list[Feedback]:
     return results or [feedback("mentions_required", None)]
 
 
+def delivered_files(outputs: dict, reference_outputs: dict) -> list[Feedback]:
+    """A file the user asked for is attached to the reply, with its real content."""
+    expected = reference_outputs.get("files") or {}
+    if not expected:
+        return [feedback("delivered_expected_file", None)]
+    results = []
+    for name, must_contain in expected.items():
+        content = outputs["files"].get(name)
+        results.append(feedback("delivered_expected_file", content is not None,
+                                f"expected {name}, got {list(outputs['files'])}"))
+        missing = [token for token in must_contain if token.lower() not in (content or "").lower()]
+        results.append(feedback("delivered_file_content", content is not None and not missing,
+                                f"missing: {missing}"))
+    return results
+
+
 def tool_policy(outputs: dict, reference_outputs: dict) -> list[Feedback]:
     used = [call["name"] for call in outputs["tool_calls"]]
     forbidden = [name for name in used for pattern in reference_outputs.get("forbidden_tools", []) if pattern in name]

@@ -80,7 +80,7 @@ const ChatArea = memo(function ChatArea({
                     <FileText className="w-4 h-4 text-success" />
                   </div>
                   <div className="flex-1 pt-1">
-                    <p className="text-[15px] text-ink/90 mb-3">Generated files:</p>
+                    <p className="text-[15px] text-ink/90 mb-3">Files in this reply:</p>
                     <div className="flex flex-wrap gap-2">
                       {msgOutputs.map(output => (
                         <button

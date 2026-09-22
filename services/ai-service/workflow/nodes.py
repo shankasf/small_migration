@@ -45,7 +45,10 @@ async def screen_input(state: TurnState, runtime: Runtime[TurnContext]) -> Comma
     verdict = GuardrailVerdict(decision=inbound.decision, reasons=list(inbound.reasons),
                                findings=dict(inbound.findings), data_class=inbound.data_class)
     turn = {"turn_id": context.turn_id or "", "guardrail": verdict, "route": None, "safety": None,
-            "response": "", "outputs": {}, "impact_action": None, "rerun": False, "message": ""}
+            "response": "", "outputs": {}, "impact_action": None, "rerun": False, "message": "",
+            # Kept for one turn so a follow-up like "give me that file" can be
+            # read as continuing the last specialist rather than a new topic.
+            "last_route": (state.get("route") or {}).get("route") or state.get("last_route")}
     findings = [{"type": k, "count": v} for k, v in inbound.findings.items()]
     if inbound.decision == "blocked":
         if context.logger:

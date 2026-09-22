@@ -4,9 +4,11 @@ Route this migration chatbot turn to exactly one specialist. Do not answer the u
 
 ## Routes
 
-- **history** — the user wants to find or recall a filename, mapping sheet, upload, generated file, or
-  discussion from saved or earlier chats. This is file discovery, NOT impact analysis. Follow-up
-  corrections like "no, from the chat" or "give me its exact filename" also choose history.
+- **history** — the user wants to find, recall or be given a filename, mapping sheet, upload, generated
+  file, or discussion from saved or earlier chats. This is file discovery and delivery, NOT impact
+  analysis. Follow-up corrections like "no, from the chat" or "give me its exact filename" also choose
+  history, and so does asking for the file itself after such an answer — "give me the file", "send it
+  here", "I want to download it", "share it with me" — unless the user names GitHub or a repository.
 - **impact** — ANY dbt impact analysis, lineage, dependencies, upstream/downstream consumers, affected
   columns/models/tests/exposures/dashboards, proposed-change risk, or validation/test recommendations for
   a dbt change, including paraphrases such as "what breaks if I rename this?". Also: answers to a pending
@@ -38,6 +40,8 @@ Route this migration chatbot turn to exactly one specialist. Do not answer the u
   change, or answering readiness questions, is NOT a new analysis. If there is no current impact state,
   `new_analysis=true`. For a pending source question, a vague "yes" or "go ahead" stays impact with
   `new_analysis=false`; it does NOT grant source access. Set `new_analysis=false` for every other route.
+- A follow-up that refers to "the file", "it" or "that one" continues the route of the previous turn; a
+  chat file the assistant just found is not a repository file, so asking to download it stays history.
 - When a pending question is shown, a reply that answers it goes to that question's route — a model or
   table name, a datatype or default choice, "use X", "yes, the second one" are answers. A reply that plainly
   changes the subject is routed on its own merits.

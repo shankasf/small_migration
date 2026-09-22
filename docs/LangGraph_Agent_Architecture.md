@@ -35,7 +35,7 @@ START → screen_input ─┬→ route_intent ────┬→ policy_gate ─
 | Router Agent | `router` | `screen_input` (action), `dispatch` (data) |
 | Injection Guard | `guard` | runs in parallel with the router; `policy_gate` (action) blocks a flagged turn |
 | Grant Judge | `grant_judge` | re-checks that a confirmed evidence grant covers this turn |
-| History Agent | `history` | `search_chat_history`, `search_chat_files` (data) |
+| History Agent | `history` | `search_chat_history`, `search_chat_files`, `request_file_delivery` (data); `delivery_gate` / `locate_file` (data), `deliver_files` (action) |
 | Repository Agent | `repository` | four read-only GitHub tools (data) |
 | Migration Consultant | `consultant` | `list_files`, `get_file_content` (data) |
 | Requirements Analyst | `analyst` | GitHub tools (data); `clarify` (user input: `interrupt()`) |
@@ -53,6 +53,20 @@ START → screen_input ─┬→ route_intent ────┬→ policy_gate ─
   - a malformed submission comes back as a validation error the model can fix;
   - a model that keeps answering in prose is nudged;
   - if nudging fails, one structured-output call records the prose as the result.
+
+## History pipeline details
+
+- **Naming a file is not giving it.** The LLM step may only ask for a delivery, by the asset id a search
+  returned; `deliver_files` is the action step that fetches the content and attaches it to the reply as a
+  downloadable file. The content never enters the model's context or the activity log.
+- **The hand-over does not depend on the model.** Asked for a file, GPT-OSS answers with its name and
+  source chat instead of calling `request_file_delivery` (observed in production and over repeated eval
+  runs). `delivery_gate` therefore detects the request deterministically, and `locate_file` resolves the
+  filename in the answer to exactly one asset the user owns. None or several matches deliver nothing.
+- **The user's own files only.** The backend resolves the id with the same ownership rule as an @ mention
+  (`resolveFileRefs`), refuses anything else, and audits the hand-over as `chat.file.attach`.
+- **Bounded.** At most three files per reply, each capped at 400 KB, screened outbound like any generated
+  file. A delivery that fails is stated in the reply rather than dropped.
 
 ## Impact pipeline details
 

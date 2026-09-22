@@ -46,7 +46,8 @@ def test_identity_and_service_context_never_enter_a_tool_schema(tool):
 def test_tool_names_are_the_activity_log_contract():
     assert [t.name for t in GITHUB_TOOLS] == ["github_connection_status", "list_github_repositories",
                                                "list_github_files", "read_github_file"]
-    assert [t.name for t in CHAT_SEARCH_TOOLS] == ["search_chat_history", "search_chat_files"]
+    assert [t.name for t in CHAT_SEARCH_TOOLS] == ["search_chat_history", "search_chat_files",
+                                                   "request_file_delivery"]
     assert [t.name for t in EVIDENCE_TOOLS] == ["read_impact_evidence"]
 
 

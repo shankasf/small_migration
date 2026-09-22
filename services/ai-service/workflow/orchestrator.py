@@ -16,9 +16,10 @@ from typing import Any
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
-from workflow.agents.conversational import ConsultantAgent, HistoryAgent, RepositoryAgent
+from workflow.agents.conversational import ConsultantAgent, RepositoryAgent
 from workflow.agents.grant_judge import GrantJudgeAgent
 from workflow.agents.injection_guard import InjectionGuard
+from workflow.agents.history import build_history_graph
 from workflow.agents.impact.graph import build_impact_graph
 from workflow.agents.migration.graph import build_migration_graph
 from workflow.agents.router import RouterAgent
@@ -46,7 +47,7 @@ def default_specialists() -> SpecialistRegistry:
             .register(Route.GENERATE, "generate", build_migration_graph())
             .register(Route.CONSULT, "consult", ConsultantAgent())
             .register(Route.REPOSITORY, "repository", RepositoryAgent())
-            .register(Route.HISTORY, "history", HistoryAgent())
+            .register(Route.HISTORY, "history", build_history_graph())
             .register(Route.IMPACT, "impact", build_impact_graph())
             .register(Route.OUT_OF_SCOPE, "scope_guard", scope_guard))
 

@@ -42,8 +42,10 @@ SUITES: dict[str, Suite] = {suite.name: suite for suite in [
           targets.conversation_target,
           [ev.turn_expectations, ev.impact_report, ev.no_active_content, ev.report_groundedness,
            ev.impact_correctness]),
-    Suite("history", "History Agent: recalls files from saved chats with chat search, never GitHub.",
-          targets.conversation_target, [ev.text_expectations, ev.tool_trajectory, ev.tool_policy]),
+    Suite("history", "History pipeline: recalls files from saved chats with chat search, never GitHub, "
+                     "and hands over the file itself when asked.",
+          targets.conversation_target,
+          [ev.text_expectations, ev.tool_trajectory, ev.tool_policy, ev.delivered_files]),
     Suite("repository", "Repository Agent: verifies GitHub access with tools and cites repo, path and commit.",
           targets.conversation_target, [ev.text_expectations, ev.tool_trajectory, ev.tool_policy]),
     Suite("consult", "Migration Consultant: correctness of migration answers (LLM-as-judge, GPT-OSS).",

@@ -70,6 +70,7 @@ class TurnState(TypedDict, total=False):
     impact_action: Annotated[str | None, latest]
     rerun: Annotated[bool, latest]        # a paused step was answered: route the reply afresh
     # Carried across turns in the thread's checkpoint.
+    last_route: Annotated[str | None, latest]   # the route of the previous turn, for follow-ups
     pending: Annotated[PendingInput | None, latest]
     migration: Annotated[MigrationWork, latest]
     impact: Annotated[ImpactWork, latest]

@@ -32,12 +32,12 @@ class ConversationalSpecialist(ToolLoopAgent):
     def system_prompt(self) -> str:
         return prompt(*self.prompts)
 
-    def notes(self, context: TurnContext) -> list[str]:
+    def notes(self, context: TurnContext, state: TurnState) -> list[str]:
         """Extra, turn-specific context for the system message."""
         return []
 
-    def brief(self, context: TurnContext) -> list[BaseMessage]:
-        system = "\n\n".join([self.system_prompt(), *self.notes(context)])
+    def brief(self, context: TurnContext, state: TurnState) -> list[BaseMessage]:
+        system = "\n\n".join([self.system_prompt(), *self.notes(context, state)])
         return [SystemMessage(system), *history_messages(context.workspace.history),
                 HumanMessage(context.workspace.message)]
 
@@ -45,17 +45,24 @@ class ConversationalSpecialist(ToolLoopAgent):
         context = runtime.context
         if context.logger:
             await context.logger.thinking(self.progress)
-        outcome = await self.run(self.brief(context), context)
+        outcome = await self.run(self.brief(context, state), context)
         return {"response": outcome.text or NO_ANSWER}
 
 
 class HistoryAgent(ConversationalSpecialist):
+    """LLM step of the history pipeline; ``agents/history.py`` delivers what it asks for."""
+
     prompts = ("history",)
     progress = "Searching your saved chats..."
 
     def __init__(self) -> None:
         super().__init__(ToolLoopSpec(name="history", role=ModelRole.HISTORY, tools=CHAT_SEARCH_TOOLS,
                                       first_tool="search_chat_history", max_rounds=6))
+
+    async def __call__(self, state: TurnState, runtime: Runtime[TurnContext]) -> dict[str, Any]:
+        answer = await super().__call__(state, runtime)
+        # Deliveries the tool queued this turn become state the next node acts on.
+        return {**answer, "requested_files": list(runtime.context.workspace.file_requests)}
 
 
 class RepositoryAgent(ConversationalSpecialist):
@@ -66,7 +73,7 @@ class RepositoryAgent(ConversationalSpecialist):
         super().__init__(ToolLoopSpec(name="repository", role=ModelRole.REPOSITORY, tools=GITHUB_TOOLS,
                                       max_rounds=10))
 
-    def notes(self, context: TurnContext) -> list[str]:
+    def notes(self, context: TurnContext, state: TurnState) -> list[str]:
         if not context.workspace.github_hint:
             return []
         return ["Current authenticated actor's GitHub connection metadata (not proof of live repository "
@@ -81,6 +88,6 @@ class ConsultantAgent(ConversationalSpecialist):
     def __init__(self) -> None:
         super().__init__(ToolLoopSpec(name="consult", role=ModelRole.CONSULTANT, tools=FILE_TOOLS, max_rounds=6))
 
-    def notes(self, context: TurnContext) -> list[str]:
+    def notes(self, context: TurnContext, state: TurnState) -> list[str]:
         files = list(context.workspace.files)
         return [f"Files attached to this turn: {', '.join(files)}." if files else "No files are attached."]

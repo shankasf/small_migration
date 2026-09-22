@@ -106,6 +106,16 @@ async function main() {
   const followup = await api(`/api/chat/${target.id}/messages`, { message: 'No, from the chat. Give me its exact filename and the source chat.', fileRefs: [] });
   assert.ok(followup.assistantMessage.content.includes(filename), 'Follow-up lost the mapping filename');
   evidence.filename = filename; evidence.chatRecall = 'passed'; evidence.followup = 'passed'; evidence.tools = tools.map(t => t.tool);
+  // Naming the file is not delivering it: a user who asks for the file itself
+  // must get a downloadable copy attached to the reply, in this chat.
+  mark('verify the chatbot hands over the file itself');
+  const delivery = await api(`/api/chat/${target.id}/messages`, { message: 'Give me that file here so I can download it.', fileRefs: [] });
+  const attached = (delivery.savedOutputs || []).find(output => output.filename === filename);
+  assert.ok(attached, 'Chatbot did not attach the requested file to its reply');
+  const download = await fetch(`${base}/api/files/output/${attached.id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(download.status, 200, 'Attached file did not download');
+  assert.ok((await download.text()).includes('legacy_code'), 'Delivered file did not carry the earlier chat file content');
+  evidence.fileDelivery = 'passed';
   await prisma.apiKey.update({ where: { id: keyId }, data: { revokedAt: new Date() } });
   assert.equal((await fetch(base + '/api/sessions', { headers: { Authorization: `Bearer ${token}` } })).status, 401);
   keyId = undefined; token = undefined;

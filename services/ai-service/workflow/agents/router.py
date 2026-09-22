@@ -8,6 +8,7 @@ Outcome: a route that the dispatcher maps to one specialist.
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -20,6 +21,14 @@ from workflow.models import ModelRole
 from workflow.prompts import prompt
 from workflow.state import Route, RouteDecision, TurnState
 from workflow.structured import invoke_structured
+
+
+# "send me the file", "i wana download it", "share that csv here".
+HAND_IT_OVER = re.compile(r"\b(?:give|send|share|attach|hand|provide|email)\b[^.?!]{0,40}"
+                          r"\b(?:file|csv|xlsx?|sheet|workbook|spreadsheet|crosswalk|mapping|document|"
+                          r"attachment|upload|copy|it|that|this|one)\b"
+                          r"|\bdownload\b|\battach(?:ment|ed)?\b", re.IGNORECASE)
+NAMES_A_REPOSITORY = re.compile(r"\bgit ?hub\b|\bgit ?lab\b|\brepo(?:sitory|sitories)?\b|\bbranch\b", re.IGNORECASE)
 
 
 class RouteChoice(BaseModel):
@@ -60,6 +69,13 @@ class RouterAgent:
         """
         pending, chosen = state.get("pending"), decision["route"]
         if not pending:
+            # "give me that file" after a chat-file answer is the same request
+            # continued, not a repository question; GPT-OSS reads the bare word
+            # "file" as GitHub often enough to send the user to the wrong agent.
+            if (chosen in (Route.REPOSITORY, Route.CONSULT) and state.get("last_route") == Route.HISTORY
+                    and HAND_IT_OVER.search(state.get("message", ""))
+                    and not NAMES_A_REPOSITORY.search(state.get("message", ""))):
+                return RouteDecision(route=Route.HISTORY.value, new_analysis=False)
             return decision
         if pending["kind"] == "clarification" and chosen == Route.CONSULT:
             return RouteDecision(route=pending["route"], new_analysis=False)

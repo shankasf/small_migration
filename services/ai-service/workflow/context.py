@@ -41,6 +41,10 @@ class TurnWorkspace:
     github_hint: str = ""
     # Verbatim evidence the investigator read this turn, for the reporter to cite from.
     evidence: list[dict[str, str]] = field(default_factory=list)
+    # Files the History Agent asked to hand over this turn. A tool cannot write
+    # the graph state of the pipeline that owns it, so the request travels here
+    # and its delivery node reads it back into state.
+    file_requests: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

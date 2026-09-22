@@ -678,7 +678,7 @@ flowchart TD
     DI -- impact --> IMP[["Impact pipeline"]]
     DI -- consult --> CON["Migration Consultant<br/>LLM + file tools"]
     DI -- repository --> REP["Repository Agent<br/>LLM + GitHub tools"]
-    DI -- history --> HIS["History Agent<br/>LLM + chat search"]
+    DI -- history --> HIS[["History pipeline"]]
     DI -- out_of_scope --> SG["scope_guard · action"]
     MIG --> SO["screen_output · action<br/>guardrails out"]
     IMP --> SO
@@ -693,9 +693,9 @@ flowchart TD
     classDef llm fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
     classDef act fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
     classDef sub fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
-    class R,G,GJ,CON,REP,HIS llm
+    class R,G,GJ,CON,REP llm
     class SI,SO,SG,PG,DI act
-    class MIG,IMP sub
+    class MIG,IMP,HIS sub
 ```
 
 **Migration pipeline** — evaluator-optimizer loop, one build per target model:
@@ -718,6 +718,27 @@ flowchart LR
     RV -- "approved or budget spent" --> PUB
 ```
 
+**History pipeline** — finding a file and handing it over are separate steps:
+
+```mermaid
+flowchart LR
+    SE["History Agent · LLM<br/>search_chat_history · search_chat_files<br/>request_file_delivery"]
+    SE --> GA{"delivery_gate<br/>asked for the file?"}
+    GA -- "no" --> EN(["reply"])
+    GA -- "asked for by asset id" --> DL["deliver_files · action<br/>backend fetch · chat.file.attach<br/>guardrails out"]
+    GA -- "answer only names it" --> LO["locate_file · data<br/>one owned asset with that name"]
+    LO -- "exactly one match" --> DL
+    LO -- "none or several" --> EN
+    DL --> EN
+```
+
+Asked for a file, the model reliably answers with its name and where it lives
+rather than calling the delivery tool, so the hand-over does not depend on it:
+the gate recognises the request and `locate_file` resolves the name the answer
+already gave. Ambiguity is never guessed at. The user's own files only — the
+backend re-checks ownership — and the content is attached to the reply without
+ever entering the model's context.
+
 **Impact pipeline** — evidence only from sources the user confirmed:
 
 ```mermaid
@@ -737,7 +758,7 @@ flowchart LR
 | Router Agent | LLM | — |
 | Injection Guard | LLM | — |
 | Grant Judge | LLM | — |
-| History Agent | LLM + data | `search_chat_history`, `search_chat_files` |
+| History Agent | LLM + data, action | `search_chat_history`, `search_chat_files`, `request_file_delivery` (delivered by `attach_chat_file`) |
 | Repository Agent | LLM + data | `github_connection_status`, `list_github_repositories`, `list_github_files`, `read_github_file` |
 | Migration Consultant | LLM + data | `list_files`, `get_file_content` |
 | Requirements Analyst | LLM + data, user input | GitHub tools, `submit_migration_spec` |
@@ -747,8 +768,9 @@ flowchart LR
 | Impact Reporter | LLM | — |
 
 Tool names are part of the activity-log contract: the admin AI log and the
-release checks key on them. `generate_output` and `impact_analysis_agent` still
-appear in the log for a published file and an impact analysis.
+release checks key on them. `generate_output`, `attach_chat_file` and
+`impact_analysis_agent` also appear in the log for a published file, a file
+handed over from an earlier chat, and an impact analysis.
 
 ## Supported File Types
 

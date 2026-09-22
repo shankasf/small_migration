@@ -5,7 +5,8 @@
     "systematic regression still does.",
     "Hard zeros stay: target_error (a crash is a bug), no_fabricated_report and read_evidence (a report that",
     "never read the evidence is a bug), no_images_or_html and sql_static_validation.",
-    "Behaviour rates are set just below what the agents achieve over repeated runs."
+    "Behaviour rates are set just below what the agents achieve over repeated runs.",
+    "history.delivered_* are hard: handing over a file the user asked for is deterministic once the answer names it (delivery_gate + locate_file), so a miss is a bug, not variance."
   ],
   "*": {
     "target_error": {
@@ -96,6 +97,12 @@
       "min": 1.0
     },
     "no_forbidden_tools": {
+      "min": 1.0
+    },
+    "delivered_expected_file": {
+      "min": 1.0
+    },
+    "delivered_file_content": {
       "min": 1.0
     }
   },

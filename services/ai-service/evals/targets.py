@@ -120,13 +120,20 @@ async def conversation_target(inputs: dict[str, Any]) -> dict[str, Any]:
     _gateways[session] = EvalGateway(inputs.get("backend"))
     turns: list[dict[str, Any]] = []
     responses: list[str] = []
+    # The backend sends the saved conversation with every turn, so a case's
+    # earlier turns must reach the agents the same way here.
+    conversation: list[dict[str, str]] = []
     try:
         for number, turn in enumerate(inputs["turns"], 1):
-            result = await runner.run(request_from(_fill(turn, responses)), session_id=session, actor_id=ACTOR,
+            filled = _fill(turn, responses)
+            filled = {**filled, "history": [*conversation, *(filled.get("history") or [])]}
+            result = await runner.run(request_from(filled), session_id=session, actor_id=ACTOR,
                                       turn_id=f"turn-{number}", logger=recorder)
             # The HTTP layer's final outbound pass (routes/migration.py) applies to every reply.
             response = harden_reply(guardrails.check_outbound(result.response).text).text
             responses.append(response)
+            conversation += [{"role": "user", "content": filled["message"]},
+                             {"role": "assistant", "content": response}]
             turns.append({"response": response, "files": result.files, "paused": result.paused,
                           "impact_action": result.impact_action, "route": result.route,
                           "guardrail": result.guardrail.get("decision", "allow"),

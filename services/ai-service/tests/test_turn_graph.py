@@ -116,8 +116,144 @@ def test_history_agent_is_nudged_to_search_before_answering():
     assert gateway.requests == [("chat_search", "history", {"query": "mapping sheet", "scope": "all", "offset": 0})]
     assert "search_chat_history" in harness.logger.tools_called()
     assert not any("github" in tool for tool in harness.logger.tools_called())
-    # The history agent only ever sees its own two tools.
-    assert set(harness.models.requests("history")[0]["tools"]) == {"search_chat_history", "search_chat_files"}
+    # The history agent only ever sees its own tools.
+    assert set(harness.models.requests("history")[0]["tools"]) == {"search_chat_history", "search_chat_files",
+                                                                   "request_file_delivery"}
+    # Nothing was asked for, so the delivery step never ran.
+    assert not result.files
+
+
+FOUND_FILE = {"files": [{"id": "11111111-2222-3333-4444-555555555555", "filename": "crosswalk_v3.csv",
+                         "version": 2, "kind": "upload", "sourceSessionName": "Mapping chat"}], "hasMore": False}
+
+
+def delivering_harness(fetch_reply):
+    gateway = FakeGateway(**{"chat_search:history": {"matches": [{"excerpt": "shared crosswalk_v3.csv"}]},
+                             "chat_search:files": FOUND_FILE, "chat_search:fetch": fetch_reply})
+    harness = Harness(gateway)
+    harness.models.script("router", route("history"))
+    harness.models.script("history",
+                          call("search_chat_history", query="crosswalk", scope="all"),
+                          call("search_chat_files", query="crosswalk", scope="all"),
+                          call("request_file_delivery", file_id=FOUND_FILE["files"][0]["id"],
+                               filename="crosswalk_v3.csv"),
+                          "Here is `crosswalk_v3.csv` from the mapping chat.")
+    return harness, gateway
+
+
+def test_a_file_the_user_asks_for_is_attached_to_the_reply():
+    harness, gateway = delivering_harness({"id": FOUND_FILE["files"][0]["id"], "filename": "crosswalk_v3.csv",
+                                           "version": 2, "kind": "upload", "sourceSessionId": "chat-0",
+                                           "content": "source,target\nage,patient_age\n"})
+    result = harness.turn("give me the file to download")
+    assert result.files == {"crosswalk_v3.csv": "source,target\nage,patient_age\n"}
+    assert ("chat_search", "fetch", {"id": FOUND_FILE["files"][0]["id"]}) in gateway.requests
+    # The content is delivered, never fed back to the model or the activity log.
+    tool_results = [event.get("result", "") for event in harness.logger.events if event["step"] == "tool.result"]
+    assert not any("patient_age" in str(result) for result in tool_results)
+    assert "attach_chat_file" in harness.logger.tools_called()
+
+
+def test_a_file_that_cannot_be_delivered_is_reported_not_dropped():
+    harness, _ = delivering_harness({"error": "A selected file is unavailable or belongs to another user."})
+    result = harness.turn("give me the file to download")
+    assert not result.files
+    assert "could not attach" in result.response and "crosswalk_v3.csv" in result.response
+
+
+def test_asking_for_that_file_stays_with_history_when_the_router_says_repository():
+    """The bare word "file" reads as GitHub to the router; the last route decides."""
+    gateway = FakeGateway(**{"chat_search:history": {"matches": [{"excerpt": "shared crosswalk_v3.csv"}]},
+                             "chat_search:files": FOUND_FILE,
+                             "chat_search:fetch": {"filename": "crosswalk_v3.csv", "version": 2,
+                                                   "content": "source,target\n"}})
+    harness = Harness(gateway)
+    harness.models.script("router", route("history"), route("repository"))  # second turn misrouted by the model
+    harness.models.script("history", call("search_chat_history", query="crosswalk", scope="all"),
+                          "It was `crosswalk_v3.csv`.",
+                          call("search_chat_history", query="crosswalk", scope="all"),
+                          call("search_chat_files", query="crosswalk", scope="all"),
+                          call("request_file_delivery", file_id=FOUND_FILE["files"][0]["id"],
+                               filename="crosswalk_v3.csv"),
+                          "Here it is.")
+    harness.turn("What was the mapping sheet in my earlier chats?")
+    result = harness.turn("give me that file, i wana download it")
+    assert result.route == Route.HISTORY and result.files == {"crosswalk_v3.csv": "source,target\n"}
+    assert not any(kind == "github" for kind, _, _ in gateway.requests)
+
+
+def test_a_repository_follow_up_is_still_a_repository_question():
+    gateway = FakeGateway(**{"chat_search:history": {"matches": [{"excerpt": "shared crosswalk_v3.csv"}]},
+                             "github:files": {"entries": [{"path": "models/a.sql"}]}})
+    harness = Harness(gateway)
+    harness.models.script("router", route("history"), route("repository"))
+    harness.models.script("history", call("search_chat_history", query="crosswalk", scope="all"),
+                          "It was `crosswalk_v3.csv`.")
+    harness.models.script("repository", call("list_github_files", path=""), "Your repo has `models/a.sql`.")
+    harness.turn("What was the mapping sheet in my earlier chats?")
+    result = harness.turn("now give me the files in my github repo")
+    assert result.route == Route.REPOSITORY and not result.files
+
+
+def naming_harness(files_reply, answer="It is `crosswalk_v3.csv`, attached to the mapping chat."):
+    """The realistic case: the model names the file and never calls the delivery tool."""
+    gateway = FakeGateway(**{"chat_search:history": {"matches": [{"excerpt": "shared crosswalk_v3.csv"}]},
+                             "chat_search:files": files_reply,
+                             "chat_search:fetch": {"filename": "crosswalk_v3.csv", "version": 2,
+                                                   "content": "source,target\nage,patient_age\n"}})
+    harness = Harness(gateway)
+    harness.models.script("router", route("history"))
+    harness.models.script("history", call("search_chat_history", query="crosswalk", scope="all"), answer)
+    return harness, gateway
+
+
+def test_a_named_file_is_located_and_delivered_without_the_model_asking():
+    harness, gateway = naming_harness(FOUND_FILE)
+    result = harness.turn("give me the file to download")
+    assert result.files == {"crosswalk_v3.csv": "source,target\nage,patient_age\n"}
+    assert ("chat_search", "files", {"query": "crosswalk_v3.csv", "scope": "all", "offset": 0}) in gateway.requests
+    assert "download button" in result.response
+
+
+def test_the_current_version_is_the_one_handed_over():
+    two_versions = {"files": [dict(FOUND_FILE["files"][0], id="22222222-3333-4444-5555-666666666666", version=1),
+                              dict(FOUND_FILE["files"][0])],  # version 2
+                    "hasMore": False}
+    harness, gateway = naming_harness(two_versions)
+    assert harness.turn("give me the file to download").files
+    assert ("chat_search", "fetch", {"id": FOUND_FILE["files"][0]["id"]}) in gateway.requests
+
+
+def test_a_name_that_is_not_one_of_their_files_delivers_nothing():
+    harness, gateway = naming_harness({"files": [], "hasMore": False})
+    result = harness.turn("give me the file to download")
+    assert not result.files and not any(operation == "fetch" for _, operation, _ in gateway.requests)
+
+
+def test_the_file_is_found_even_when_the_reply_does_not_repeat_its_name():
+    """GPT-OSS often answers "here is the workbook from that chat" with no filename."""
+    harness, gateway = naming_harness(FOUND_FILE, answer="Here is the crosswalk from the mapping chat.")
+    result = harness.turn("give me the file to download",
+                          history=[{"role": "user", "content": "what was the mapping sheet?"},
+                                   {"role": "assistant", "content": "It was `crosswalk_v3.csv`."}])
+    assert result.files == {"crosswalk_v3.csv": "source,target\nage,patient_age\n"}
+
+
+def test_a_reply_that_names_no_file_delivers_nothing():
+    harness, gateway = naming_harness(FOUND_FILE, answer="I could not find that file in your chats.")
+    result = harness.turn("give me the file to download")
+    assert not result.files
+    assert not any(operation in ("files", "fetch") for _, operation, _ in gateway.requests)
+
+
+def test_a_recall_question_never_triggers_the_delivery_loop_back():
+    gateway = FakeGateway(**{"chat_search:history": {"matches": [{"excerpt": "crosswalk_v3.csv"}]}})
+    harness = Harness(gateway)
+    harness.models.script("router", route("history"))
+    harness.models.script("history", call("search_chat_history", query="crosswalk", scope="all"),
+                          "The mapping sheet was `crosswalk_v3.csv`.")
+    result = harness.turn("What was the mapping sheet filename from my earlier chats?")
+    assert not result.files and len(harness.models.requests("history")) == 2
 
 
 def test_repository_agent_verifies_access_with_tools_and_sees_the_github_hint():
