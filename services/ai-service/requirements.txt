@@ -2,7 +2,7 @@ fastapi>=0.139.0
 uvicorn[standard]>=0.27.0
 python-dotenv>=1.0.0
 pydantic>=2.10
-httpx>=0.27.0
+httpx>=0.28.1
 
 # Agent runtime (LangGraph). The graph, checkpointer and tools use LangGraph
 # primitives; langchain-core supplies the message/tool types they share.
