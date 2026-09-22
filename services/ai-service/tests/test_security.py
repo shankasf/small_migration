@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import guardrails  # noqa: E402
-from routes.migration import _safe_join, _SAFE_SESSION_ID  # noqa: E402
+from output_files import safe_join as _safe_join, SAFE_SESSION_ID as _SAFE_SESSION_ID  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

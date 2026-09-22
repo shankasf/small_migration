@@ -1,0 +1,198 @@
+"""Impact analysis: source confirmation, grounded evidence, answer format."""
+import asyncio
+import json
+
+import pytest
+
+from fakes import FakeGateway, call
+from test_turn_graph import Harness, route
+from workflow.agents.impact.graph import count_substantive_reads
+from workflow.agents.impact.schemas import Answer, ImpactReport
+from workflow.prompts import read
+
+MANIFEST_READ = {"content": "select customer_id from {{ ref('stg_customers') }}"}
+
+
+def grant(**overrides):
+    return {"id": "analysis", "userId": "alice", "phase": "confirmed", "sources": ["uploads"],
+            "request": "Rename customer_id in stg_customers", **overrides}
+
+
+def impact(state=None, **extra):
+    return {"state": state, "connections": ["github"], "history": [], **extra}
+
+
+def dossier(**overrides):
+    fields = dict(ready=True, missing_information="",
+                  evidence=[{"source": "uploads", "locator": "models/customer_mart.sql:3",
+                             "excerpt": "select customer_id from {{ ref('stg_customers') }}"}],
+                  lineage_notes="stg_customers -> customer_mart", unverified="")
+    fields.update(overrides)
+    return call("submit_evidence_dossier", **fields)
+
+
+def report(**overrides):
+    fields = dict(ready=True, missing_information="",
+                  answers=[{"question": "What breaks downstream?",
+                            "answer": "`customer_mart` breaks: it selects `customer_id` from `ref('stg_customers')`."},
+                           {"question": "How do I validate it?",
+                            "answer": "`dbt compile --select stg_customers`, then `dbt build --select stg_customers+ --defer --state prod`."}],
+                  critical_warnings="- Do not validate this with one project-wide `dbt build`.",
+                  gaps="Dashboard consumers are not in the manifest.")
+    fields.update(overrides)
+    return call("ImpactReport", **fields)
+
+
+@pytest.fixture
+def harness():
+    return Harness(FakeGateway(**{"evidence:uploads": MANIFEST_READ}))
+
+
+@pytest.mark.parametrize("state", [None, grant(phase="awaiting_sources", sources=[])])
+def test_no_confirmation_means_no_specialist_model_or_evidence_reads(harness, state):
+    harness.models.script("router", route("impact", new_analysis=state is None))
+    result = harness.turn("What breaks if I rename customer_id?", impact_context=impact(state))
+    assert result.paused
+    assert "which evidence sources" in result.response
+    assert "GitHub repositories" in result.response and "dbt Cloud" in result.response and "Snowflake" in result.response
+    assert "(connected)" in result.response
+    assert "Readiness Check" not in result.response and "### 1." not in result.response
+    assert not harness.models.requests("investigator") and not harness.gateway.requests
+    assert result.impact_action == ("request_sources" if state is None else "continue")
+
+
+def test_new_analysis_requires_fresh_confirmation_even_after_an_earlier_grant(harness):
+    harness.models.script("router", route("impact", new_analysis=True))
+    result = harness.turn("New impact analysis: drop customer_count", impact_context=impact(grant()))
+    assert result.impact_action == "request_sources" and "which evidence sources" in result.response
+    assert not harness.models.requests("investigator") and not harness.models.requests("grant_judge")
+
+
+def test_just_confirmed_sources_skip_classification_and_produce_a_grounded_report(harness):
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters='{"id": "file"}'), dossier())
+    harness.models.script("reporter", report())
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert not harness.models.requests("router") and not harness.models.requests("grant_judge")
+    assert result.response.index("### 1. What breaks downstream?") < result.response.index("### 2. How do I validate it?")
+    assert "customer_mart" in result.response and result.files == {}
+    assert harness.gateway.requests == [("evidence:uploads", "read", {"id": "file"})]
+    assert harness.logger.tools_called() == ["impact_analysis_agent", "read_impact_evidence"]
+    brief = json.loads(harness.models.requests("investigator")[0]["messages"][-1].content)
+    assert brief["request"] == "Rename customer_id in stg_customers" and brief["confirmed_sources"] == ["uploads"]
+    # The investigator's only tools are the evidence reader and its result submission.
+    assert set(harness.models.requests("investigator")[0]["tools"]) == {"read_impact_evidence", "submit_evidence_dossier"}
+
+
+def test_the_pause_resumes_into_a_fresh_routing_of_the_reply(harness):
+    harness.models.script("router", route("impact", new_analysis=True))
+    assert harness.turn("What breaks if I rename customer_id?", impact_context=impact()).paused
+    harness.models.script("investigator", dossier())
+    harness.models.script("reporter", report())
+    result = harness.turn("Use uploads", impact_context=impact(
+        grant(request="What breaks if I rename customer_id?", sources=["uploads"]), just_confirmed=True,
+        history=[{"role": "user", "content": "```sql\nselect customer_id from x\n```"}]))
+    assert not result.paused and "### 1." in result.response
+
+
+def test_evidence_reads_cannot_broaden_sources(harness):
+    harness.models.script("investigator",
+                          call("read_impact_evidence", source="github", operation="file", parameters='{"path": "a.sql"}'),
+                          dossier(), dossier())
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert not harness.gateway.requests
+    refusal = next(m for m in harness.models.requests("investigator")[1]["messages"] if m.type == "tool")
+    assert "not been confirmed" in refusal.content
+    # Nothing substantive was read and nothing was pasted, so no report is written.
+    assert "could not verify a dbt reference" in result.response
+    assert not harness.models.requests("reporter")
+
+
+def test_confirmed_grant_is_rechecked_for_a_different_target(harness):
+    harness.models.script("router", route("impact", new_analysis=False))
+    harness.models.script("grant_judge", call("AnalysisContinuity", continues_confirmed_analysis=False))
+    result = harness.turn("What breaks if I drop customer_count from customer_mart?", impact_context=impact(grant()))
+    assert result.impact_action == "request_sources" and result.paused
+    judge = json.loads(harness.models.requests("grant_judge")[0]["messages"][-1].content)
+    assert judge["confirmed_analysis_request"] == "Rename customer_id in stg_customers"
+    assert not harness.gateway.requests
+
+
+def test_same_analysis_follow_up_keeps_the_grant(harness):
+    harness.models.script("router", route("impact", new_analysis=False))
+    harness.models.script("grant_judge", call("AnalysisContinuity", continues_confirmed_analysis=True))
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters="{}"), dossier())
+    harness.models.script("reporter", report())
+    result = harness.turn("And which tests cover that column?", impact_context=impact(grant()))
+    assert not result.paused and "### 1." in result.response
+
+
+def test_investigator_asking_for_inputs_returns_only_the_questions(harness):
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters="{}"),
+                          dossier(ready=False, missing_information="Which column should I analyse?", evidence=[]))
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert result.response == "Which column should I analyse?"
+    assert not harness.models.requests("reporter")
+
+
+def test_substantive_reads_are_counted_from_the_raw_transcript():
+    from langchain_core.messages import AIMessage, ToolMessage
+    messages = [AIMessage("", tool_calls=[
+        {"name": "read_impact_evidence", "args": {"source": "uploads", "operation": "list"}, "id": "1"},
+        {"name": "read_impact_evidence", "args": {"source": "uploads", "operation": "read"}, "id": "2"},
+        {"name": "read_impact_evidence", "args": {"source": "uploads", "operation": "read"}, "id": "3"}]),
+        ToolMessage(json.dumps({"files": ["a"]}), tool_call_id="1"),
+        ToolMessage(json.dumps({"content": "select 1"}), tool_call_id="2"),
+        ToolMessage(json.dumps({"error": "unavailable"}), tool_call_id="3")]
+    assert count_substantive_reads(messages) == 1
+
+
+def test_missing_inputs_render_as_only_the_questions():
+    value = ImpactReport(ready=False, missing_information="Which column?", answers=[], critical_warnings="", gaps="")
+    assert value.markdown() == "Which column?"
+
+
+def test_report_answers_in_order_without_audit_scaffolding():
+    rendered = ImpactReport(ready=True, missing_information="", answers=[
+        Answer(question="What breaks downstream?", answer="`customer_mart` (models/customer_mart.sql:3)."),
+        Answer(question="How do I validate it?", answer="`dbt compile --select stg_customers`.")],
+        critical_warnings="- Do not run one project-wide build.", gaps="Dashboards are not in the manifest.").markdown()
+    assert rendered.index("### 1. What breaks downstream?") < rendered.index("### 2. How do I validate it?")
+    for banned in ("Evidence-backed", "Inferred", "Readiness Check", "Change Summary", "Lineage Summary"):
+        assert banned not in rendered
+    assert rendered.count("### Watch out") == 1 and rendered.count("**Gaps:**") == 1
+    bare = ImpactReport(ready=True, missing_information="", answers=[Answer(question="Q", answer="A.")],
+                        critical_warnings="", gaps=" ").markdown()
+    assert "Watch out" not in bare and "Gaps:" not in bare
+
+
+def test_both_mandatory_checks_are_carried_by_the_prompts():
+    """The staged build plan and the Snowflake scale check stay in every prompt that needs them."""
+    for text in (read("impact_analysis") + read("reporter"), read("dbt_rules")):
+        assert "state:modified+" in text and "--defer" in text
+        assert "dbt compile" in text
+        assert "NUMBER(38,0)" in read("dbt_rules") and "NUMBER(38,0)" in read("impact_analysis")
+        assert "scale" in text.lower() and "truncat" in text.lower()
+
+
+def test_an_investigator_that_read_nothing_is_sent_back_once_to_read(harness):
+    harness.models.script("investigator",
+                          dossier(ready=False, missing_information="Please upload manifest.json.", evidence=[]),
+                          call("read_impact_evidence", source="uploads", operation="read", parameters='{"id": "f"}'),
+                          dossier())
+    harness.models.script("reporter", report())
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert "### 1." in result.response and "upload manifest" not in result.response
+    reread = harness.models.requests("investigator")[1]["messages"][-1].content
+    assert "without reading any of the confirmed evidence" in reread
+    assert harness.logger.tools_called().count("impact_analysis_agent") == 1
+
+
+def test_a_second_ungrounded_conclusion_is_answered_not_looped(harness):
+    harness.models.script("investigator", dossier(ready=False, missing_information="Which column?", evidence=[]),
+                          dossier(ready=False, missing_information="Which column?", evidence=[]))
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert result.response == "Which column?"
+    assert len(harness.models.requests("investigator")) == 2 and not harness.models.requests("reporter")

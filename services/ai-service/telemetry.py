@@ -94,7 +94,7 @@ def annotate_genai_span(span, *, model: str, provider: str,
     if span is None:
         return
     span.set_attribute("gen_ai.operation.name", "chat")
-    span.set_attribute("gen_ai.system", "azure.ai.openai" if provider == "azure" else "openai")
+    span.set_attribute("gen_ai.system", {"azure": "azure.ai.openai", "bedrock": "aws.bedrock"}.get(provider, "openai"))
     span.set_attribute("gen_ai.request.model", model)
     if input_tokens is not None:
         span.set_attribute("gen_ai.usage.input_tokens", input_tokens)

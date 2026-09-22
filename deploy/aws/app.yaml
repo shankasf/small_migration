@@ -59,8 +59,18 @@ Parameters:
   AppDomain:
     Type: String
     Default: migration-agent.uat.signify.net.nz
+  LangSmithSecretArn:
+    Type: String
+    Default: ''
+    Description: >
+      ARN of the circini/langsmith-api-key secret. Empty disables agent trace
+      export; when set, traces go to LangSmith redacted by the guardrail patterns.
+  LangSmithEndpoint:
+    Type: String
+    Default: https://api.smith.langchain.com
 
 Conditions:
+  HasLangSmith: !Not [!Equals [!Ref LangSmithSecretArn, '']]
   HasAdditionalCertificate: !And [!Condition HasCertificate, !Not [!Equals [!Ref AdditionalCertificateArn, '']]]
   HasIntegrationAppDomain: !Not [!Equals [!Ref IntegrationAppDomain, '']]
   UseAzure: !Equals [!Ref LlmProvider, azure]
@@ -109,6 +119,64 @@ Resources:
             Resource: !Sub '${AuditArchive.Arn}/*'
             Condition:
               StringEquals: { 's3:object-lock-legal-hold': 'OFF' }
+  # ------------------------------------------------ agent checkpoints ----
+  # LangGraph thread state: paused questions and the drafts a later turn
+  # revises. Short-lived by design — DynamoDB TTL expires items after
+  # CHECKPOINT_TTL_DAYS, and checkpoints over the 400 KB item limit are
+  # offloaded to the bucket below, whose lifecycle rule mirrors the TTL.
+  AgentCheckpointTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: circini-agent-checkpoints
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+  AgentCheckpointBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'circini-agent-checkpoints-${AWS::AccountId}-${AWS::Region}'
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      LifecycleConfiguration:
+        Rules:
+          # The ID and tag filter are the ones langgraph-checkpoint-aws looks
+          # for, so the saver finds its rule and never needs write access to it.
+          - Id: root-ttl-expiration-30d
+            Status: Enabled
+            TagFilters: [{ Key: ttl-days, Value: '30' }]
+            ExpirationInDays: 30
+          - Id: expire-everything-after-35-days
+            Status: Enabled
+            ExpirationInDays: 35
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+  AgentCheckpointBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AgentCheckpointBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt AgentCheckpointBucket.Arn, !Sub '${AgentCheckpointBucket.Arn}/*']
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } }
+
   SecurityAlerts:
     Type: AWS::SNS::Topic
     Properties:
@@ -222,6 +290,37 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
         - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  # The AI service holds no database credentials: its only data access is its
+  # own checkpoint table and offload bucket.
+  AiServiceTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: circini-ai-service-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: agent-checkpoints
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Query,
+                         dynamodb:BatchGetItem, dynamodb:BatchWriteItem]
+                Resource: !GetAtt AgentCheckpointTable.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutObjectTagging]
+                Resource: !Sub '${AgentCheckpointBucket.Arn}/*'
+              - Effect: Allow
+                Action: s3:GetLifecycleConfiguration
+                Resource: !GetAtt AgentCheckpointBucket.Arn
 
   BackendTaskRole:
     Type: AWS::IAM::Role
@@ -487,7 +586,7 @@ Resources:
       Cpu: '512'
       Memory: '2048'
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
-      TaskRoleArn: !GetAtt TaskRole.Arn
+      TaskRoleArn: !GetAtt AiServiceTaskRole.Arn
       Volumes:
         - { Name: tmp }
         - { Name: outputs }
@@ -543,7 +642,17 @@ Resources:
             - { Name: GUARDRAILS_ENABLED, Value: 'true' }
             - { Name: PHI_MODE, Value: 'false' }
             - { Name: VOICE_ENABLED, Value: 'false' }
-            - { Name: OPENAI_AGENTS_DISABLE_TRACING, Value: '1' }
+            # LangGraph runtime: checkpoints in DynamoDB, deserialised against an allow-list.
+            - { Name: LANGGRAPH_STRICT_MSGPACK, Value: 'true' }
+            - { Name: CHECKPOINT_BACKEND, Value: dynamodb }
+            - { Name: CHECKPOINT_TABLE, Value: !Ref AgentCheckpointTable }
+            - { Name: CHECKPOINT_BUCKET, Value: !Ref AgentCheckpointBucket }
+            - { Name: CHECKPOINT_TTL_DAYS, Value: '30' }
+            - { Name: AWS_REGION, Value: !Ref AWS::Region }
+            - { Name: MAX_CONCURRENT_TURNS, Value: '4' }
+            - { Name: AGENT_TRACING_ENABLED, Value: !If [HasLangSmith, 'true', 'false'] }
+            - { Name: LANGSMITH_ENDPOINT, Value: !Ref LangSmithEndpoint }
+            - { Name: LANGSMITH_PROJECT, Value: circini-migration-agent }
             - { Name: OUTPUT_DIR, Value: /data/outputs }
             - { Name: BACKEND_URL, Value: 'http://backend:3001' }
             - { Name: OTEL_SERVICE_NAME, Value: circini-ai-service }
@@ -558,6 +667,10 @@ Resources:
               - { Name: AWS_BEARER_TOKEN_BEDROCK, ValueFrom: !ImportValue circini-SecretBedrock }
               - !Ref AWS::NoValue
             - { Name: INTERNAL_API_KEY, ValueFrom: !ImportValue circini-SecretInternalApiKey }
+            - !If
+              - HasLangSmith
+              - { Name: LANGSMITH_API_KEY, ValueFrom: !Ref LangSmithSecretArn }
+              - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs
             Options:

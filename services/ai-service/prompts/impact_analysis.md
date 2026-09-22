@@ -69,12 +69,12 @@ Add `--full-refresh` where an incremental model's grain or schema changed, and `
 Whenever a decimal, currency, rate or quantity column is in scope, compare the **source** precision and
 scale with the **target** precision and scale (from the mapping, template, `catalog.json`, a dbt
 contract/`column_types`, or Snowflake column metadata). Snowflake does not error when the target scale
-is smaller — it silently rounds/truncates the value to the target scale, so the rows all land, the row
+is smaller — it silently rounds the value to the target scale, so the rows all land, the row
 counts match, and the dollar amounts are quietly wrong.
 
 Call it out when you see any of these:
 
-- A target column declared as bare `NUMBER`, `DECIMAL`, `NUMERIC`, `INT` or `INTEGER`. In Snowflake all of these mean `NUMBER(38,0)` — **every decimal place is dropped**, so cents disappear from money columns.
+- A target column declared as bare `NUMBER`, `DECIMAL`, `NUMERIC`, `INT` or `INTEGER`. In Snowflake all of these mean `NUMBER(38,0)` — **every value is rounded to a whole number** (12.345 becomes 12, 12.5 becomes 13), so cents disappear from money columns.
 - A target scale smaller than the source scale (for example `NUMBER(38,4)` into `NUMBER(38,2)`).
 - Multiplication or division in the transform: Snowflake re-derives the result scale and reduces it to stay inside precision 38, so rates, unit costs and FX conversions can lose digits before they are even stored.
 - An aggregate (`SUM`, `AVG`) over a column that was already rounded upstream — the error compounds per row.

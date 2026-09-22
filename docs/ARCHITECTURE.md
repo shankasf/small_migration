@@ -50,7 +50,7 @@ telemetry for AI governance.
 |------|-----------|------|
 | Frontend | React 18 + Vite + TypeScript | Chat UI, file upload, live logs |
 | Backend | Node.js + Express + Prisma | REST API, RBAC, guardrail enforcement |
-| AI Service | Python FastAPI + Agents SDK | LLM orchestration via Azure OpenAI |
+| AI Service | Python FastAPI + LangGraph | Agent orchestration (Bedrock GPT-OSS; OpenAI/Azure selectable) |
 | Identity | Microsoft Entra ID (OIDC/SAML) | SSO, AD-group → role mapping, MFA |
 | Data | Amazon RDS PostgreSQL + S3 (KMS) | Encrypted sessions, files, outputs |
 
@@ -140,7 +140,7 @@ redaction-gated egress to in-region Azure OpenAI; KMS encryption at rest; teleme
 |-------|-----------|
 | Frontend | React 18, Vite, TypeScript, TailwindCSS, Socket.IO client |
 | Backend | Node.js 20, Express, Prisma, Socket.IO, Multer, `zod` validation |
-| AI Service | Python 3.12, FastAPI, OpenAI Agents SDK (Azure OpenAI backend), Pydantic |
+| AI Service | Python 3.12, FastAPI, LangGraph + langchain-aws (Bedrock Converse), DynamoDB checkpoints, Pydantic |
 | Guardrails | Presidio (PII/DLP), ClamAV (malware), prompt-injection classifier, allow/deny lists |
 | Identity | Microsoft Entra ID (OIDC/SAML), MSAL, JWT (RS256) |
 | Data | Amazon RDS PostgreSQL 15, Amazon S3, ElastiCache Redis — all AWS KMS-encrypted |

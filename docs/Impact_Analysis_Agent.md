@@ -44,6 +44,6 @@ Reference reads carry file versions/content hashes, repository commit SHAs or db
 
 ## Verification
 
-`tests/impact.test.ts` exercises source parsing, authorization, provider read restrictions and artifact traversal. `tests/test_impact_agent.py` uses the real Agents SDK with synthetic model responses to verify internal delegation, exact report return, combined usage accounting and no pre-confirmation reads. The production gate `scripts/verify-impact-agent-production.py` exercises the public chat API using a synthetic manifest and a temporary API key that is revoked afterward. Synthetic evidence/chat records are retained under the application's retention policy.
+`tests/impact.test.ts` exercises source parsing, authorization, provider read restrictions and artifact traversal. `services/ai-service/tests/test_impact_pipeline.py` runs the real LangGraph impact subgraph with scripted models to verify source confirmation (an `interrupt()` pause), grounded-evidence gating, answer order and no pre-confirmation reads; `evals/` scores the live agents in LangSmith. The production gate `scripts/verify-impact-agent-production.py` exercises the public chat API using a synthetic manifest and a temporary API key that is revoked afterward. Synthetic evidence/chat records are retained under the application's retention policy.
 
 Provider readers are tested with mocked responses; a passing synthetic upload gate does not establish live access to every user's GitLab, dbt Cloud or Snowflake account.

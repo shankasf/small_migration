@@ -13,6 +13,7 @@
 *client_secret*
 *-private-key*
 bedrock_model_api_key.txt
+langsmith_api.txt
 
 # Python
 __pycache__/

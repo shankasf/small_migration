@@ -10,7 +10,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    LANGGRAPH_STRICT_MSGPACK=true
 
 # Install dependencies
 COPY requirements.txt .

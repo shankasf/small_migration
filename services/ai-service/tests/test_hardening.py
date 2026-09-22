@@ -57,14 +57,25 @@ def test_unapproved_azure_endpoint_refused(monkeypatch):
         configure_llm()
 
 
-def test_chat_blocks_history_before_runner(monkeypatch):
+def test_chat_blocks_history_before_any_model(monkeypatch):
     import routes.migration as route
-    monkeypatch.setattr(route, 'AGENTS_AVAILABLE', False)
+    from langgraph.checkpoint.memory import InMemorySaver
+    from fakes import FakeRegistry
+    from workflow.assembly import AgentRuntime
+    from workflow.orchestrator import build_turn_graph
+    from workflow.runner import TurnRunner
+    from workflow.tracing import TraceExporter
     async def silent(*args, **kwargs): pass
     monkeypatch.setattr(route.RealtimeLogger, 'log', silent)
-    result = asyncio.run(chat(ChatRequest(session_id='test-history', message='continue', history=[{'role':'user', 'content':'ZAC5678'}])))
+    models = FakeRegistry()  # any model call would fail: nothing is scripted
+    tracer = TraceExporter()
+    route.install_runtime(AgentRuntime(runner=TurnRunner(build_turn_graph(InMemorySaver()), models, tracer), tracer=tracer))
+    try:
+        result = asyncio.run(chat(ChatRequest(session_id='test-history', message='continue', history=[{'role':'user', 'content':'ZAC5678'}])))
+    finally:
+        route.install_runtime(None)
     assert result.guardrail.decision == 'blocked'
-    assert result.usage.input_tokens == 0
+    assert result.usage.input_tokens == 0 and models.total_calls() == 0
 
 
 @pytest.mark.parametrize('sql', ['drop table prod', 'select 1; delete from users', '{{ config(pre_hook="delete from users") }} select 1', '{{ cycler.__init__ }}', 'select load_extension(\'x\')'])

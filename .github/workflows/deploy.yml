@@ -31,6 +31,15 @@ jobs:
     if: ${{ inputs.image_tag == '' }}
     uses: ./.github/workflows/ci.yml
 
+  # The agents are regression-tested against the live model before any
+  # release: LangSmith experiments gated by evals/thresholds.json.
+  evals:
+    if: ${{ inputs.image_tag == '' }}
+    needs: ci
+    uses: ./.github/workflows/agent-evals.yml
+    secrets:
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+
   build:
     name: Build and push images
     if: ${{ inputs.image_tag == '' }}
@@ -83,13 +92,13 @@ jobs:
 
   deploy:
     name: Deploy to AWS
-    needs: build
-    # always() so a workflow_dispatch rollback (which skips the build job)
-    # still runs; the build result is then checked explicitly.
+    needs: [build, evals]
+    # always() so a workflow_dispatch rollback (which skips the build and eval
+    # jobs) still runs; their results are then checked explicitly.
     if: >-
       ${{ always() && (
         inputs.image_tag != '' ||
-        needs.build.result == 'success'
+        (needs.build.result == 'success' && needs.evals.result == 'success')
       ) }}
     runs-on: ubuntu-latest
     environment: production
@@ -174,6 +183,35 @@ jobs:
           python3 -m pip install --user 'requests>=2.32.5,<3'
           python3 scripts/configure-bedrock.py
 
+      # Agent traces are exported only with this key, and only redacted. A key
+      # LangSmith rejects leaves trace export off rather than failing the release.
+      - name: Converge the LangSmith trace-export key
+        id: langsmith
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_ENDPOINT: ${{ vars.LANGSMITH_ENDPOINT || 'https://api.smith.langchain.com' }}
+        run: |
+          set -euo pipefail
+          echo "arn=" >> "$GITHUB_OUTPUT"
+          if [ -z "$LANGSMITH_API_KEY" ]; then echo "No LangSmith key configured; trace export stays off"; exit 0; fi
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' --proto '=https' --tlsv1.2 \
+            -H "x-api-key: $LANGSMITH_API_KEY" "$LANGSMITH_ENDPOINT/api/v1/sessions?limit=1")
+          if [ "$STATUS" != "200" ]; then echo "::warning::LangSmith rejected the key (HTTP $STATUS); trace export stays off"; exit 0; fi
+          umask 077
+          KEY_FILE="$RUNNER_TEMP/langsmith-key"
+          printf '%s' "$LANGSMITH_API_KEY" > "$KEY_FILE"
+          NAME=circini/langsmith-api-key
+          if ARN=$(aws secretsmanager describe-secret --secret-id "$NAME" --query ARN --output text 2>/dev/null); then
+            CURRENT=$(aws secretsmanager get-secret-value --secret-id "$NAME" --query SecretString --output text)
+            [ "$CURRENT" = "$LANGSMITH_API_KEY" ] || \
+              aws secretsmanager put-secret-value --secret-id "$NAME" --secret-string "file://$KEY_FILE" >/dev/null
+          else
+            ARN=$(aws secretsmanager create-secret --name "$NAME" --secret-string "file://$KEY_FILE" \
+              --description 'LangSmith API key for redacted agent trace export' --query ARN --output text)
+          fi
+          rm -f "$KEY_FILE"
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
       - name: Apply additive security schema before replacing tasks
         run: python3 scripts/preflight-security-schema.py
 
@@ -207,7 +245,9 @@ jobs:
               ProcessingRegion="${{ vars.PROCESSING_REGION || 'unverified' }}" \
               ProviderApprovalReference="${{ vars.PROVIDER_APPROVAL_REFERENCE }}" \
               AzureEndpoint="${{ vars.AZURE_OPENAI_ENDPOINT }}" \
-              AzureDeployment="${{ vars.AZURE_OPENAI_DEPLOYMENT }}"
+              AzureDeployment="${{ vars.AZURE_OPENAI_DEPLOYMENT }}" \
+              LangSmithSecretArn="${{ steps.langsmith.outputs.arn }}" \
+              LangSmithEndpoint="${{ vars.LANGSMITH_ENDPOINT || 'https://api.smith.langchain.com' }}"
 
       # Fargate has no init containers, so schema convergence runs as a one-off
       # task, then the backend is restarted to seed against the live schema.
@@ -260,6 +300,12 @@ jobs:
           EXPECTED_LLM_MODEL: ${{ vars.LLM_PROVIDER == 'bedrock' && (vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0') || (vars.OPENAI_MODEL || 'gpt-6-astra') }}
           EXPECTED_LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'openai' }}
         run: python3 scripts/verify-impact-agent-production.py
+
+      - name: Verify the LangGraph migration pipeline
+        env:
+          EXPECTED_LLM_MODEL: ${{ vars.LLM_PROVIDER == 'bedrock' && (vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0') || (vars.OPENAI_MODEL || 'gpt-6-astra') }}
+          EXPECTED_LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'openai' }}
+        run: python3 scripts/verify-agent-graph-production.py
 
       - name: Deploy Auckland business-hours schedule
         run: |

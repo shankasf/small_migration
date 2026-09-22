@@ -50,6 +50,26 @@ class Settings:
     PHI_MODE: bool = _bool("PHI_MODE", "false")
     MAX_INPUT_CHARS: int = int(os.getenv("MAX_INPUT_CHARS", "500000"))
 
+    # --- Agent runtime (LangGraph) ---
+    # Checkpoints hold each chat thread's paused questions and generated drafts.
+    # "dynamodb" in AWS; "memory" only for local runs and tests (lost on restart).
+    CHECKPOINT_BACKEND: str = os.getenv("CHECKPOINT_BACKEND", "memory").strip().lower()
+    CHECKPOINT_TABLE: str = os.getenv("CHECKPOINT_TABLE", "")
+    CHECKPOINT_BUCKET: str = os.getenv("CHECKPOINT_BUCKET", "")
+    CHECKPOINT_TTL_DAYS: int = int(os.getenv("CHECKPOINT_TTL_DAYS", "30"))
+    AWS_REGION: str = os.getenv("AWS_REGION", os.getenv("BEDROCK_REGION", "ap-southeast-2"))
+    # Memory is bounded by turns in flight, not by agent count: each turn holds
+    # its screened files in memory, so turns beyond this wait for a slot.
+    MAX_CONCURRENT_TURNS: int = int(os.getenv("MAX_CONCURRENT_TURNS", "4"))
+    MAX_PARALLEL_TASKS: int = int(os.getenv("MAX_PARALLEL_TASKS", "3"))
+    MAX_REVISIONS: int = int(os.getenv("MAX_REVISIONS", "2"))
+
+    # --- LangSmith tracing (content is redacted with the guardrail patterns) ---
+    AGENT_TRACING_ENABLED: bool = _bool("AGENT_TRACING_ENABLED", "false")
+    LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY", "")
+    LANGSMITH_ENDPOINT: str = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com").rstrip("/")
+    LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "circini-migration-agent")
+
     # --- Telemetry ---
     OTEL_ENABLED: bool = _bool("OTEL_ENABLED", "true")
     OTEL_SERVICE_NAME: str = os.getenv("OTEL_SERVICE_NAME", "circini-ai-service")

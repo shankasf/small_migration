@@ -52,6 +52,28 @@ def parse_model(content: str):
     return tree
 
 
+def rejection_reason(content: str) -> str:
+    """Why a model fails the static checks, specific enough for its author to fix.
+
+    The report returned to the backend stays generic; this detail is only fed
+    back to the model that wrote the SQL.
+    """
+    try:
+        tree = parse_model(content)
+    except ValidationError as exc:
+        if str(exc) == "Custom functions require separate review":
+            return "Unrecognised functions (use standard Snowflake functions only): " + ", ".join(
+                sorted({node.name for node in sqlglot.parse_one(compile_model(content), read="snowflake").find_all(exp.Anonymous)}))
+        return str(exc)
+    except sqlglot.errors.ParseError as exc:
+        first = exc.errors[0] if exc.errors else {}
+        description = str(first.get("description") or "syntax error").split(" but got")[0]
+        return f"SQL does not parse near line {first.get('line', '?')}, column {first.get('col', '?')}: {description}"
+    except Exception:
+        return "SQL could not be parsed as one read-only Snowflake SELECT"
+    return "" if tree is not None else "SQL could not be parsed"
+
+
 def validate_output(filename: str, content: str) -> dict:
     report = {"sha256": hashlib.sha256(content.encode()).hexdigest(), "status": "draft",
               "static_checks": "not_applicable", "target_database_test": "required",

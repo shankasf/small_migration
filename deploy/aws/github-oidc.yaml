@@ -118,7 +118,16 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action: ['s3:CreateBucket', 's3:GetBucket*', 's3:PutBucket*', 's3:GetEncryptionConfiguration', 's3:PutEncryptionConfiguration', 's3:GetLifecycleConfiguration', 's3:PutLifecycleConfiguration']
-                Resource: !Sub 'arn:aws:s3:::circini-audit-${AWS::AccountId}-${AWS::Region}'
+                Resource:
+                  - !Sub 'arn:aws:s3:::circini-audit-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:aws:s3:::circini-agent-checkpoints-${AWS::AccountId}-${AWS::Region}'
+              # LangGraph checkpoint table for the AI service.
+              - Effect: Allow
+                Action: ['dynamodb:CreateTable', 'dynamodb:DeleteTable', 'dynamodb:DescribeTable', 'dynamodb:UpdateTable',
+                         'dynamodb:DescribeTimeToLive', 'dynamodb:UpdateTimeToLive', 'dynamodb:DescribeContinuousBackups',
+                         'dynamodb:UpdateContinuousBackups', 'dynamodb:TagResource', 'dynamodb:UntagResource',
+                         'dynamodb:ListTagsOfResource']
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/circini-*'
               - Effect: Allow
                 Action: ['sns:CreateTopic', 'sns:GetTopicAttributes', 'sns:SetTopicAttributes', 'sns:TagResource', 'sns:UntagResource', 'sns:ListTagsForResource']
                 Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:circini-security-alerts'

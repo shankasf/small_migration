@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=8
+# LangSmith evaluation suite (evals/): LLM-as-judge and trajectory evaluators.
+langsmith[pytest]>=0.14.0,<1
+openevals>=0.2.0,<0.3
+# DynamoDB checkpointer integration test without AWS.
+moto[dynamodb,s3]>=5

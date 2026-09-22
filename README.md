@@ -8,7 +8,7 @@ AI-powered DBT/SQL data migration assistant with a ChatGPT-like interface for an
 
 - **Frontend**: React 18, Vite, TypeScript, TailwindCSS, Socket.IO client, React Markdown, React Syntax Highlighter
 - **Backend**: Node.js, Express, TypeScript, Prisma, PostgreSQL, Socket.IO, Multer (file uploads)
-- **AI Service**: Python, FastAPI, OpenAI Agents SDK, OpenAI Whisper (speech-to-text via `gpt-4o-transcribe`)
+- **AI Service**: Python, FastAPI, LangGraph (10 agents in one turn graph; see `docs/LangGraph_Agent_Architecture.md`), LangSmith evals
 - **Database**: PostgreSQL
 - **Deployment**: AWS ECS Fargate, Docker, Application Load Balancer, ACM, CloudFormation
 
@@ -25,7 +25,7 @@ flowchart LR
     subgraph cluster["ECS Fargate — cluster circini-demo · Service Connect"]
         FE["frontend :5173<br/>React 18 · Vite · Tailwind"]
         BE["backend :3001<br/>Express · Prisma · Socket.IO<br/>🔐 Cognito JWT + RBAC"]
-        AI["ai-service :8084<br/>FastAPI · Agents SDK<br/>🔐 x-internal-key"]
+        AI["ai-service :8084<br/>FastAPI · LangGraph<br/>🔐 x-internal-key"]
         PV[("task scratch volume<br/>/data/outputs")]
     end
 
@@ -68,7 +68,7 @@ alone.
 - **Session Management**: Create, switch, search, rename, and delete chat sessions with a resizable sidebar
 - **File Upload**: Attach up to 10 files per message (CSV, XLSX, SQL, JSON, YAML, TXT, XML, MD, PY, JS, TS, LOG)
 - **Voice Input**: Record audio in the browser, transcribed server-side via OpenAI Whisper (`gpt-4o-transcribe`)
-- **AI Migration Agent**: Analyzes template and mapping documents, then generates Snowflake-compatible DBT SQL models using the OpenAI Agents SDK
+- **AI Migration Agent**: Analyzes template and mapping documents, then generates Snowflake-compatible DBT SQL models through a LangGraph pipeline (analyst → author → validator → reviewer)
 - **Realtime Logs**: Live status updates streamed from the AI service to the frontend via Socket.IO during processing
 - **File Downloads**: Export generated SQL output files directly from chat messages
 - **Workspace Integrations**: Connect GitHub/GitLab with OAuth, Snowflake with

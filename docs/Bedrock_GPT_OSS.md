@@ -19,12 +19,12 @@ GPT-OSS is text-only. File-search vectors continue to use the existing
 This preserves compatibility with saved vectors; it is not an all-Bedrock data
 boundary. Existing guardrails, disabled tracing, PHI and voice restrictions remain.
 
-Live SDK checks found two differences from OpenAI: `<reasoning>` can arrive in
-message content, and `response_format` does not reliably constrain typed output.
-The adapter strips reasoning incrementally, requests streaming token usage,
-and supplies a final-result function for typed router/specialist outputs. The
-Agents SDK still validates the returned JSON with the original Pydantic schemas.
-Structured agents use non-streaming `Runner.run`; the main chat supports streaming.
+The agents call Bedrock through LangChain's `ChatBedrockConverse` (Converse API) with the same
+`AWS_BEARER_TOKEN_BEDROCK` key and pinned regional endpoint. Converse returns GPT-OSS reasoning as separate
+content blocks and clean tool names, so the former `<reasoning>` filter and Harmony tool-name adapter are gone.
+GPT-OSS on Converse does not support `tool_choice` and does not honour JSON-schema output: typed results use
+unforced function calling with a parse-and-retry loop, and tool-using agents return their result through a
+`submit_<schema>` tool (see `docs/LangGraph_Agent_Architecture.md`).
 
 The release gates include CI, image scans, Bedrock inference preflight, ECS
 stability, semantic file search, and authenticated impact-analysis checks with
