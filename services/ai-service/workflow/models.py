@@ -29,6 +29,7 @@ class ModelRole(StrEnum):
     REVIEWER = "reviewer"
     INVESTIGATOR = "investigator"
     REPORTER = "reporter"
+    SUMMARIZER = "summarizer"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,8 @@ PROFILES: dict[ModelRole, ModelProfile] = {
     # Impact analysis is multi-hop reasoning over code and data: medium effort.
     ModelRole.INVESTIGATOR: ModelProfile(max_tokens=16000, reasoning_effort="medium"),
     ModelRole.REPORTER: ModelProfile(max_tokens=16000, reasoning_effort="medium"),
+    # Condensing older turns is not reasoning work, and it runs mid-turn.
+    ModelRole.SUMMARIZER: ModelProfile(max_tokens=2000),
 }
 
 

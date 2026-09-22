@@ -13,7 +13,8 @@ emails or health identifiers) and lives in `services/ai-service/evals/datasets/`
 | `grant_judge` (10) | Grant Judge | does a message continue the analysis whose sources were confirmed |
 | `generation` (3) | Whole turns: analyst → clarify pause → authors → static validation → reviewer → publish | expected file delivered, every mapped field present, SQL passes static validation, rule checks (ref model, filter), asks instead of guessing when the mapping is ambiguous or the base model is missing |
 | `impact` (2) | Whole conversation: source question, a vague "yes", confirmation, investigator, reporter | source question first, evidence actually read, required assets named, answers in the user's order, no audit scaffolding, mandatory checks (truncation, staged build), lineage groundedness (LLM judge) |
-| `history` (3) | History Agent via the turn graph, synthetic chat search | exact filename recalled, no invented filenames, `search_chat_history` used (openevals trajectory match), never GitHub |
+| `history` (5) | History pipeline via the turn graph, synthetic chat search | exact filename recalled, no invented filenames, `search_chat_history` used (openevals trajectory match), never GitHub, and a file the user asks for is attached to the reply with its real content |
+| `memory` (3) | Long-term memory through the turn graph, in-process store | a standing instruction is saved when stated and recalled in a *different* chat, a changed preference replaces the old one, and a one-off question writes nothing |
 | `repository` (2) | Repository Agent, synthetic GitHub | repo/path/commit cited, access verified with tools, disconnected state explained |
 | `consult` (4) | Migration Consultant | answer correctness against a reference (openevals `CORRECTNESS_PROMPT`, GPT-OSS judge) |
 

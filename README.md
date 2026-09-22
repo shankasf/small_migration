@@ -32,6 +32,7 @@ flowchart LR
     subgraph data["AWS data services"]
         DB[("RDS PostgreSQL 16<br/>users · sessions · messages · files<br/>audit · usage · AI activity logs")]
         CK[("DynamoDB circini-agent-checkpoints<br/>LangGraph thread state · TTL 30 days")]
+        MEM[("DynamoDB circini-agent-memory<br/>LangGraph store · per user · no expiry")]
         S3[("S3 checkpoint offload<br/>items over 350 KB · lifecycle 30 days")]
         SM["Secrets Manager<br/>circini/*"]
     end
@@ -537,9 +538,12 @@ BEDROCK_MODEL=openai.gpt-oss-120b-1:0
 APPROVED_LLM_HOST=bedrock-runtime.ap-southeast-2.amazonaws.com
 PROCESSING_REGION=ap-southeast-2
 AWS_BEARER_TOKEN_BEDROCK=
-OPENAI_API_KEY=                 # search embeddings
+OPENAI_API_KEY=                 # search and long-term memory embeddings
 INTERNAL_API_KEY=               # shared with the backend
-CHECKPOINT_BACKEND=memory       # dynamodb in AWS
+CHECKPOINT_BACKEND=memory       # dynamodb in AWS — this chat, 30-day TTL
+MEMORY_BACKEND=memory           # dynamodb in AWS — this user, no expiry
+MEMORY_RECALL_LIMIT=5           # standing instructions injected per turn
+SUMMARY_TRIGGER_CHARS=60000     # older turns are condensed past this
 LANGGRAPH_STRICT_MSGPACK=true
 PORT=8084
 OUTPUT_DIR=/path/to/output
@@ -650,6 +654,8 @@ wrong key `401`.
 | POST | /ai/policy/check | `x-internal-key` | Screen a message, files and history before the backend stores them |
 | GET | /ai/status/:id | `x-internal-key` | Model files generated in the chat's thread |
 | POST | /ai/reset/:id | `x-internal-key` | Delete the chat's checkpoints and legacy output folder |
+| GET | /ai/memory/:user | `x-internal-key` | Standing instructions remembered for that user |
+| DELETE | /ai/memory/:user | `x-internal-key` | Erase everything remembered for that user |
 | POST | /ai/cancel/user/:id | `x-internal-key` | Cancel a user's running turns (access revoked) |
 | POST | /ai/files/embed | `x-internal-key` | Screened search embeddings |
 | POST | /ai/validation/test | `x-internal-key` | Static checks + sandboxed synthetic fixture test for SQL |
@@ -668,8 +674,12 @@ flowchart TD
     SI -- blocked --> BL(["refusal"])
     SI --> R["Router Agent · LLM"]
     SI --> G["Injection Guard · LLM"]
+    SI --> RM["recall_memories · data<br/>store · this user's standing instructions"]
+    SI --> SM["summarize_history · LLM<br/>older turns → running summary"]
     R --> PG{"policy_gate"}
     G --> PG
+    RM --> PG
+    SM --> PG
     PG -- flagged --> BL
     PG -- "impact on a confirmed grant" --> GJ["Grant Judge · LLM"]
     PG --> DI{"dispatch"}
@@ -680,12 +690,13 @@ flowchart TD
     DI -- repository --> REP["Repository Agent<br/>LLM + GitHub tools"]
     DI -- history --> HIS[["History pipeline"]]
     DI -- out_of_scope --> SG["scope_guard · action"]
-    MIG --> SO["screen_output · action<br/>guardrails out"]
-    IMP --> SO
-    CON --> SO
-    REP --> SO
-    HIS --> SO
-    SG --> SO
+    MIG --> CM["capture_memory · action<br/>store · a remembered instruction"]
+    CM --> SO["screen_output · action<br/>guardrails out"]
+    IMP --> CM
+    CON --> CM
+    REP --> CM
+    HIS --> CM
+    SG --> CM
     MIG -. "paused question answered" .-> SI
     IMP -. "paused question answered" .-> SI
     SO --> E(["reply + files"])
@@ -693,8 +704,8 @@ flowchart TD
     classDef llm fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
     classDef act fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
     classDef sub fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
-    class R,G,GJ,CON,REP llm
-    class SI,SO,SG,PG,DI act
+    class R,G,GJ,CON,REP,SM llm
+    class SI,SO,SG,PG,DI,RM,CM act
     class MIG,IMP,HIS sub
 ```
 
@@ -760,12 +771,13 @@ flowchart LR
 | Grant Judge | LLM | — |
 | History Agent | LLM + data, action | `search_chat_history`, `search_chat_files`, `request_file_delivery` (delivered by `attach_chat_file`) |
 | Repository Agent | LLM + data | `github_connection_status`, `list_github_repositories`, `list_github_files`, `read_github_file` |
-| Migration Consultant | LLM + data | `list_files`, `get_file_content` |
+| Migration Consultant | LLM + data, action | `list_files`, `get_file_content`, `remember`, `forget` |
 | Requirements Analyst | LLM + data, user input | GitHub tools, `submit_migration_spec` |
 | Model Author | LLM | — (one per target model) |
 | Model Reviewer | LLM | — |
 | Evidence Investigator | LLM + data, user input | `read_impact_evidence`, `submit_evidence_dossier` |
 | Impact Reporter | LLM | — |
+| Summarizer | LLM | — (condenses a long chat's older turns) |
 
 Tool names are part of the activity-log contract: the admin AI log and the
 release checks key on them. `generate_output`, `attach_chat_file` and

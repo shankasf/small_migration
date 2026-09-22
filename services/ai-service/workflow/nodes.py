@@ -12,8 +12,10 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 import guardrails
+from config import settings
 from telemetry import record_guardrail_decision
 from workflow.context import TurnContext
+from workflow.memory import user_namespace
 from workflow.security import harden_reply
 from workflow.state import GuardrailVerdict, Route, TurnState
 
@@ -68,8 +70,45 @@ async def screen_input(state: TurnState, runtime: Runtime[TurnContext]) -> Comma
         workspace.github_hint = hint["message"] if hint["guardrail"]["decision"] != "blocked" else ""
     if workspace.files and context.logger:
         await context.logger.thinking("Loading uploaded files...")
-    # Routing and the model-based injection check run in parallel; policy_gate joins them.
-    return Command(update={**turn, "message": inbound.text}, goto=["route_intent", "injection_guard"])
+    # Routing, the model-based injection check, recall and summarisation all run
+    # in parallel on the screened turn; policy_gate joins them.
+    return Command(update={**turn, "message": inbound.text},
+                   goto=["route_intent", "injection_guard", "recall_memories", "summarize_history"])
+
+
+async def recall_memories(state: TurnState, runtime: Runtime[TurnContext]) -> dict[str, Any]:
+    """Data step: this user's standing instructions that bear on the message.
+
+    Nearest-neighbour search with a hard limit, so recall costs the same when
+    the account holds twenty memories and when it holds twenty years of them.
+    A store outage must not fail a turn: the assistant simply works without
+    them, exactly as it did before anything was remembered.
+    """
+    context = runtime.context
+    store = runtime.store
+    if store is None or not context.actor_id or not context.workspace.message:
+        return {}
+    namespace = user_namespace(context.actor_id)
+    limit = settings.MEMORY_RECALL_LIMIT
+    try:
+        # A listing costs a query; ranking costs an embedding. While a user holds
+        # no more memories than fit in the prompt, every one of them applies and
+        # there is nothing to rank — so most turns never embed anything, and the
+        # cost only appears once an account has grown past that.
+        items = await store.asearch(namespace, limit=limit + 1)
+        if len(items) > limit:
+            items = await store.asearch(namespace, query=context.workspace.message, limit=limit)
+    except Exception as error:  # noqa: BLE001 - recall is best-effort by design
+        print(json.dumps({"event": "memory.recall_failed", "error": type(error).__name__}), flush=True)
+        return {}
+    context.workspace.memories = [{"subject": str(item.value.get("subject", "")),
+                                   "text": str(item.value.get("text", ""))}
+                                  for item in items if item.value.get("text")]
+    if context.workspace.memories and context.logger:
+        await context.logger.log(step="memory.recall", message=f"{len(context.workspace.memories)} standing "
+                                 "instruction(s) applied", data={"subjects": [m["subject"] for m in
+                                                                              context.workspace.memories]})
+    return {}
 
 
 async def policy_gate(state: TurnState, runtime: Runtime[TurnContext]) -> Command[Literal["grant_judge", "dispatch", "__end__"]]:
@@ -119,8 +158,12 @@ async def scope_guard(state: TurnState, runtime: Runtime[TurnContext]) -> dict[s
 
 
 def after_specialist(state: TurnState) -> str:
-    """A resumed user-input step hands the reply back to intake; otherwise finish."""
-    return INTAKE if state.get("rerun") else OUTPUT
+    """A resumed user-input step hands the reply back to intake; otherwise finish.
+
+    A completed turn passes through ``capture_memory`` on its way out, so a
+    standing instruction is recorded whether or not the specialist called the tool.
+    """
+    return INTAKE if state.get("rerun") else "capture_memory"
 
 
 async def screen_output(state: TurnState, runtime: Runtime[TurnContext]) -> dict[str, Any]:

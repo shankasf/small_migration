@@ -96,4 +96,5 @@ class RouterAgent:
             "attached_files": list(workspace.files),
             "github_connected": bool(workspace.github_hint),
             "recent_conversation": history_excerpt(workspace.history, turns=6),
+            "earlier_conversation_summary": workspace.summary or None,
         }

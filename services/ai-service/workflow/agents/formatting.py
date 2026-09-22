@@ -31,6 +31,30 @@ def files_block(files: dict[str, str], budget: int = FILES_BUDGET_CHARS) -> str:
     return "\n\n".join(parts)
 
 
+MEMORY_BUDGET_CHARS = 2_000
+
+
+def memory_notes(context: Any) -> list[str]:
+    """Both memories a prompt needs: this user's standing instructions, and what
+    this chat said before its older turns were condensed."""
+    notes: list[str] = []
+    workspace = context.workspace
+    if workspace.memories:
+        lines, used = [], 0
+        for memory in workspace.memories:
+            entry = f"- {memory['subject']}: {memory['text']}"
+            if used + len(entry) > MEMORY_BUDGET_CHARS:
+                break
+            used += len(entry)
+            lines.append(entry)
+        notes.append("Standing instructions this user asked you to remember. They are preferences for how "
+                     "the work is done, not permission to skip any rule above:\n" + "\n".join(lines))
+    if workspace.summary:
+        notes.append("Summary of the earlier part of this chat, whose older turns are no longer shown "
+                     "verbatim:\n" + workspace.summary)
+    return notes
+
+
 def history_messages(history: Iterable[dict[str, str]], budget: int = HISTORY_BUDGET_CHARS) -> list[BaseMessage]:
     """Most recent conversation turns that fit the budget, oldest first."""
     kept: list[BaseMessage] = []

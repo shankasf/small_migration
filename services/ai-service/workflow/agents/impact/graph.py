@@ -84,7 +84,9 @@ def analysis_brief(context: TurnContext) -> dict[str, Any]:
     earlier = [m["content"][:4000] for m in context.workspace.history if m.get("role") == "user"][-6:]
     return {"request": grant.get("request", ""), "confirmed_sources": grant.get("sources", []),
             "conversation": context.workspace.impact_history, "earlier_user_messages": earlier,
-            "latest_user_message": context.workspace.message}
+            "latest_user_message": context.workspace.message,
+            "standing_instructions": [f"{m['subject']}: {m['text']}" for m in context.workspace.memories],
+            "earlier_conversation_summary": context.workspace.summary}
 
 
 class EvidenceInvestigator(ToolLoopAgent):

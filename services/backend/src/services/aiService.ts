@@ -96,6 +96,18 @@ export class PolicyError extends Error {
   constructor(public readonly result: ScreenedPayload) { super('Content blocked by policy'); }
 }
 
+export async function userMemory(userId: string): Promise<Array<{subject: string; text: string; recorded_at: string}>> {
+  const { data } = await axios.get(`${AI_SERVICE_URL}/ai/memory/${userId}`, {
+    headers: { 'x-internal-key': process.env.INTERNAL_API_KEY || '' }, timeout: 15000 });
+  return data.memories || [];
+}
+
+export async function forgetUserMemory(userId: string): Promise<number> {
+  const { data } = await axios.delete(`${AI_SERVICE_URL}/ai/memory/${userId}`, {
+    headers: { 'x-internal-key': process.env.INTERNAL_API_KEY || '' }, timeout: 30000 });
+  return data.forgotten || 0;
+}
+
 export async function screenPayload(message = '', files?: Record<string, string>, history?: Array<{role: string; content: string}>): Promise<ScreenedPayload> {
   if (!process.env.INTERNAL_API_KEY) throw new Error('Content screening unavailable');
   const { data } = await axios.post<ScreenedPayload>(`${AI_SERVICE_URL}/ai/policy/check`, { message, files, history }, {

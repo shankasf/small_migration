@@ -24,6 +24,7 @@ from telemetry import annotate_genai_span, get_tracer, record_guardrail_decision
 from utils.realtime_logger import RealtimeLogger
 from validation import validate_output
 from workflow.assembly import AgentRuntime
+from workflow.memory import user_namespace
 from workflow.context import TurnRequest
 from workflow.security import harden_reply
 
@@ -222,6 +223,39 @@ async def _chat(request: ChatRequest) -> ChatResponse:
         )
     finally:
         await logger.close()
+
+
+@router.get("/memory/{user_id}")
+async def list_memory(user_id: str):
+    """The standing instructions held for one user: what they can see and delete."""
+    if not SAFE_SESSION_ID.fullmatch(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    store = agent_runtime().store
+    if store is None:
+        return {"memories": []}
+    items = await store.asearch(user_namespace(user_id), limit=100)
+    return {"memories": [{"subject": item.value.get("subject", ""), "text": item.value.get("text", ""),
+                          "recorded_at": item.value.get("recorded_at", "")} for item in items]}
+
+
+@router.delete("/memory/{user_id}")
+async def forget_user(user_id: str):
+    """Erase everything remembered for a user (account deletion, or their request)."""
+    if not SAFE_SESSION_ID.fullmatch(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    store = agent_runtime().store
+    if store is None:
+        return {"forgotten": 0}
+    namespace = user_namespace(user_id)
+    forgotten = 0
+    while True:
+        items = await store.asearch(namespace, limit=100)
+        if not items:
+            break
+        for item in items:
+            await store.adelete(namespace, item.key)
+            forgotten += 1
+    return {"forgotten": forgotten}
 
 
 @router.post("/reset/{session_id}")

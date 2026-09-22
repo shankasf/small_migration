@@ -14,7 +14,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from workflow.agents.base import ToolLoopAgent, ToolLoopSpec
-from workflow.agents.formatting import as_json, files_block, history_messages
+from workflow.agents.formatting import as_json, files_block, history_messages, memory_notes
 from workflow.agents.migration.schemas import MigrationSpec
 from workflow.context import TurnContext
 from workflow.models import ModelRole
@@ -66,7 +66,7 @@ class RequirementsAnalyst(ToolLoopAgent):
                             f"questions)\n{as_json(work['spec'])}")
         if work.get("drafts"):
             sections.append("## Model files already generated in this chat\n" + ", ".join(sorted(work["drafts"])))
-        system = prompt("analyst", "dbt_rules")
+        system = "\n\n".join([prompt("analyst", "dbt_rules"), *memory_notes(context)])
         if workspace.github_hint:
             system += ("\n\nGitHub connection metadata (verify with tools before relying on it): "
                        + workspace.github_hint)

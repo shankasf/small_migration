@@ -26,7 +26,8 @@ Route this migration chatbot turn to exactly one specialist. Do not answer the u
   migration questions even when they name no file — for example "is casting a money column to NUMBER
   safe?", "IFNULL or NULLIF?", "how should I test this model?".
   Requests about this chat itself — export it as a PDF, print, copy or summarise the conversation — are
-  consult, never out_of_scope.
+  consult, never out_of_scope. So are requests about what you remember for this user: "remember that we
+  always target Snowflake", "forget that", "what do you remember about my preferences?".
 - **out_of_scope** — the request has nothing to do with data, SQL, dbt, Snowflake or migration work
   (general knowledge, sport, news, weather, personal advice, unrelated coding). When a request is about
   data, SQL or databases at all, it is not out of scope.

@@ -138,6 +138,24 @@ Resources:
       TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
       SSESpecification: { SSEEnabled: true }
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+  AgentMemoryTable:
+    Type: AWS::DynamoDB::Table
+    # Long-term memory (LangGraph Store): standing instructions per user.
+    # Deliberately no TimeToLiveSpecification — an instruction is not stale
+    # because it is old, and recall is limit-capped however large this grows.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: circini-agent-memory
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      SSESpecification: { SSEEnabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
   AgentCheckpointBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -315,6 +333,11 @@ Resources:
                 Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Query,
                          dynamodb:BatchGetItem, dynamodb:BatchWriteItem]
                 Resource: !GetAtt AgentCheckpointTable.Arn
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem,
+                         dynamodb:Query, dynamodb:Scan, dynamodb:BatchGetItem, dynamodb:BatchWriteItem,
+                         dynamodb:DescribeTable, dynamodb:UpdateTable, dynamodb:SearchVectors]
+                Resource: !GetAtt AgentMemoryTable.Arn
               - Effect: Allow
                 Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutObjectTagging]
                 Resource: !Sub '${AgentCheckpointBucket.Arn}/*'
@@ -647,6 +670,9 @@ Resources:
             - { Name: CHECKPOINT_BACKEND, Value: dynamodb }
             - { Name: CHECKPOINT_TABLE, Value: !Ref AgentCheckpointTable }
             - { Name: CHECKPOINT_BUCKET, Value: !Ref AgentCheckpointBucket }
+            - { Name: MEMORY_ENABLED, Value: 'true' }
+            - { Name: MEMORY_BACKEND, Value: dynamodb }
+            - { Name: MEMORY_TABLE, Value: !Ref AgentMemoryTable }
             - { Name: CHECKPOINT_TTL_DAYS, Value: '30' }
             - { Name: AWS_REGION, Value: !Ref AWS::Region }
             - { Name: MAX_CONCURRENT_TURNS, Value: '4' }

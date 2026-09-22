@@ -12,7 +12,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.runtime import Runtime
 
 from workflow.agents.base import ToolLoopAgent, ToolLoopSpec
-from workflow.agents.formatting import history_messages
+from workflow.agents.formatting import history_messages, memory_notes
 from workflow.context import TurnContext
 from workflow.models import ModelRole
 from workflow.prompts import prompt
@@ -20,6 +20,7 @@ from workflow.state import TurnState
 from workflow.tools.chat_search import CHAT_SEARCH_TOOLS
 from workflow.tools.files import FILE_TOOLS
 from workflow.tools.github import GITHUB_TOOLS
+from workflow.tools.memory import MEMORY_TOOLS
 
 NO_ANSWER = ("I couldn't complete that request just now. Please try again, or rephrase what you need "
              "from your migration files.")
@@ -37,7 +38,7 @@ class ConversationalSpecialist(ToolLoopAgent):
         return []
 
     def brief(self, context: TurnContext, state: TurnState) -> list[BaseMessage]:
-        system = "\n\n".join([self.system_prompt(), *self.notes(context, state)])
+        system = "\n\n".join([self.system_prompt(), *memory_notes(context), *self.notes(context, state)])
         return [SystemMessage(system), *history_messages(context.workspace.history),
                 HumanMessage(context.workspace.message)]
 
@@ -86,7 +87,8 @@ class ConsultantAgent(ConversationalSpecialist):
     progress = "Thinking through your migration question..."
 
     def __init__(self) -> None:
-        super().__init__(ToolLoopSpec(name="consult", role=ModelRole.CONSULTANT, tools=FILE_TOOLS, max_rounds=6))
+        super().__init__(ToolLoopSpec(name="consult", role=ModelRole.CONSULTANT,
+                                      tools=[*FILE_TOOLS, *MEMORY_TOOLS], max_rounds=6))
 
     def notes(self, context: TurnContext, state: TurnState) -> list[str]:
         files = list(context.workspace.files)

@@ -14,10 +14,12 @@ The design follows LangGraph's "Thinking in LangGraph" method:
 ## One turn, one run; one chat, one thread
 
 ```
-START → screen_input ─┬→ route_intent ────┬→ policy_gate ─→ [grant_judge] → dispatch → <specialist> → screen_output → END
-         │            └→ injection_guard ─┘      │ flagged → END                          │
-         │ blocked → END                                                                │
-         └──────────────────── ← rerun (a paused question was answered) ───────────────┘
+START → screen_input ─┬→ route_intent ──────┬→ policy_gate ─→ [grant_judge] → dispatch → <specialist> → capture_memory → screen_output → END
+         │            ├→ injection_guard ───┤      │ flagged → END                          │
+         │            ├→ recall_memories ───┤                                               │
+         │            └→ summarize_history ─┘                                               │
+         │ blocked → END                                                                    │
+         └──────────────────── ← rerun (a paused question was answered) ───────────────────┘
 ```
 
 - Each chat session is a LangGraph thread (`thread_id` = session id). Checkpoints live in DynamoDB.
@@ -37,12 +39,14 @@ START → screen_input ─┬→ route_intent ────┬→ policy_gate ─
 | Grant Judge | `grant_judge` | re-checks that a confirmed evidence grant covers this turn |
 | History Agent | `history` | `search_chat_history`, `search_chat_files`, `request_file_delivery` (data); `delivery_gate` / `locate_file` (data), `deliver_files` (action) |
 | Repository Agent | `repository` | four read-only GitHub tools (data) |
-| Migration Consultant | `consultant` | `list_files`, `get_file_content` (data) |
+| Migration Consultant | `consultant` | `list_files`, `get_file_content` (data); `remember`, `forget` (action: long-term memory) |
 | Requirements Analyst | `analyst` | GitHub tools (data); `clarify` (user input: `interrupt()`) |
 | Model Author ×N | `author` | fan-out with `Send`, one per target model; `validate` (data: sqlglot static checks) |
 | Model Reviewer | `reviewer` | the 12-point checklist; defects loop back to the author (at most 2 revisions); `publish` (action) |
 | Evidence Investigator | `investigator` | `read_impact_evidence` (data, line-numbered file reads); `plan_sources` / `ask_sources` and `ask_user` (user input: `interrupt()`); `evidence_gate` (data) |
 | Impact Reporter | `reporter` | `finish` (action); a data change reported without `dbt seed` is sent back once |
+| Summarizer | `summarizer` | `summarize_history`: condenses a long chat's older turns (LLM step, only past the threshold) |
+| Memory capture | `summarizer` | `capture_memory`: records a standing instruction the turn did not save (LLM step, only when asked) |
 
 **Tool-using agents** (`workflow/agents/base.py`) are built from LangGraph primitives: a model node, a
 `ToolNode` and conditional edges.
@@ -122,8 +126,42 @@ LangGraph nodes. See `workflow/security.py`.
 
 Every system prompt ends with shared security rules (`prompts/security.md`).
 
+## Memory
+
+LangGraph's two halves, both wired as the docs prescribe: a checkpointer for the thread, a store for
+what outlives it.
+
+| Horizon | Where | What it holds | Lifetime |
+|---|---|---|---|
+| This turn | `TurnContext` / `TurnWorkspace` (runtime context) | message, attached files, conversation, recalled memories | the run |
+| This chat | DynamoDB checkpoint, `thread_id` = session id | pending question, analyst spec and drafts, impact work, last route, running summary | 30-day TTL |
+| This user | DynamoDB store, namespace `("memories", user_id)` | standing instructions the user asked to be remembered | **no expiry** |
+
+**Short-term: a chat that never outgrows the window.** The backend re-sends the saved conversation every
+turn. `summarize_history` keeps the newest `SUMMARY_KEEP_CHARS` verbatim and folds everything older into a
+running summary held in state, advancing `summarized_upto` so later turns reuse it instead of paying for it
+again. The verbatim window is fixed and the summary is rewritten rather than appended to, so a chat can run
+for years at constant prompt size. The summary is derived data: if the thread's checkpoint has expired, the
+next long turn rebuilds it, and a conversation shorter than the summary covers resets it.
+
+**Long-term: memory that accumulates for the life of the account.** `remember` and `forget` (Migration
+Consultant) and the `capture_memory` step write only what the user asked to be remembered — never file contents, tool results or the
+agent's own conclusions, and never secrets or PII, which the outbound guardrail strips before the write.
+Each fact is keyed by its subject, so restating or changing a standing instruction replaces it instead of
+leaving two contradictory rows. The write does not depend on the model choosing to call a tool: when a
+message plainly asks for something to be remembered and the turn saved nothing, `capture_memory` reads that
+message — only the user's own words — and records one instruction or decides there was nothing durable in
+it. Over repeated live runs the agent answered "I'll keep that in mind" and called nothing often enough
+that a promise this plain could not rest on it. `recall_memories` reads at most `MEMORY_RECALL_LIMIT` items by nearest
+neighbour over the store's vector index, so recall costs the same at twenty memories and at twenty years of
+them, and a store outage degrades to no memory rather than a failed turn. `GET`/`DELETE /ai/memory/{user}`
+expose and erase everything held for one person.
+
 ## Persistence
 
+- **Store:** `DynamoDBStore` from `langgraph-checkpoint-aws`, table `circini-agent-memory`, no TTL, vector
+  index built on the same embedding provider as chat search. The stack owns the table; the service only adds
+  the vector index if it is missing, and runs without semantic recall if that is unavailable.
 - **Saver:** `DynamoDBSaver` from `langgraph-checkpoint-aws`, table `circini-agent-checkpoints`. Checkpoints
   larger than 350 KB offload to the S3 bucket `circini-agent-checkpoints-<account>-<region>`.
 - **Expiry:** DynamoDB TTL and the S3 lifecycle both expire items after 30 days.

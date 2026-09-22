@@ -45,6 +45,12 @@ class TurnWorkspace:
     # the graph state of the pipeline that owns it, so the request travels here
     # and its delivery node reads it back into state.
     file_requests: list[dict[str, str]] = field(default_factory=list)
+    # Long-term memory: this user's standing instructions recalled for this turn,
+    # and the subjects saved during it (the per-turn write cap).
+    memories: list[dict[str, str]] = field(default_factory=list)
+    memory_writes: list[str] = field(default_factory=list)
+    # Older turns of this chat, condensed by the summariser.
+    summary: str = ""
 
 
 @dataclass

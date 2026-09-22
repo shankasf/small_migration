@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AuthedRequest, requireRole } from '../middleware/auth.js';
 import { retentionPolicy } from '../services/retention.js';
-import { securityStatus, cancelUserRuns } from '../services/aiService.js';
+import { securityStatus, cancelUserRuns, userMemory, forgetUserMemory } from '../services/aiService.js';
 import { recordAudit } from '../services/audit.js';
 import { FEEDBACK_RATINGS } from '../services/feedback.js';
 
@@ -178,6 +178,23 @@ router.post('/users/:id/revoke', requireRole('admin'), async (req: AuthedRequest
     await cancelUserRuns(req.params.id);
     await recordAudit(prisma, { userId: req.user!.id, action: 'admin.access_revoked', resource: req.params.id, severity: 'critical' });
     res.json({ok: true});
+  } catch (error) { next(error); }
+});
+
+// Long-term memory is the user's own standing instructions, kept without
+// expiry, so it has to be inspectable and erasable on request.
+router.get('/users/:id/memory', requireRole('admin'), async (req: AuthedRequest, res: Response, next) => {
+  try {
+    res.json({ memories: await userMemory(req.params.id) });
+  } catch (error) { next(error); }
+});
+
+router.delete('/users/:id/memory', requireRole('admin'), async (req: AuthedRequest, res: Response, next) => {
+  try {
+    const forgotten = await forgetUserMemory(req.params.id);
+    await recordAudit(getPrisma(req), { userId: req.user!.id, action: 'admin.memory_erased',
+      resource: req.params.id, detail: JSON.stringify({ forgotten }) });
+    res.json({ forgotten });
   } catch (error) { next(error); }
 });
 

@@ -130,5 +130,19 @@
     "no_images_or_html": {
       "min": 1.0
     }
+  },
+  "memory": {
+    "mentions_required": {
+      "min": 1.0
+    },
+    "avoids_forbidden": {
+      "min": 1.0
+    },
+    "tool_trajectory": {
+      "min": 1.0
+    },
+    "no_forbidden_tools": {
+      "min": 1.0
+    }
   }
 }

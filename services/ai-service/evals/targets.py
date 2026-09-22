@@ -12,6 +12,7 @@ from functools import lru_cache
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
 from langgraph.graph import END
 from langgraph.runtime import Runtime
 
@@ -95,7 +96,9 @@ _gateways: dict[str, EvalGateway] = {}
 @lru_cache(maxsize=1)
 def turn_runner() -> TurnRunner:
     # Compiled once and shared, as in production; each case is its own thread.
-    graph = build_turn_graph(InMemorySaver())
+    # Long-term memory is in-process here: no embeddings, no AWS, and every case
+    # starts from an empty store, so a case must write what it later recalls.
+    graph = build_turn_graph(InMemorySaver(), store=InMemoryStore())
     return TurnRunner(graph, registry(), TraceExporter(), gateway_factory=lambda session, actor: _gateways[session])
 
 
@@ -115,6 +118,9 @@ def _fill(value: Any, responses: list[str]) -> Any:
 async def conversation_target(inputs: dict[str, Any]) -> dict[str, Any]:
     inputs = resolve(inputs)
     session = f"eval-{uuid.uuid4().hex[:16]}"
+    # One store is shared by the compiled graph, so each case gets its own user:
+    # what one case remembers must not reach the next.
+    actor = f"{ACTOR}-{session}"
     runner = turn_runner()
     recorder = ActivityRecorder()
     _gateways[session] = EvalGateway(inputs.get("backend"))
@@ -127,7 +133,7 @@ async def conversation_target(inputs: dict[str, Any]) -> dict[str, Any]:
         for number, turn in enumerate(inputs["turns"], 1):
             filled = _fill(turn, responses)
             filled = {**filled, "history": [*conversation, *(filled.get("history") or [])]}
-            result = await runner.run(request_from(filled), session_id=session, actor_id=ACTOR,
+            result = await runner.run(request_from(filled), session_id=session, actor_id=actor,
                                       turn_id=f"turn-{number}", logger=recorder)
             # The HTTP layer's final outbound pass (routes/migration.py) applies to every reply.
             response = harden_reply(guardrails.check_outbound(result.response).text).text

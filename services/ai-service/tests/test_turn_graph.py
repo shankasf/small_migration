@@ -15,17 +15,18 @@ from workflow.tracing import TraceExporter
 
 
 class Harness:
-    def __init__(self, gateway=None):
+    def __init__(self, gateway=None, store=None):
         self.models = FakeRegistry()
         self.gateway = gateway or FakeGateway()
         self.logger = RecordingLogger()
         self.checkpointer = InMemorySaver()
-        self.runner = TurnRunner(build_turn_graph(self.checkpointer), self.models, TraceExporter(),
+        self.store = store
+        self.runner = TurnRunner(build_turn_graph(self.checkpointer, store=store), self.models, TraceExporter(),
                                  gateway_factory=lambda session, actor: self.gateway)
 
-    def turn(self, message, *, session="chat-1", **request):
+    def turn(self, message, *, session="chat-1", actor="alice", **request):
         return asyncio.run(self.runner.run(TurnRequest(message=message, **request), session_id=session,
-                                           actor_id="alice", turn_id="turn", logger=self.logger))
+                                           actor_id=actor, turn_id="turn", logger=self.logger))
 
     def state(self, session="chat-1"):
         return asyncio.run(self.runner.graph.aget_state(self.runner.thread(session))).values
@@ -278,7 +279,8 @@ def test_consultant_reads_files_but_cannot_generate_them(harness):
                           "Line 3 uses NULLIF where IFNULL was intended.")
     result = harness.turn("Is my model right?", files={"model.sql": "select nullif(a, 0) from t"})
     assert "IFNULL" in result.response and result.files == {}
-    assert set(harness.models.requests("consultant")[0]["tools"]) == {"list_files", "get_file_content"}
+    assert set(harness.models.requests("consultant")[0]["tools"]) == {"list_files", "get_file_content",
+                                                                      "remember", "forget"}
     tool_result = next(m for m in harness.models.requests("consultant")[1]["messages"] if m.type == "tool")
     assert "nullif(a, 0)" in tool_result.content
 

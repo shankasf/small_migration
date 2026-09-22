@@ -71,6 +71,8 @@ class TurnState(TypedDict, total=False):
     rerun: Annotated[bool, latest]        # a paused step was answered: route the reply afresh
     # Carried across turns in the thread's checkpoint.
     last_route: Annotated[str | None, latest]   # the route of the previous turn, for follow-ups
+    summary: Annotated[str, latest]             # older turns of this chat, condensed
+    summarized_upto: Annotated[int, latest]     # how many of the chat's messages the summary covers
     pending: Annotated[PendingInput | None, latest]
     migration: Annotated[MigrationWork, latest]
     impact: Annotated[ImpactWork, latest]

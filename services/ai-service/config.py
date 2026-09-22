@@ -57,6 +57,19 @@ class Settings:
     CHECKPOINT_TABLE: str = os.getenv("CHECKPOINT_TABLE", "")
     CHECKPOINT_BUCKET: str = os.getenv("CHECKPOINT_BUCKET", "")
     CHECKPOINT_TTL_DAYS: int = int(os.getenv("CHECKPOINT_TTL_DAYS", "30"))
+    # Long-term memory (LangGraph Store): standing instructions that outlive a
+    # chat. Kept for the life of the account — no TTL — so recall is always
+    # limit-capped and a restated fact replaces the old one.
+    MEMORY_ENABLED: bool = _bool("MEMORY_ENABLED", "true")
+    MEMORY_BACKEND: str = os.getenv("MEMORY_BACKEND", "memory").strip().lower()
+    MEMORY_TABLE: str = os.getenv("MEMORY_TABLE", "")
+    MEMORY_RECALL_LIMIT: int = int(os.getenv("MEMORY_RECALL_LIMIT", "5"))
+    MEMORY_WRITES_PER_TURN: int = int(os.getenv("MEMORY_WRITES_PER_TURN", "3"))
+    MEMORY_FACT_MAX_CHARS: int = int(os.getenv("MEMORY_FACT_MAX_CHARS", "500"))
+    # Conversation summarisation: how much recent chat is kept verbatim before
+    # older turns are folded into a running summary.
+    SUMMARY_TRIGGER_CHARS: int = int(os.getenv("SUMMARY_TRIGGER_CHARS", "60000"))
+    SUMMARY_KEEP_CHARS: int = int(os.getenv("SUMMARY_KEEP_CHARS", "30000"))
     AWS_REGION: str = os.getenv("AWS_REGION", os.getenv("BEDROCK_REGION", "ap-southeast-2"))
     # Memory is bounded by turns in flight, not by agent count: each turn holds
     # its screened files in memory, so turns beyond this wait for a slot.
