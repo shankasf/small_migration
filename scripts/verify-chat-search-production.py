@@ -3,6 +3,7 @@
 import base64
 import gzip
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -23,7 +24,7 @@ while True:
     assert time.monotonic() < stable_deadline, 'Backend did not stabilize before verification deadline'
     print(json.dumps({'chatSearchProgress': 'waiting for backend steady state'}), flush=True)
     time.sleep(15)
-source = Path('scripts/check-chat-search-live.cjs').read_bytes()
+source = Path('scripts/diagnose-chat-search-live.cjs' if os.getenv('DIAGNOSE_CHAT_SEARCH') == '1' else 'scripts/check-chat-search-live.cjs').read_bytes()
 encoded = base64.b64encode(gzip.compress(source, mtime=0)).decode()
 # /tmp is the task's explicitly writable ephemeral volume. The code is trusted repository code.
 command = "require('node:fs').writeFileSync('/tmp/chat-search-check.cjs',require('node:zlib').gunzipSync(Buffer.from('" + encoded + "','base64')));require('/tmp/chat-search-check.cjs')"

@@ -3,6 +3,10 @@ name: Production release status
 on:
   workflow_dispatch:
     inputs:
+      diagnose_chat_search:
+        description: Inspect synthetic chat-search failure metadata
+        type: boolean
+        default: false
       configure_signify_domain:
         description: Apply the reviewed Signify domain and certificate migration
         type: boolean
@@ -44,6 +48,11 @@ jobs:
           name: signify-domain-evidence
           path: domain-evidence/
           retention-days: 30
+      - name: Diagnose synthetic chat-search verification
+        if: ${{ inputs.diagnose_chat_search }}
+        env:
+          DIAGNOSE_CHAT_SEARCH: '1'
+        run: python3 scripts/verify-chat-search-production.py
       - name: Inspect stack and service rollout status
         run: |
           set -euo pipefail
