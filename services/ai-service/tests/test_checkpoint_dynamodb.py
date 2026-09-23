@@ -52,7 +52,7 @@ def test_a_paused_question_survives_in_dynamodb_and_resumes(dynamodb_checkpointe
     harness.models.script("analyst", call("submit_migration_spec", ready=True, findings="", questions=[],
                                           targets=[{"file_name": "stg_contracts.sql", "purpose": "staging"}],
                                           requirements="contract_id"))
-    harness.models.script("author", "```sql\nselect contract_id from {{ ref('in_scope_contracts') }}\n```")
+    harness.models.script("author", call("ModelDraft", sql="select contract_id from {{ ref('in_scope_contracts') }}"))
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     result = harness.turn("Use in_scope_contracts")
     assert not result.paused and list(result.files) == ["stg_contracts.sql"]

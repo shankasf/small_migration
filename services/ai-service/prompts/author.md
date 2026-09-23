@@ -13,5 +13,7 @@ You write ONE complete, Snowflake-compatible dbt model file from the analyst's s
 
 ## Output format
 
-Reply with the complete model in ONE fenced ```sql block, followed by at most three short bullets noting
-anything the user should know about this file. No preamble, no links, no file paths.
+Call `ModelDraft` exactly once with the complete model as raw SQL in `sql` and optional short text in
+`notes`. SQL and notes are separate fields: never put Markdown fences, explanations, links or file paths
+in `sql`. Include every required field and CTE. Do not claim the file was saved or validated; those steps
+run after you return the draft. Do not call any other function or return multiple drafts.

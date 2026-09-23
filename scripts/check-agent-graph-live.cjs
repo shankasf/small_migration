@@ -90,6 +90,10 @@ async function main() {
   assert.ok(!calls.some(c => ['read_impact_evidence', 'impact_analysis_agent'].includes(c.tool)), 'Generation touched impact evidence');
   const modelCalls = await prisma.aiActivityLog.count({where: {sessionId, createdAt: {gte: start}, step: 'llm.call'}});
   assert.ok(modelCalls >= 5, 'Expected router, guard, analyst, author and reviewer model calls');
+  const drafts = await prisma.aiActivityLog.findMany({where: {sessionId, createdAt: {gte: start}, step: 'model.author', type: 'info'},
+    select: {detail: true}});
+  assert.ok(drafts.filter(d => JSON.parse(d.detail || '{}').format === 'structured').length >= 2,
+    'Both generated models must use the validated structured draft contract');
   const usage = await prisma.usageRecord.findMany({where: {sessionId}});
   assert.ok(usage.length >= 2 && usage.every(u => u.model === expectedModel && u.provider === expectedProvider && u.totalTokens > 0),
     'Every turn must be metered against the configured model');
@@ -97,7 +101,8 @@ async function main() {
   await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); keyId = null; token = null;
   await prisma.session.delete({where: {id: sessionId}});
   console.log(JSON.stringify({agentGraphProductionCheck: 'passed', sessionId, model: expectedModel, provider: expectedProvider,
-    clarificationPause: 'passed', resume: 'passed', generation: 'passed', enrolmentErrorModel: 'passed', metering: 'passed'}));
+    clarificationPause: 'passed', resume: 'passed', generation: 'passed', enrolmentErrorModel: 'passed',
+    structuredDrafts: 'passed', metering: 'passed'}));
 }
 main().catch(error => {console.error(JSON.stringify({agentGraphProductionCheck: 'failed', phase, reason: failureReason(error)})); process.exitCode = 1;})
   .finally(async () => {if (keyId) await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); await prisma.$disconnect();});

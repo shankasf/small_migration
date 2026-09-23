@@ -1,7 +1,7 @@
 """Typed results passed between the migration agents."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Output names end up in download cards and a storage key, so they are plain
 # file names: no directories, no parent references, no absolute paths.
@@ -25,6 +25,23 @@ class MigrationSpec(BaseModel):
     requirements: str = Field(description="Complete raw build facts for the authors: every field with source "
                                           "expression, datatype, nullability and default; base ref model; CTEs; "
                                           "joins; filters and macros; CASE code lists; numeric precision/scale")
+
+
+class ModelDraft(BaseModel):
+    """One complete SQL file from the author, separate from its explanation."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    sql: str = Field(min_length=1, description="The complete raw dbt SQL model. No Markdown fences or explanation.")
+    notes: str = Field(default="", max_length=4000,
+                       description="Optional short notes about the model; never include SQL here.")
+
+    @field_validator("sql")
+    @classmethod
+    def raw_sql_only(cls, value: str) -> str:
+        if value.startswith(("```", "~~~")):
+            raise ValueError("sql must contain raw SQL, without Markdown fences")
+        return value
 
 
 class ModelReview(BaseModel):

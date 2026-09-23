@@ -11,30 +11,24 @@ published with its open issues stated.
 from __future__ import annotations
 
 import operator
-import re
 from typing import Annotated, Any, Literal, TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from config import settings
 from validation import rejection_reason, validate_output
+from workflow.agents.base import clean_tool_name
 from workflow.agents.formatting import files_block
-from workflow.agents.migration.schemas import ModelReview
+from workflow.agents.migration.schemas import ModelDraft, ModelReview
 from workflow.context import TurnContext
 from workflow.models import ModelRole
 from workflow.prompts import prompt
 from workflow.resilience import LLM_RETRY
 from workflow.structured import invoke_structured
-
-SQL_BLOCK = re.compile(
-    r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<label>[^\n]*)\n"
-    r"(?P<sql>.*?)^[ \t]*(?P=fence)[ \t]*$", re.MULTILINE | re.DOTALL,
-)
-FENCE_LINE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})", re.MULTILINE)
-SQL_START = re.compile(r"^(?:select\b|with\b|\{\{|--|/\*|\()", re.IGNORECASE)
 
 
 class ModelReplyError(ValueError):
@@ -59,39 +53,30 @@ class BuildOutput(TypedDict):
     built: Annotated[list[dict[str, Any]], operator.add]
 
 
-def split_reply(reply: str) -> tuple[str, str]:
-    """Extract one model, tolerating formatting differences but never partial fences.
-
-    Raw SQL and every extracted block still pass through the SQL/dbt validator
-    and reviewer. Never pick the first of several blocks or remove prose from
-    raw SQL: that can silently publish only part of the requested model.
-    """
-    reply = reply.replace("\r\n", "\n").strip()
-    blocks = list(SQL_BLOCK.finditer(reply))
-    if len(blocks) > 1:
-        raise ModelReplyError("The model returned multiple code blocks instead of one complete SQL model.")
-    if blocks:
-        match = blocks[0]
-        notes = (reply[:match.start()] + reply[match.end():]).strip()
-        if FENCE_LINE.search(notes):
-            raise ModelReplyError("The model returned an incomplete code block.")
-        if match.group("label").strip().lower() not in {"", "sql", "snowflake", "jinja", "jinja2"}:
-            raise ModelReplyError("The model returned a code block in an unexpected format.")
-        sql = match.group("sql").strip()
-        if sql:
-            return sql + "\n", notes
-    elif FENCE_LINE.search(reply):
-        raise ModelReplyError("The model returned an incomplete code block.")
-    elif SQL_START.match(reply):
-        return reply + "\n", ""
-    raise ModelReplyError("The model did not return SQL content.")
-
-
 def reply_was_truncated(metadata: dict[str, Any]) -> bool:
     """Recognise provider length limits even if the partial SQL happens to parse."""
     return (any(metadata.get(key) in {"length", "max_tokens", "max_output_tokens"}
                 for key in ("finish_reason", "stopReason", "stop_reason"))
             or metadata.get("status") == "incomplete")
+
+
+def parse_draft(reply: AIMessage) -> ModelDraft:
+    """Require exactly one complete typed result; never extract SQL from chat text."""
+    if reply_was_truncated(reply.response_metadata):
+        raise ModelReplyError("The model response was cut off before completion (output limit reached).")
+    if reply.invalid_tool_calls:
+        raise ModelReplyError("The model returned malformed structured output.")
+    if not reply.tool_calls:
+        raise ModelReplyError("The model did not return a structured SQL draft.")
+    if len(reply.tool_calls) != 1 or clean_tool_name(reply.tool_calls[0]["name"]) != "ModelDraft":
+        raise ModelReplyError("The model did not return exactly one SQL draft.")
+    try:
+        return ModelDraft.model_validate(reply.tool_calls[0]["args"])
+    except ValidationError as exc:
+        # Pydantic errors can contain the rejected SQL or other input values.
+        # Keep those values out of the user-facing error and activity log.
+        raise ModelReplyError("The model returned an invalid structured draft. Expected non-empty raw SQL "
+                              "in sql and optional short text in notes, with no extra fields.") from exc
 
 
 def attempts_left(state: BuildState) -> bool:
@@ -107,17 +92,24 @@ class ModelAuthor:
         if context.logger:
             verb = "Revising" if state.get("attempt") else "Writing"
             await context.logger.thinking(f"{verb} {target['file_name']}...")
-        reply = await context.models.get(ModelRole.AUTHOR).ainvoke([
+        # Unforced function calling is supported by the configured Bedrock model;
+        # passing tool_choice or relying on provider JSON-schema enforcement is not.
+        model = context.models.get(ModelRole.AUTHOR).bind_tools([ModelDraft])
+        reply = await model.ainvoke([
             SystemMessage(prompt("author", "dbt_rules", "self_validation")),
             HumanMessage(self.brief(state, context)),
         ])
         try:
-            if reply_was_truncated(reply.response_metadata):
-                raise ModelReplyError("The model response was cut off before completion (output limit reached).")
-            sql, notes = split_reply(reply.text)
+            draft = parse_draft(reply)
+            sql, notes = draft.sql + "\n", draft.notes
             error = ""
         except ModelReplyError as exc:
             sql, notes, error = "", "", str(exc)
+        if context.logger:
+            await context.logger.log("model.author", error or "SQL draft received; validation follows.",
+                                     log_type="warning" if error else "info",
+                                     data={"format": "structured" if reply.tool_calls or reply.invalid_tool_calls else "text",
+                                           "attempt": state.get("attempt", 0) + 1})
         return Command(update={"sql": sql, "notes": notes, "generation_error": error,
                                "attempt": state.get("attempt", 0) + 1},
                        goto="validate")
@@ -152,8 +144,9 @@ def validate(state: BuildState) -> Command[Literal["author", "review", "finish"]
     if report["status"] != "rejected":
         return Command(update={"validation": report}, goto="review")
     reason = (rejection_reason(state["sql"]) if state.get("sql") else "") or report["errors"][0]
-    feedback = (f"Generation failed: {reason} Reply with the complete model in ONE fenced ```sql block. "
-                "Include every required field and CTE; omit prose and keep comments brief."
+    feedback = (f"Generation failed: {reason} Call ModelDraft exactly once with the complete raw SQL in sql "
+                "and optional short text in notes. No Markdown fences or extra fields. "
+                "Include every required field and CTE; keep comments brief."
                 if not state.get("sql") else f"Static validation failed: {reason}")
     return Command(update={"validation": report, "feedback": [feedback]},
                    goto="author" if attempts_left(state) else "finish")

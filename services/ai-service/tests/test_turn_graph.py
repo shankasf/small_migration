@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from fakes import FakeGateway, FakeRegistry, RecordingLogger, call
+from fakes import FakeGateway, FakeRegistry, RecordingLogger, call, calls
 from workflow.context import TurnRequest
 from workflow.models import ModelRole
 from workflow.orchestrator import SpecialistRegistry, build_turn_graph, default_specialists
@@ -294,7 +294,11 @@ def spec(**overrides):
     return call("submit_migration_spec", **fields)
 
 
-SQL = "```sql\nselect contract_id, ifnull(amount, 0) as amount from {{ ref('in_scope_contracts') }}\n```"
+SQL = "select contract_id, ifnull(amount, 0) as amount from {{ ref('in_scope_contracts') }}"
+
+
+def draft(sql=SQL, notes=""):
+    return call("ModelDraft", sql=sql, notes=notes)
 
 
 def test_generation_pauses_for_clarification_then_resumes_through_intake(harness):
@@ -311,7 +315,7 @@ def test_generation_pauses_for_clarification_then_resumes_through_intake(harness
     # The answer resumes the thread; it is screened and routed like any message.
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", SQL + "\n- Amount keeps its 2-decimal scale.")
+    harness.models.script("author", draft(notes="Amount keeps its 2-decimal scale."))
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     second = harness.turn("Use in_scope_contracts", files=files)
     assert not second.paused
@@ -329,7 +333,7 @@ def test_generation_pauses_for_clarification_then_resumes_through_intake(harness
 def test_reviewer_defects_go_back_to_the_author_until_fixed(harness):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", "```sql\nselect contract_id from {{ ref('in_scope_contracts') }}\n```", SQL)
+    harness.models.script("author", draft("select contract_id from {{ ref('in_scope_contracts') }}"), draft())
     harness.models.script("reviewer", call("ModelReview", approved=False, issues=["amount is missing from the SELECT"]),
                           call("ModelReview", approved=True, issues=[]))
     result = harness.turn("Generate stg_contracts")
@@ -341,7 +345,7 @@ def test_reviewer_defects_go_back_to_the_author_until_fixed(harness):
 def test_unresolved_review_issues_are_published_openly(harness):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", SQL, SQL, SQL)
+    harness.models.script("author", draft(), draft(), draft())
     harness.models.script("reviewer", *[call("ModelReview", approved=False, issues=["CASE on status has no ELSE"])] * 3)
     result = harness.turn("Generate stg_contracts")
     assert len(harness.models.requests("author")) == 3  # first draft + MAX_REVISIONS
@@ -352,7 +356,7 @@ def test_unresolved_review_issues_are_published_openly(harness):
 def test_sql_that_fails_static_validation_is_never_delivered(harness):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", *["```sql\ndrop table contracts\n```"] * 3)
+    harness.models.script("author", *[draft("drop table contracts")] * 3)
     result = harness.turn("Generate stg_contracts")
     assert result.files == {}
     assert "no file was saved" in result.response
@@ -362,16 +366,13 @@ def test_sql_that_fails_static_validation_is_never_delivered(harness):
 
 
 @pytest.mark.parametrize("reply", [
-    SQL.removeprefix("```sql\n").removesuffix("\n```"),
-    "{{ config(materialized='table', tags=['Enrolment']) }}\n"
-    + SQL.removeprefix("```sql\n").removesuffix("\n```"),
-    SQL.replace("```sql", "```snowflake"),
-    SQL.replace("```sql", "```SQL ").replace("\n", "\r\n"),
-    SQL.replace("```sql", "```"),
-    SQL.replace("```", "~~~~"),
-    SQL.replace("```sql", "```jinja"),
+    draft(),
+    draft("  \n" + SQL + "\n ", "  Keeps all fields.  "),
+    draft("{{ config(materialized='table', tags=['Enrolment']) }}\n" + SQL),
+    call("ModelDraft", sql=SQL),
+    call("functions.ModelDraft<|channel|>commentary", sql=SQL),
 ])
-def test_complete_sql_is_delivered_despite_markdown_variations(harness, reply):
+def test_typed_sql_draft_is_validated_and_delivered(harness, reply):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
     harness.models.script("author", reply)
@@ -380,20 +381,33 @@ def test_complete_sql_is_delivered_despite_markdown_variations(harness, reply):
     assert "ifnull(amount, 0)" in result.files["stg_contracts.sql"]
     assert "generate_output" in harness.logger.tools_called()
     assert len(harness.models.requests("author")) == 1
+    assert harness.models.requests("author")[0]["tools"] == ["ModelDraft"]
     assert len(harness.models.requests("reviewer")) == 1
 
 
 @pytest.mark.parametrize("reply,reason", [
-    ("Added a new dbt error model.", "did not return SQL content"),
-    ("```sql\n```", "did not return SQL content"),
-    (SQL.removesuffix("```"), "incomplete code block"),
-    (SQL + "\n```sql\nselect 2", "incomplete code block"),
-    (SQL + "\n" + SQL, "multiple code blocks"),
-    (AIMessage(SQL, response_metadata={"stopReason": "max_tokens"}), "output limit reached"),
-    (AIMessage(SQL, response_metadata={"finish_reason": "length"}), "output limit reached"),
-    (AIMessage(SQL, response_metadata={"status": "incomplete"}), "output limit reached"),
+    ("Added a new dbt error model.", "did not return a structured SQL draft"),
+    (SQL, "did not return a structured SQL draft"),
+    ("```sql\n" + SQL + "\n```", "did not return a structured SQL draft"),
+    (call("ModelDraft", notes="Created the model"), "invalid structured draft"),
+    (call("ModelDraft", sql=""), "invalid structured draft"),
+    (call("ModelDraft", sql="  \n  "), "invalid structured draft"),
+    (call("ModelDraft", sql=None), "invalid structured draft"),
+    (call("ModelDraft", sql=123), "invalid structured draft"),
+    (call("ModelDraft", sql=[SQL]), "invalid structured draft"),
+    (call("ModelDraft", sql=SQL, notes=["a note"]), "invalid structured draft"),
+    (call("ModelDraft", sql=SQL, notes="x" * 4001), "invalid structured draft"),
+    (call("ModelDraft", sql=SQL, filename="unexpected.sql"), "invalid structured draft"),
+    (draft("```sql\n" + SQL + "\n```"), "invalid structured draft"),
+    (calls(("ModelDraft", {"sql": SQL}), ("ModelDraft", {"sql": SQL})), "exactly one SQL draft"),
+    (call("generate_output", sql=SQL), "exactly one SQL draft"),
+    (AIMessage(SQL, invalid_tool_calls=[{"name": "ModelDraft", "args": '{"sql":', "id": "bad"}]),
+     "malformed structured output"),
+    (draft().model_copy(update={"response_metadata": {"stopReason": "max_tokens"}}), "output limit reached"),
+    (draft().model_copy(update={"response_metadata": {"finish_reason": "length"}}), "output limit reached"),
+    (draft().model_copy(update={"response_metadata": {"status": "incomplete"}}), "output limit reached"),
 ])
-def test_incomplete_generation_retries_without_false_success_or_partial_files(harness, reply, reason):
+def test_invalid_generation_retries_without_false_success_or_partial_files(harness, reply, reason):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec(findings="Added a new dbt error model enrolment_errors.sql."))
     harness.models.script("author", *[reply] * 3)
@@ -401,18 +415,19 @@ def test_incomplete_generation_retries_without_false_success_or_partial_files(ha
     assert not result.files
     assert reason in result.response and "no file was saved" in result.response
     assert "Added a new" not in result.response
-    assert "ONE fenced" not in result.response  # internal repair instructions stay internal
+    assert "Call ModelDraft" not in result.response
     assert not harness.models.requests("reviewer")
     assert "generate_output" not in harness.logger.tools_called()
     assert len(harness.models.requests("author")) == 3
     feedback = harness.models.requests("author")[1]["messages"][-1].content
-    assert reason in feedback and "ONE fenced" in feedback
+    assert reason in feedback and "Call ModelDraft exactly once" in feedback
 
 
-def test_missing_sql_recovers_on_retry_and_is_published(harness):
+@pytest.mark.parametrize("bad_reply", ["I added the model.", call("ModelDraft", sql=None)])
+def test_invalid_draft_recovers_on_retry_and_is_published(harness, bad_reply):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", "I added the model.", SQL)
+    harness.models.script("author", bad_reply, draft())
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     result = harness.turn("Give me the model SQL")
     assert list(result.files) == ["stg_contracts.sql"]
@@ -420,14 +435,30 @@ def test_missing_sql_recovers_on_retry_and_is_published(harness):
     assert len(harness.models.requests("author")) == 2
 
 
-def test_raw_sql_still_goes_through_safety_validation(harness):
+@pytest.mark.parametrize("sql", [
+    "select 1; drop table contracts;",
+    "{{ config(pre_hook='delete from contracts') }} select 1",
+    "select contract_id from",
+])
+def test_typed_sql_still_goes_through_safety_validation(harness, sql):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", *["select 1; drop table contracts;"] * 3)
+    harness.models.script("author", *[draft(sql)] * 3)
     result = harness.turn("Generate stg_contracts.sql")
     assert not result.files
     assert "unsupported/unsafe" in result.response
     assert not harness.models.requests("reviewer")
+
+
+def test_schema_failure_does_not_echo_rejected_values(harness):
+    marker = "PRIVATE-REJECTED-DRAFT-CONTENT"
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", *[call("ModelDraft", sql={"invalid": marker})] * 3)
+    result = harness.turn("Generate stg_contracts.sql")
+    assert marker not in result.response
+    assert marker not in json.dumps(harness.logger.events)
+    assert marker not in harness.models.requests("author")[1]["messages"][-1].content
 
 
 def test_mixed_build_results_report_only_the_model_that_was_saved(harness):
@@ -437,7 +468,7 @@ def test_mixed_build_results_report_only_the_model_that_was_saved(harness):
     harness.models.script("analyst", spec(targets=targets, findings="Created both models successfully."))
 
     def author_reply(messages):
-        return AIMessage(SQL if "File: stg_good.sql" in messages[-1].content else "No SQL generated.")
+        return draft() if "File: stg_good.sql" in messages[-1].content else AIMessage("No SQL generated.")
 
     harness.models.script("author", *[author_reply] * 4)
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
@@ -452,14 +483,14 @@ def test_authors_fan_out_one_per_target_and_revisions_see_the_previous_version(h
     targets = [{"file_name": f"stg_{n}.sql", "purpose": n, "revision_of": ""} for n in ("a", "b")]
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec(targets=targets))
-    harness.models.script("author", SQL, SQL)
+    harness.models.script("author", draft(), draft())
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]),
                           call("ModelReview", approved=True, issues=[]))
     assert sorted(harness.turn("Generate both models").files) == ["stg_a.sql", "stg_b.sql"]
 
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec(targets=[{"file_name": "stg_a.sql", "purpose": "a", "revision_of": "stg_a.sql"}]))
-    harness.models.script("author", SQL)
+    harness.models.script("author", draft())
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     harness.turn("Add a WHERE clause to stg_a")
     assert "Previous version of this file" in harness.models.requests("author")[-1]["messages"][-1].content
@@ -471,7 +502,7 @@ def test_unsafe_output_names_are_rejected_at_submission(harness):
     harness.models.script("analyst",
                           spec(targets=[{"file_name": "../../etc/passwd", "purpose": "x", "revision_of": ""}]),
                           spec())
-    harness.models.script("author", SQL)
+    harness.models.script("author", draft())
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     result = harness.turn("Generate it")
     assert list(result.files) == ["stg_contracts.sql"]
@@ -538,7 +569,7 @@ def test_a_reply_to_a_pending_clarification_returns_to_generation(harness):
     assert harness.turn("Generate stg_contracts").paused
     harness.models.script("router", route("consult"))  # the model misreads the answer as a question
     harness.models.script("analyst", spec())
-    harness.models.script("author", SQL)
+    harness.models.script("author", draft())
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     result = harness.turn("Use {{ ref('in_scope_contracts') }}")
     assert result.route == "generate" and "stg_contracts.sql" in result.files
@@ -556,7 +587,7 @@ def test_a_pending_clarification_does_not_capture_a_change_of_topic(harness):
 def test_the_author_is_told_exactly_why_static_validation_failed(harness):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", "```sql\nselect my_udf(contract_id) from {{ ref('in_scope_contracts') }}\n```", SQL)
+    harness.models.script("author", draft("select my_udf(contract_id) from {{ ref('in_scope_contracts') }}"), draft())
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     assert "stg_contracts.sql" in harness.turn("Generate stg_contracts").files
     feedback = harness.models.requests("author")[1]["messages"][-1].content
