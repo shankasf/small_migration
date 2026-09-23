@@ -668,6 +668,50 @@ Each chat turn is one run of a LangGraph `StateGraph`; each chat is a thread.
 Every step is one of four kinds — **LLM**, **data**, **action** or **user input**
 (`interrupt()`). Full design: [docs/LangGraph_Agent_Architecture.md](docs/LangGraph_Agent_Architecture.md).
 
+### The twelve agents, and what each one is for
+
+```mermaid
+flowchart TD
+    U(["chat turn"])
+    U --> IG["Injection Guard<br/>is this message a manipulation attempt?<br/>fails closed"]
+    U --> SUM["Summarizer<br/>folds this chat's older turns<br/>into a running summary"]
+    U --> RT{"Router<br/>which specialist,<br/>and only one?"}
+
+    IG -- flagged --> STOP(["refused, nothing runs"])
+
+    RT -- consult --> CON["Migration Consultant<br/>answers migration questions;<br/>records standing instructions"]
+    RT -- repository --> REPO["Repository Agent<br/>reads and explains the<br/>connected GitHub repo"]
+    RT -- history --> HIST["History Agent<br/>finds earlier chats and files,<br/>and hands the file over"]
+    RT -- generate --> AN["Requirements Analyst<br/>turns the request into a build spec;<br/>pauses to ask when truly unclear"]
+    RT -- impact --> GJ["Grant Judge<br/>does this turn continue the<br/>analysis whose sources were confirmed?"]
+    RT -- out of scope --> STOP
+
+    AN --> AU["Model Author ×N<br/>writes one dbt model each,<br/>in parallel"]
+    AU --> RV["Model Reviewer<br/>12-point checklist"]
+    RV -- "defects · up to 2 revisions" --> AU
+
+    GJ --> INV["Evidence Investigator<br/>reads the confirmed sources<br/>line by line, cites every fact"]
+    INV --> RPT["Impact Reporter<br/>answers the user's questions<br/>in the order they asked"]
+
+    CON --> OUT(["screened reply + files"])
+    REPO --> OUT
+    HIST --> OUT
+    RV --> OUT
+    RPT --> OUT
+    SUM -.-> RT
+
+    classDef llm fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+    class IG,SUM,RT,CON,REPO,HIST,AN,GJ,AU,RV,INV,RPT llm
+    class STOP stop
+```
+
+Every agent is an LLM step. What surrounds them — screening, routing, recall,
+delivery, validation, publication — is deterministic code, so no model decides
+whether a guardrail applies, whose files are read, or what reaches the user.
+
+### The turn graph
+
 ```mermaid
 flowchart TD
     S(["chat turn"]) --> SI["screen_input · action<br/>guardrails in"]
