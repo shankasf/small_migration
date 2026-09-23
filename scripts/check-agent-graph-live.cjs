@@ -66,6 +66,24 @@ async function main() {
   }
   assert.doesNotMatch(saved.content, /\b(drop|delete|insert|update|merge|truncate)\b/i, 'Generated SQL is not read-only');
 
+  mark('generate an enrolment error model and verify the actual saved file');
+  const errors = await chat("Generate enrolment_errors.sql as a separate new dbt model. All requirements are here; " +
+    "the earlier policy mapping does not apply. Read only from {{ ref('enrolment') }}, which has enrolment_id NUMBER, " +
+    "nhi VARCHAR, date_from DATE and date_to DATE. Use config(materialized='table', tags=['Enrolment']). " +
+    "Return one row per violation, with error_name and all four input fields. Check duplicate date_from per enrolment_id, " +
+    "duplicate date_to per nhi, overlapping date ranges for the same nhi but different enrolment_id, " +
+    "date_from > date_to, and date_to > DATEADD(month, 11, date_from). Use descriptive error_name values and UNION ALL. " +
+    "Compare only non-null dates; ranges overlap inclusively. Give me the complete model SQL and save the file.");
+  assert.ok(errors.savedOutputs.some(output => /enrolment_errors\.sql$/.test(output.filename || output.name || '')),
+    'The enrolment error model was not delivered');
+  const errorFile = await prisma.generatedOutput.findFirstOrThrow({where: {sessionId, filename: {endsWith: 'enrolment_errors.sql'}}});
+  for (const field of ['error_name', 'enrolment_id', 'nhi', 'date_from', 'date_to']) {
+    assert.match(errorFile.content, new RegExp(`\\b${field}\\b`, 'i'), `Error-model field missing: ${field}`);
+  }
+  assert.match(errorFile.content, /ref\(\s*['"]enrolment['"]\s*\)/i, 'Error model uses the wrong source');
+  assert.match(errorFile.content, /union\s+all/i, 'Error model does not combine validation violations');
+  assert.doesNotMatch(errors.assistantMessage.content, /no file was saved|ONE fenced/i, 'Generation reported failure');
+
   mark('activity log, metering and scope');
   const calls = await prisma.aiActivityLog.findMany({where: {sessionId, createdAt: {gte: start}, step: 'tool.call'}, select: {tool: true}});
   assert.ok(calls.some(c => c.tool === 'generate_output'), 'The published file was not logged');
@@ -79,7 +97,7 @@ async function main() {
   await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); keyId = null; token = null;
   await prisma.session.delete({where: {id: sessionId}});
   console.log(JSON.stringify({agentGraphProductionCheck: 'passed', sessionId, model: expectedModel, provider: expectedProvider,
-    clarificationPause: 'passed', resume: 'passed', generation: 'passed', metering: 'passed'}));
+    clarificationPause: 'passed', resume: 'passed', generation: 'passed', enrolmentErrorModel: 'passed', metering: 'passed'}));
 }
 main().catch(error => {console.error(JSON.stringify({agentGraphProductionCheck: 'failed', phase, reason: failureReason(error)})); process.exitCode = 1;})
   .finally(async () => {if (keyId) await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); await prisma.$disconnect();});

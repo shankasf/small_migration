@@ -61,15 +61,18 @@ async def publish(state: MigrationState, runtime: Runtime[TurnContext]) -> dict[
     work = dict(state["migration"])
     drafts = dict(work.get("drafts") or {})
     outputs: dict[str, str] = {}
-    sections = [work["spec"]["findings"].strip()] if work["spec"]["findings"].strip() else []
+    # Findings describe the analyst's plan, not the outcome of the build. Once
+    # models were attempted, only the actual build results can claim success.
+    findings = work["spec"]["findings"].strip()
+    sections = [findings] if findings and not state.get("built") else []
     for item in sorted(state.get("built") or [], key=lambda built: built["file_name"]):
         name = item["file_name"]
         if guardrails.check_inbound("", {name: ""}).decision == "blocked":
             sections.append(f"### `{name}`\nThis file name was rejected by the data policy, so no file was saved.")
             continue
         if item["validation"].get("status") == "rejected":
-            sections.append(f"### `{name}`\nI could not produce a version of this model that passes static "
-                            "validation, so no file was saved: " + "; ".join(item["validation"].get("errors", [])))
+            sections.append(f"### `{name}`\nI could not produce a complete, valid model, so no file was saved: "
+                            + "; ".join(item["validation"].get("errors", [])))
             continue
         content = guardrails.check_outbound(item["sql"]).text
         async with ToolSpan(context.logger, "generate_output", {"file_name": name, "content": content}) as span:

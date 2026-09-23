@@ -3,6 +3,7 @@ import asyncio
 import json
 
 import pytest
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from fakes import FakeGateway, FakeRegistry, RecordingLogger, call
@@ -358,6 +359,93 @@ def test_sql_that_fails_static_validation_is_never_delivered(harness):
     feedback = harness.models.requests("author")[1]["messages"][-1].content
     assert "Static validation" in feedback
     assert not harness.models.requests("reviewer")
+
+
+@pytest.mark.parametrize("reply", [
+    SQL.removeprefix("```sql\n").removesuffix("\n```"),
+    "{{ config(materialized='table', tags=['Enrolment']) }}\n"
+    + SQL.removeprefix("```sql\n").removesuffix("\n```"),
+    SQL.replace("```sql", "```snowflake"),
+    SQL.replace("```sql", "```SQL ").replace("\n", "\r\n"),
+    SQL.replace("```sql", "```"),
+    SQL.replace("```", "~~~~"),
+    SQL.replace("```sql", "```jinja"),
+])
+def test_complete_sql_is_delivered_despite_markdown_variations(harness, reply):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", reply)
+    harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
+    result = harness.turn("Generate stg_contracts.sql")
+    assert "ifnull(amount, 0)" in result.files["stg_contracts.sql"]
+    assert "generate_output" in harness.logger.tools_called()
+    assert len(harness.models.requests("author")) == 1
+    assert len(harness.models.requests("reviewer")) == 1
+
+
+@pytest.mark.parametrize("reply,reason", [
+    ("Added a new dbt error model.", "did not return SQL content"),
+    ("```sql\n```", "did not return SQL content"),
+    (SQL.removesuffix("```"), "incomplete code block"),
+    (SQL + "\n```sql\nselect 2", "incomplete code block"),
+    (SQL + "\n" + SQL, "multiple code blocks"),
+    (AIMessage(SQL, response_metadata={"stopReason": "max_tokens"}), "output limit reached"),
+    (AIMessage(SQL, response_metadata={"finish_reason": "length"}), "output limit reached"),
+    (AIMessage(SQL, response_metadata={"status": "incomplete"}), "output limit reached"),
+])
+def test_incomplete_generation_retries_without_false_success_or_partial_files(harness, reply, reason):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec(findings="Added a new dbt error model enrolment_errors.sql."))
+    harness.models.script("author", *[reply] * 3)
+    result = harness.turn("Give me the model SQL")
+    assert not result.files
+    assert reason in result.response and "no file was saved" in result.response
+    assert "Added a new" not in result.response
+    assert "ONE fenced" not in result.response  # internal repair instructions stay internal
+    assert not harness.models.requests("reviewer")
+    assert "generate_output" not in harness.logger.tools_called()
+    assert len(harness.models.requests("author")) == 3
+    feedback = harness.models.requests("author")[1]["messages"][-1].content
+    assert reason in feedback and "ONE fenced" in feedback
+
+
+def test_missing_sql_recovers_on_retry_and_is_published(harness):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", "I added the model.", SQL)
+    harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
+    result = harness.turn("Give me the model SQL")
+    assert list(result.files) == ["stg_contracts.sql"]
+    assert "Saved as" in result.response and "no file was saved" not in result.response
+    assert len(harness.models.requests("author")) == 2
+
+
+def test_raw_sql_still_goes_through_safety_validation(harness):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", *["select 1; drop table contracts;"] * 3)
+    result = harness.turn("Generate stg_contracts.sql")
+    assert not result.files
+    assert "unsupported/unsafe" in result.response
+    assert not harness.models.requests("reviewer")
+
+
+def test_mixed_build_results_report_only_the_model_that_was_saved(harness):
+    targets = [{"file_name": name, "purpose": name, "revision_of": ""}
+               for name in ("stg_good.sql", "stg_bad.sql")]
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec(targets=targets, findings="Created both models successfully."))
+
+    def author_reply(messages):
+        return AIMessage(SQL if "File: stg_good.sql" in messages[-1].content else "No SQL generated.")
+
+    harness.models.script("author", *[author_reply] * 4)
+    harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
+    result = harness.turn("Generate both models")
+    assert list(result.files) == ["stg_good.sql"]
+    assert "Saved as `stg_good.sql`" in result.response
+    assert "no file was saved" in result.response
+    assert "Created both" not in result.response
 
 
 def test_authors_fan_out_one_per_target_and_revisions_see_the_previous_version(harness):
