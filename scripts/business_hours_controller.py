@@ -94,8 +94,9 @@ def set_gate(elb, closed):
     rule = elb.describe_rules(RuleArns=[arn])['Rules'][0]
     actual = next((c.get('PathPatternConfig', {}).get('Values', c.get('Values', []))
                    for c in rule['Conditions'] if c['Field'] == 'path-pattern'), [])
-    if actual != [path]:
-        elb.modify_rule(RuleArn=arn, Conditions=[{'Field': 'path-pattern', 'PathPatternConfig': {'Values': [path]}}])
+    host = next((c.get('HostHeaderConfig', {}).get('Values', []) for c in rule['Conditions'] if c['Field'] == 'host-header'), [])
+    if actual != [path] or host != ['migration-agent.uat.signify.net.nz']:
+        elb.modify_rule(RuleArn=arn, Conditions=[{'Field': 'host-header', 'HostHeaderConfig': {'Values': ['migration-agent.uat.signify.net.nz']}}, {'Field': 'path-pattern', 'PathPatternConfig': {'Values': [path]}}])
 
 
 def reconcile(desired, ecs, rds, elb):
@@ -182,6 +183,18 @@ def handler(event, context):
             lease, until = {}, None
         ssm.put_parameter(Name=os.environ['LEASE_PARAMETER'], Value=json.dumps(lease), Type='String', Overwrite=True)
     desired = plan(now, until)
+    # Testing shares RDS but never keeps production app services running. A read
+    # failure must not permit database shutdown under an unknown testing lease.
+    try:
+        testing = json.loads(ssm.get_parameter(Name='/circini/testing/lease')['Parameter']['Value'])
+        testing_until = datetime.fromisoformat(testing['until']) if testing.get('until') else None
+        desired['databaseOn'] = desired['databaseOn'] or bool(testing_until and now < testing_until)
+    except ssm.exceptions.ParameterNotFound:
+        pass
+    except Exception:
+        if operation != 'status' and not desired['publicOpen']:
+            set_gate(elb, closed=True)
+        raise
     if operation == 'status':
         services, db, healthy, ai_healthy = inspect(ecs, rds, elb)
         return {**desired, 'lease': lease, 'databaseStatus': db, 'targetsHealthy': healthy,

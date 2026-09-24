@@ -1,0 +1,132 @@
+name: Testing environment
+on:
+  push:
+    branches: [testing]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Deploy an existing image, start, stop, or inspect testing
+        type: choice
+        options: [start, stop, status, deploy]
+        default: start
+      minutes:
+        description: Automatic shutdown after this many minutes (5–180)
+        type: number
+        default: 120
+      image_tag:
+        description: 'Deploy only: existing sha-<commit> image tag; blank uses current production image'
+        type: string
+        required: false
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+permissions:
+  contents: read
+  pull-requests: read
+  id-token: write
+jobs:
+  ci:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+  build:
+    if: github.event_name == 'push'
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+    strategy:
+      matrix:
+        service: [frontend, backend, ai-service]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - id: tag
+        run: echo "tag=sha-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/circini-${{ matrix.service }}:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/circini-${{ matrix.service }}:${{ steps.tag.outputs.tag }}
+          severity: CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+  testing:
+    needs: [ci, build]
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || (needs.ci.result == 'success' && needs.build.result == 'success')) }}
+    runs-on: ubuntu-latest
+    # Reuse the existing restricted OIDC trust; this job only deploys circini-testing.
+    environment: production
+    timeout-minutes: 90
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
+      MINUTES: ${{ github.event_name == 'push' && 120 || inputs.minutes }}
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag || inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: python3 -m pip install PyYAML==6.0.2
+      - name: Verify environment isolation and lifecycle logic
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_*business_hours.py' -q
+          python3 -m unittest discover -s scripts/tests -p 'test_testing_environment.py' -q
+      - name: Configure AWS deployment identity
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Converge scoped testing deployment permissions
+        if: env.OPERATION == 'deploy'
+        run: |
+          aws cloudformation deploy --stack-name circini-github-oidc --template-file deploy/aws/github-oidc.yaml --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset
+      - name: Hold shared database during initial provisioning
+        if: env.OPERATION == 'deploy'
+        run: python3 scripts/manage-business-hours.py hold --owner "${{ github.run_id }}" --wait --pending-ok
+      - name: Refresh credentials after database startup
+        if: env.OPERATION == 'deploy'
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Finish startup and preserve independent production hours
+        if: env.OPERATION == 'deploy'
+        run: |
+          python3 scripts/manage-business-hours.py hold --owner "${{ github.run_id }}" --wait
+          python3 scripts/testing/update_shared_controller.py
+      - name: Deploy isolated testing resources and database
+        if: env.OPERATION == 'deploy'
+        run: python3 scripts/testing/manage.py deploy --image-tag "$IMAGE_TAG"
+      - name: Operate testing
+        if: env.OPERATION != 'deploy'
+        run: |
+          args=("$OPERATION" --minutes "$MINUTES")
+          if [ "$OPERATION" = start ] || [ "$OPERATION" = stop ]; then args+=(--wait); fi
+          python3 scripts/testing/manage.py "${args[@]}"
+      - name: Start testing after a deployment
+        if: env.OPERATION == 'deploy'
+        run: python3 scripts/testing/manage.py start --minutes "$MINUTES" --wait
+      - name: Smoke and authenticated testing checks
+        if: env.OPERATION == 'deploy' || env.OPERATION == 'start'
+        run: |
+          bash deploy/smoke-test.sh https://migration.callsphere.site
+          python3 scripts/testing/verify.py
+      - name: Report testing resource failures
+        if: failure() && env.OPERATION == 'deploy'
+        run: aws cloudformation describe-stack-events --stack-name circini-testing --query 'StackEvents[?contains(ResourceStatus, `FAILED`)].{Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}'
+      - name: Release provisioning hold
+        if: always() && env.OPERATION == 'deploy'
+        run: python3 scripts/manage-business-hours.py release --owner "${{ github.run_id }}" --optional

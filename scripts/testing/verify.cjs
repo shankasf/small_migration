@@ -1,0 +1,35 @@
+const assert=require('node:assert/strict');
+const {PrismaClient}=require(process.cwd()+'/node_modules/@prisma/client');
+const {generateApiKey}=require(process.cwd()+'/dist/services/apiKeys.js');
+const p=new PrismaClient();
+const base='https://migration.callsphere.site';
+const production='https://migration-agent.uat.signify.net.nz';
+let userId,keyId,sessionId,phase="configuration",httpStatus;
+(async()=>{
+ assert.equal(new URL(process.env.DATABASE_URL).pathname,'/circini_testing');
+ const config=await (await fetch(base+'/api/auth/config')).json();
+ assert.ok(process.env.PRODUCTION_CLIENT_ID);
+ assert.equal(config.mode,'oidc');assert.notEqual(config.oidc.clientId,process.env.PRODUCTION_CLIENT_ID);
+ phase='database';
+ const u=await p.user.create({data:{email:`testing-verification-${Date.now()}@example.invalid`,name:'Environment verification',role:'admin'}});userId=u.id;
+ const key=generateApiKey();keyId=(await p.apiKey.create({data:{userId,name:'Testing verification',prefix:key.prefix,keyHash:key.keyHash,expiresAt:new Date(Date.now()+600000)}})).id;
+ const headers={Authorization:`Bearer ${key.key}`,'Content-Type':'application/json'};
+ phase='cross-environment authorization';
+ const productionStatus=(await fetch(production+'/api/sessions',{headers})).status;
+ assert.ok([401,503].includes(productionStatus),'Testing key was accepted by production');
+ phase='session creation';
+ const create=await fetch(base+'/api/sessions',{method:'POST',headers,body:JSON.stringify({name:'Testing isolation verification'})});httpStatus=create.status;assert.equal(create.status,201,'Session creation failed');sessionId=(await create.json()).id;
+ assert.ok(await p.session.findUnique({where:{id:sessionId}}));
+ phase='AI chat';
+ const result=await fetch(base+`/api/chat/${sessionId}/messages`,{method:'POST',headers,body:JSON.stringify({message:'Reply with one short greeting. Do not use tools or generate files.',fileRefs:[]}),signal:AbortSignal.timeout(180000)});
+ httpStatus=result.status;assert.equal(result.status,200,'Testing AI request failed');
+ const data=await result.json();assert.ok(data.assistantMessage?.content?.length>0,'Testing AI did not reply');
+ phase='message persistence';
+ assert.ok(await p.message.count({where:{sessionId}})>=2);
+ console.log(JSON.stringify({testingLiveCheck:'passed',separateLoginClient:true,productionRejectedTestingKey:productionStatus===401,productionClosed:productionStatus===503,chatPersisted:true,aiReplied:true}));
+})().catch(e=>{console.error(JSON.stringify({testingLiveCheck:'failed',phase,httpStatus,reason:e instanceof assert.AssertionError&&!e.generatedMessage?e.message:(e.code||e.name)}));process.exitCode=1}).finally(async()=>{
+ if(sessionId)await p.session.delete({where:{id:sessionId}}).catch(()=>{});
+ if(keyId)await p.apiKey.delete({where:{id:keyId}}).catch(()=>{});
+ if(userId)await p.user.delete({where:{id:userId}}).catch(()=>{});
+ await p.$disconnect();
+});

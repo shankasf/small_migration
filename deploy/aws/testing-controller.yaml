@@ -1,0 +1,105 @@
+Resources:
+  Lease:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /circini/testing/lease
+      Type: String
+      Value: '{}'
+  ControllerLogs:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /aws/lambda/circini-testing
+  ControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: circini-testing-controller
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: testing-lifecycle
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: {Fn::Sub: 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/circini-testing:*'}
+              - Effect: Allow
+                Action: [ecs:DescribeServices, ecs:UpdateService]
+                Resource:
+                  - {Fn::Sub: 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/circini-demo/testing-frontend'}
+                  - {Fn::Sub: 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/circini-demo/testing-backend'}
+                  - {Fn::Sub: 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/circini-demo/testing-ai-service'}
+              - Effect: Allow
+                Action: ecs:ListTasks
+                Resource: '*'
+                Condition:
+                  ArnEquals:
+                    ecs:cluster: {Fn::Sub: 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/circini-demo'}
+              - Effect: Allow
+                Action: ecs:DescribeTasks
+                Resource: {Fn::Sub: 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/circini-demo/*'}
+              - Effect: Allow
+                Action: [rds:DescribeDBInstances, rds:StartDBInstance]
+                Resource: {Fn::Sub: 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:circini-demo'}
+              - Effect: Allow
+                Action: [elasticloadbalancing:DescribeTargetHealth, elasticloadbalancing:DescribeRules]
+                Resource: '*'
+              - Effect: Allow
+                Action: elasticloadbalancing:ModifyRule
+                Resource: {Ref: Gate}
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter]
+                Resource: {Fn::Sub: 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/testing/lease'}
+  Controller:
+    Type: AWS::Lambda::Function
+    DependsOn: ControllerLogs
+    Properties:
+      FunctionName: circini-testing
+      Runtime: python3.12
+      Handler: index.handler
+      Role: {Fn::GetAtt: [ControllerRole, Arn]}
+      Timeout: 55
+      MemorySize: 128
+      ReservedConcurrentExecutions: 1
+      Code: {ZipFile: __CONTROLLER_CODE__}
+      Environment:
+        Variables:
+          LEASE_PARAMETER: {Ref: Lease}
+          GATE_RULE: {Ref: Gate}
+          FRONTEND_TARGET: {Ref: FrontendTargetGroup}
+          BACKEND_TARGET: {Ref: BackendTargetGroup}
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: circini-testing-scheduler
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: scheduler.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-testing
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: {Fn::GetAtt: [Controller, Arn]}
+  Schedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: circini-testing
+      ScheduleExpression: rate(1 minute)
+      FlexibleTimeWindow: {Mode: 'OFF'}
+      Target:
+        Arn: {Fn::GetAtt: [Controller, Arn]}
+        RoleArn: {Fn::GetAtt: [SchedulerRole, Arn]}
+        Input: '{"operation":"reconcile"}'
+        RetryPolicy: {MaximumEventAgeInSeconds: 60, MaximumRetryAttempts: 2}

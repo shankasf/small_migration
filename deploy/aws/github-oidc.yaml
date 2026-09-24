@@ -119,8 +119,15 @@ Resources:
               - Effect: Allow
                 Action: ['s3:CreateBucket', 's3:GetBucket*', 's3:PutBucket*', 's3:GetEncryptionConfiguration', 's3:PutEncryptionConfiguration', 's3:GetLifecycleConfiguration', 's3:PutLifecycleConfiguration']
                 Resource:
+                  - !Sub 'arn:aws:s3:::circini-testing-audit-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:aws:s3:::circini-testing-agent-checkpoints-${AWS::AccountId}-${AWS::Region}'
                   - !Sub 'arn:aws:s3:::circini-audit-${AWS::AccountId}-${AWS::Region}'
                   - !Sub 'arn:aws:s3:::circini-agent-checkpoints-${AWS::AccountId}-${AWS::Region}'
+              - Effect: Allow
+                Action: s3:DeleteBucketPolicy
+                Resource:
+                  - !Sub 'arn:aws:s3:::circini-testing-audit-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:aws:s3:::circini-testing-agent-checkpoints-${AWS::AccountId}-${AWS::Region}'
               # LangGraph checkpoint table for the AI service.
               - Effect: Allow
                 Action: ['dynamodb:CreateTable', 'dynamodb:DeleteTable', 'dynamodb:DescribeTable', 'dynamodb:UpdateTable',
@@ -135,17 +142,23 @@ Resources:
               - Effect: Allow
                 Action: ['lambda:CreateFunction', 'lambda:GetFunction', 'lambda:GetFunctionConfiguration', 'lambda:UpdateFunctionCode', 'lambda:UpdateFunctionConfiguration', 'lambda:DeleteFunction', 'lambda:InvokeFunction', 'lambda:PutFunctionConcurrency', 'lambda:DeleteFunctionConcurrency', 'lambda:GetFunctionConcurrency', 'lambda:PutFunctionEventInvokeConfig', 'lambda:GetFunctionEventInvokeConfig', 'lambda:DeleteFunctionEventInvokeConfig', 'lambda:TagResource', 'lambda:UntagResource', 'lambda:ListTags']
                 Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:circini-testing'
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:circini-testing:*'
                   - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:circini-business-hours'
                   - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:circini-business-hours:*'
               - Effect: Allow
                 Action: ['scheduler:CreateSchedule', 'scheduler:GetSchedule', 'scheduler:UpdateSchedule', 'scheduler:DeleteSchedule', 'scheduler:TagResource', 'scheduler:UntagResource', 'scheduler:ListTagsForResource']
-                Resource: !Sub 'arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/circini-business-hours'
+                Resource:
+                  - !Sub 'arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/circini-business-hours'
+                  - !Sub 'arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/circini-testing'
               - Effect: Allow
                 Action: ['scheduler:GetScheduleGroup']
                 Resource: !Sub 'arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/default'
               - Effect: Allow
                 Action: ['ssm:GetParameter', 'ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:AddTagsToResource', 'ssm:RemoveTagsFromResource', 'ssm:ListTagsForResource']
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/business-hours/lease'
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/business-hours/lease'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/testing/lease'
               - Effect: Allow
                 Action: ['sqs:CreateQueue', 'sqs:GetQueueUrl', 'sqs:GetQueueAttributes', 'sqs:SetQueueAttributes', 'sqs:DeleteQueue', 'sqs:TagQueue', 'sqs:UntagQueue', 'sqs:ListQueueTags']
                 Resource: !Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:circini-business-hours-failures'

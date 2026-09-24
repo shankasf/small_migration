@@ -31,6 +31,9 @@ Resources:
         Ref: ListenerArn
       Priority: 1
       Conditions:
+      - Field: host-header
+        HostHeaderConfig:
+          Values: [migration-agent.uat.signify.net.nz]
       - Field: path-pattern
         PathPatternConfig:
           Values:
@@ -132,6 +135,10 @@ Resources:
             - ssm:PutParameter
             Resource:
               Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/business-hours/lease
+          - Effect: Allow
+            Action: ssm:GetParameter
+            Resource:
+              Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/circini/testing/lease
           - Effect: Allow
             Action:
             - cloudwatch:DescribeAlarms

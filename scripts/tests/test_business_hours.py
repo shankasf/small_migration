@@ -20,17 +20,20 @@ class AWS:
         self.healthy = healthy
         self.one_off = one_off
         self.path = hours.OPEN_PATH
+        self.host = ['migration-agent.uat.signify.net.nz']
         self.tasks = ([dict(taskArn='ai-task', group='service:ai-service', desiredStatus='RUNNING',
                            lastStatus='RUNNING', containers=[dict(name='ai-service', lastStatus='RUNNING', healthStatus='HEALTHY')])]
                       if running else [])
         if one_off:
             self.tasks.append(dict(taskArn='maintenance', group='family:maintenance', desiredStatus='RUNNING', lastStatus='PENDING'))
+    def get_parameter(self, **kwargs): return {'Parameter':{'Value':'{}'}}
     def describe_services(self, **kwargs): return {'services': self.services, 'failures': []}
     def describe_db_instances(self, **kwargs): return {'DBInstances': [{'DBInstanceStatus': self.database}]}
     def describe_target_health(self, **kwargs): return {'TargetHealthDescriptions': [{'TargetHealth': {'State': 'healthy' if self.healthy else 'unhealthy'}}]}
-    def describe_rules(self, **kwargs): return {'Rules': [{'Conditions': [{'Field': 'path-pattern', 'PathPatternConfig': {'Values': [self.path]}}]}]}
+    def describe_rules(self, **kwargs): return {'Rules': [{'Conditions': [{'Field':'host-header','HostHeaderConfig':{'Values':self.host}}, {'Field': 'path-pattern', 'PathPatternConfig': {'Values': [self.path]}}]}]}
     def modify_rule(self, **kwargs):
-        self.path = kwargs['Conditions'][0]['PathPatternConfig']['Values'][0]
+        self.path = next(c['PathPatternConfig']['Values'][0] for c in kwargs['Conditions'] if c['Field']=='path-pattern')
+        self.host = next(c['HostHeaderConfig']['Values'] for c in kwargs['Conditions'] if c['Field']=='host-header')
         self.events.append(('gate', self.path))
     def update_service(self, **kwargs): self.events.append(('ecs', kwargs['service'], kwargs['desiredCount']))
     def start_db_instance(self, **kwargs): self.events.append(('start_db',))
