@@ -821,6 +821,11 @@ function AiLogRow({ log }: { log: AdminAiLog }) {
         </span>
       </button>
 
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-6 pb-3 font-mono text-[11px] text-faint">
+        <span className="break-all select-text">Chat / session ID: {log.sessionId}</span>
+        {log.turnId && <span className="break-all select-text">Turn ID: {log.turnId}</span>}
+      </div>
+
       {open && detail && (
         <pre className="mx-6 mb-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-hairline/70 bg-obsidian/40 px-3 py-2 font-mono text-[11.5px] leading-relaxed text-muted">
           {detail}
@@ -830,7 +835,9 @@ function AiLogRow({ log }: { log: AdminAiLog }) {
   );
 }
 
-function AiLogsTab() {
+function AiLogsTab({ initialSessionId }: { initialSessionId: string }) {
+  const [sessionId, setSessionId] = useState(initialSessionId);
+  const [sessionInput, setSessionInput] = useState(initialSessionId);
   const [logs, setLogs] = useState<AdminAiLog[]>([]);
   const [facets, setFacets] = useState<AdminAiLogFacets | null>(null);
   const [totals, setTotals] = useState<AdminAiLogPage['totals'] | null>(null);
@@ -847,8 +854,8 @@ function AiLogsTab() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
 
-  const filtersRef = useRef({ userId, step, tool, search });
-  filtersRef.current = { userId, step, tool, search };
+  const filtersRef = useRef({ userId, sessionId, step, tool, search });
+  filtersRef.current = { userId, sessionId, step, tool, search };
   const pausedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -858,7 +865,7 @@ function AiLogsTab() {
     setLoading(true);
     try {
       const [page, facetData] = await Promise.all([
-        adminGetAiLogs({ userId, step, tool, q: search, days, limit: 500 }),
+        adminGetAiLogs({ userId, sessionId, step, tool, q: search, days, limit: 500 }),
         adminGetAiLogFacets(days),
       ]);
       setLogs(page.entries);
@@ -869,7 +876,7 @@ function AiLogsTab() {
     } finally {
       setLoading(false);
     }
-  }, [userId, step, tool, search, days]);
+  }, [userId, sessionId, step, tool, search, days]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -891,9 +898,10 @@ function AiLogsTab() {
       if (pausedRef.current) return;
       const f = filtersRef.current;
       if (f.userId && log.userId !== f.userId) return;
+      if (f.sessionId && log.sessionId !== f.sessionId) return;
       if (f.step && log.step !== f.step) return;
       if (f.tool && log.tool !== f.tool) return;
-      if (f.search && !`${log.message} ${log.detail || ''}`.toLowerCase().includes(f.search.toLowerCase())) return;
+      if (f.search && !`${log.sessionId} ${log.turnId || ''} ${log.message} ${log.detail || ''}`.toLowerCase().includes(f.search.toLowerCase())) return;
       setLogs(prev => [...prev.slice(-999), log]);
     });
     return () => {
@@ -944,6 +952,17 @@ function AiLogsTab() {
             <option value={7}>7 days</option>
             <option value={30}>30 days</option>
           </select>
+          <input
+            aria-label="Filter logs by chat or session ID"
+            className="field !h-8 !py-0 !px-2 !text-xs w-64"
+            placeholder="Chat / session ID (Enter)…"
+            value={sessionInput}
+            onChange={e => setSessionInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') setSessionId(sessionInput.trim()); }}
+          />
+          {sessionId && <button className="text-xs text-brass-bright" onClick={() => {
+            setSessionId(''); setSessionInput('');
+          }}>Clear chat filter</button>}
           <input
             className="field !h-8 !py-0 !px-2 !text-xs w-44"
             placeholder="Search logs (Enter)…"
@@ -1019,7 +1038,7 @@ function RatingChip({ rating }: { rating: FeedbackRating }) {
   );
 }
 
-function FeedbackTab() {
+function FeedbackTab({ onViewLogs }: { onViewLogs: (sessionId: string) => void }) {
   const navigate = useNavigate();
   const [data, setData] = useState<AdminFeedbackPage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1062,7 +1081,7 @@ function FeedbackTab() {
         <div className="flex flex-wrap items-center gap-2">
           <input
             className="field !h-8 !py-0 !px-2 !text-xs w-48"
-            placeholder="Search notes and responses (Enter)…"
+            placeholder="Search notes, responses or IDs…"
             value={queryInput}
             onChange={e => setQueryInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') setQuery(queryInput.trim()); }}
@@ -1149,6 +1168,8 @@ function FeedbackTab() {
                 </ResponsiveCell>
                 <ResponsiveCell label="Response" valueClassName="break-words text-xs text-muted">
                   {entry.response}
+                  <div className="mt-2 break-all font-mono text-[11px] text-faint">Chat / session ID: {entry.sessionId}</div>
+                  <div className="mt-1 break-all font-mono text-[11px] text-faint">Message ID: {entry.messageId}</div>
                   <button
                     onClick={() => navigate(`/chats/${entry.sessionId}`)}
                     className="mt-1 inline-flex items-center gap-1 text-[11px] text-brass-bright transition-colors hover:underline"
@@ -1156,6 +1177,8 @@ function FeedbackTab() {
                     <ExternalLink className="h-3 w-3" />
                     {entry.sessionName || 'Open thread'}
                   </button>
+                  <button className="mt-1 block text-[11px] text-brass-bright hover:underline"
+                    onClick={() => onViewLogs(entry.sessionId)}>View chat logs</button>
                 </ResponsiveCell>
               </tr>
             ))}
@@ -1175,6 +1198,7 @@ function FeedbackTab() {
 // ---------------------------------------------------------------- Shell
 
 export default function AdminPage({ currentUser }: AdminPageProps) {
+  const [logSessionId, setLogSessionId] = useState('');
   const isAdmin = currentUser.role === 'admin';
   const [tab, setTab] = useState<Tab>(isAdmin ? 'overview' : 'security');
   const [days, setDays] = useState(30);
@@ -1205,10 +1229,12 @@ export default function AdminPage({ currentUser }: AdminPageProps) {
 
         {tab === 'overview' && isAdmin && <OverviewTab days={days} setDays={setDays} />}
         {tab === 'users' && isAdmin && <UsersTab currentUser={currentUser} />}
-        {tab === 'feedback' && isAdmin && <FeedbackTab />}
+        {tab === 'feedback' && isAdmin && <FeedbackTab onViewLogs={sessionId => {
+          setLogSessionId(sessionId); setTab('ailogs');
+        }} />}
         {tab === 'security' && <SecurityTab days={days} />}
         {tab === 'audit' && <AuditTab />}
-        {tab === 'ailogs' && <AiLogsTab />}
+        {tab === 'ailogs' && <AiLogsTab initialSessionId={logSessionId} />}
       </div>
     </div>
   );

@@ -287,6 +287,8 @@ router.get('/ailogs', requireRole('admin', 'auditor'), async (req: AuthedRequest
             OR: [
               { message: { contains: q, mode: 'insensitive' as const } },
               { detail: { contains: q, mode: 'insensitive' as const } },
+              { sessionId: { contains: q, mode: 'insensitive' as const } },
+              { turnId: { contains: q, mode: 'insensitive' as const } },
             ],
           }
         : {}),
@@ -442,6 +444,8 @@ router.get('/feedback', requireRole('admin'), async (req: AuthedRequest, res: Re
             OR: [
               { note: { contains: q, mode: 'insensitive' as const } },
               { message: { content: { contains: q, mode: 'insensitive' as const } } },
+              { sessionId: { contains: q, mode: 'insensitive' as const } },
+              { messageId: { contains: q, mode: 'insensitive' as const } },
             ],
           }
         : {}),

@@ -98,11 +98,29 @@ async function main() {
   assert.ok(usage.length >= 2 && usage.every(u => u.model === expectedModel && u.provider === expectedProvider && u.totalTokens > 0),
     'Every turn must be metered against the configured model');
 
+  mark('feedback and logs can be traced by chat ID');
+  const rating = await fetch(`${base}/api/feedback/messages/${errors.assistantMessage.id}`, {
+    method: 'PUT', headers: {'content-type': 'application/json', Authorization: `Bearer ${token}`},
+    body: JSON.stringify({rating: 'up', note: 'Synthetic chat ID verification'}),
+  });
+  assert.equal(rating.status, 200, 'Synthetic feedback was not accepted');
+  for (const [path, query] of [['feedback', sessionId], ['feedback', errors.assistantMessage.id], ['ailogs', sessionId]]) {
+    const response = await fetch(`${base}/api/admin/${path}?q=${encodeURIComponent(query)}`, {
+      headers: {Authorization: `Bearer ${token}`},
+    });
+    assert.equal(response.status, 200, 'Admin chat ID lookup failed');
+    const page = await response.json();
+    assert.ok(page.entries.length > 0 && page.entries.every(entry => entry.sessionId === sessionId),
+      'ID search did not return only the synthetic chat');
+    if (path === 'feedback') assert.ok(page.entries.some(entry => entry.messageId === errors.assistantMessage.id),
+      'Feedback omitted the rated message ID');
+  }
+
   await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); keyId = null; token = null;
   await prisma.session.delete({where: {id: sessionId}});
   console.log(JSON.stringify({agentGraphProductionCheck: 'passed', sessionId, model: expectedModel, provider: expectedProvider,
     clarificationPause: 'passed', resume: 'passed', generation: 'passed', enrolmentErrorModel: 'passed',
-    structuredDrafts: 'passed', metering: 'passed'}));
+    structuredDrafts: 'passed', chatIdTraceability: 'passed', metering: 'passed'}));
 }
 main().catch(error => {console.error(JSON.stringify({agentGraphProductionCheck: 'failed', phase, reason: failureReason(error)})); process.exitCode = 1;})
   .finally(async () => {if (keyId) await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); await prisma.$disconnect();});
