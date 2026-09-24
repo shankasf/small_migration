@@ -6,7 +6,7 @@ import pytest
 
 from fakes import FakeGateway, call
 from test_turn_graph import Harness, route
-from workflow.agents.impact.graph import count_substantive_reads
+from workflow.agents.impact.graph import command_issues, count_substantive_reads
 from workflow.agents.impact.schemas import Answer, ImpactReport
 from workflow.prompts import read
 
@@ -279,11 +279,20 @@ def test_open_questions_in_the_dossier_send_the_investigator_back_once(harness):
     assert len(harness.gateway.requests) == 2
 
 
-def test_a_seed_change_report_without_dbt_seed_is_sent_back_once(harness):
+@pytest.mark.parametrize("first_answer", [
+    "`dbt snapshot --select drugs_snapshot`",
+    "`dbt seed --select drugs`, then `dbt snapshot --select drugs_snapshot`",
+    "`dbt run --select land_drugs`, then `dbt seed --select drugs`, then `dbt snapshot --select drugs_snapshot`",
+])
+def test_a_seed_change_report_with_missing_stages_is_sent_back_once(harness, first_answer):
+    harness.gateway.replies["evidence:uploads"] = {
+        "filename": "snapshots/drugs_snapshot.sql",
+        "content": "{% snapshot drugs_snapshot %}\nselect * from {{ ref('land_drugs') }}\n{% endsnapshot %}",
+    }
     seed_change = dossier(change_kind="seed_or_source_data", changed_file="seeds/pharma/drugs.csv")
     harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
                                                parameters="{}"), seed_change)
-    harness.models.script("reporter", report(), report(answers=[
+    harness.models.script("reporter", report(answers=[{"question": "Which commands?", "answer": first_answer}]), report(answers=[
         {"question": "Which commands?", "answer": "`dbt seed --select drugs`, then `dbt run --select land_drugs`, "
          "then `dbt snapshot --select drugs_snapshot`, then `dbt build --select stg_dispensing rep_dispensing`."}]))
     result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
@@ -292,6 +301,29 @@ def test_a_seed_change_report_without_dbt_seed_is_sent_back_once(harness):
     assert "`dbt seed --select drugs`" in first_brief
     assert "source() reference" in first_brief and "proves it selects all intended nodes" in first_brief
     assert len(harness.models.requests("reporter")) == 2
+    assert "dbt run --select land_drugs" in result.response
+
+
+def test_repeated_command_omission_withholds_commands_but_preserves_analysis(harness):
+    harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
+                                               parameters="{}"),
+                          dossier(change_kind="seed_or_source_data", changed_file="seeds/pharma/drugs.csv"))
+    harness.models.script("reporter", report(), report())
+    result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
+    assert "customer_mart" in result.response
+    assert "withheld the commands" in result.response
+    assert "dbt build" not in result.response and "dbt compile" not in result.response
+    assert len(harness.models.requests("reporter")) == 2
+
+
+def test_snapshot_command_check_uses_read_refs_and_ignores_commented_refs():
+    evidence = [{"locator": "snapshots/drugs_snapshot.sql", "content":
+                 "L1| {% snapshot drugs_snapshot %}\nL2| -- {{ ref('old_model') }}\n"
+                 "L3| select * from {{ ref('land_drugs') }}\nL4| {% endsnapshot %}"}]
+    fields = report(answers=[{"question": "Commands", "answer":
+                    "`dbt seed --select drugs`; `dbt run --select land_drugs`; "
+                    "`dbt snapshot --select drugs_snapshot`"}], critical_warnings="", gaps="").tool_calls[0]["args"]
+    assert command_issues(ImpactReport.model_validate(fields), evidence) == []
 
 
 @pytest.mark.parametrize("message", ["check GitHub too", "use Snowflake metadata as well", "switch to the dbt Cloud run"])

@@ -180,6 +180,47 @@ def command_requirement(dossier: dict[str, Any]) -> str:
             f"selection coverage once. Never claim these commands were executed.")
 
 
+DBT_COMMAND = re.compile(r"\bdbt\s+(seed|run|build|snapshot)\b([^`\n;]*)")
+REF = re.compile(r"\bref\(\s*['\"]([\w-]+)['\"]\s*\)")
+SNAPSHOT = re.compile(r"\{%[-+]?\s*snapshot\s+([\w-]+)")
+
+
+def command_issues(report: ImpactReport, evidence: list[dict[str, str]]) -> list[str]:
+    """Catch omitted stages in explicit seed plans, without pretending to run dbt ls.
+
+    Only literal snapshot refs read this turn are used. This is an omission check,
+    not a dbt selector engine: graph/wildcard coverage still needs a manifest or ls.
+    """
+    commands = list(DBT_COMMAND.finditer(report.markdown()))
+    if not any(command[1] == "seed" for command in commands):
+        return ["The command answer omits `dbt seed`."]
+
+    def selects(command: re.Match, name: str) -> bool:
+        selection = re.search(r"--select\s+(.+?)(?=\s+--|$)", command[2])
+        return bool(selection and re.search(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])",
+                                             selection[1]))
+
+    issues = []
+    for item in evidence:
+        # Ignore SQL comments, including line numbers added by the evidence reader.
+        sql = re.sub(r"(?m)^L\d+\|\s?", "", item["content"])
+        sql = re.sub(r"\{#.*?#\}|/\*.*?\*/|--[^\n]*", "", sql, flags=re.DOTALL)
+        snapshot = SNAPSHOT.search(sql)
+        if not snapshot:
+            continue
+        for index, command in enumerate(commands):
+            if command[1] not in ("snapshot", "build") or not selects(command, snapshot[1]):
+                continue
+            seed_index = next((n for n in range(index - 1, -1, -1) if commands[n][1] == "seed"), -1)
+            for parent in dict.fromkeys(REF.findall(sql)):
+                if not any(previous[1] in ("run", "build") and selects(previous, parent)
+                           for previous in commands[seed_index + 1:index]) or seed_index < 0:
+                    issues.append(f"Before snapshot `{snapshot[1]}`, explicitly rebuild `{parent}` with "
+                                  f"`dbt run --select {parent}` (or a separate named build stage). "
+                                  f"Evidence: {item['locator']} reads ref('{parent}').")
+    return list(dict.fromkeys(issues))
+
+
 class ImpactReporter:
     name = "report"
 
@@ -199,10 +240,21 @@ class ImpactReporter:
         ]
         model = context.models.get(ModelRole.REPORTER)
         report = await invoke_structured(model, ImpactReport, messages)
-        if requirement and "dbt seed" not in report.markdown():
-            # Evaluator-optimizer: a data change reported without loading the seed is sent back once.
+        issues = command_issues(report, context.workspace.evidence) if requirement else []
+        if issues:
+            # One bounded repair; a repeated omission must not escape as a recommendation.
             report = await invoke_structured(model, ImpactReport, [*messages, HumanMessage(
-                "Your command answer omits `dbt seed`. " + requirement + " Return the complete report again.")])
+                "Correct these command omissions:\n" + "\n".join(issues) + "\n" + requirement
+                + "\nYour previous report:\n" + report.markdown() + "\nReturn the complete report again.")])
+            if command_issues(report, context.workspace.evidence):
+                withheld = "I could not verify a complete rebuild sequence from the available evidence, so I have withheld the commands."
+                for answer in report.answers:
+                    if DBT_COMMAND.search(answer.answer):
+                        answer.answer = withheld
+                if DBT_COMMAND.search(report.critical_warnings):
+                    report.critical_warnings = ""
+                report.gaps = withheld if DBT_COMMAND.search(report.gaps) else "\n".join(
+                    part for part in (report.gaps, withheld) if part)
         return Command(update={"response": report.markdown()}, goto="finish")
 
 
