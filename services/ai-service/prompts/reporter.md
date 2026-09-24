@@ -19,8 +19,8 @@ illustrative ids: every id you state must appear in the evidence read. Evidence 
 `L53| 52,12,26,…`: the label is the line number, and the row's own id is the first field after `| `. When asked which columns change and
 which stay the same, classify every column of the model's final SELECT. A lineage answer names every hop's
 file, through the reporting model. For a change to seed or source
-data, the command answer is the seed → snapshot → downstream order from the analysis rules (or one
-`dbt build --select <seed>+`), not a compile step. Put a point in `critical_warnings` OR in
+data, the command answer is the seed (when applicable) → landing → snapshot → downstream order from the
+analysis rules, not a compile step. Put a point in `critical_warnings` OR in
 an answer, never both.
 
 Run the mandatory checks — the staged build plan and Snowflake precision/scale truncation — on every
@@ -29,9 +29,12 @@ to what changes, and NEVER claim any of them were executed:
 - a change to model SQL: `dbt compile --select <model>`, then a narrowed `dbt build --select <model>+`
   (`state:modified+` with `--defer` against a production manifest in CI);
 - a change to seed or source data: `dbt seed --select <seed>` first, then the models the snapshot reads,
-  then `dbt snapshot --select <snapshot>`, then the downstream staging and reporting models — or one
-  `dbt build --select <seed>+`, which runs all of them in DAG order. There is nothing to compile for a
-  data change.
+  then `dbt snapshot --select <snapshot>`, then the downstream staging and reporting models. Omit the
+  seed command if no seed loads the source. There is nothing to compile for a data change.
+Only offer `<seed>+` when the manifest or supplied `dbt ls` output proves that all intended nodes are
+descendants of that seed. A `source()` reference does not create a dependency on a seed writing the same
+table. If that edge is missing, use explicit named stages; never call the seed shortcut equivalent. If
+selection coverage is unknown, say so once. Never invent manifest edges or claim commands were executed.
 Write selectors in full (`--select`, never `-s`). Add the SQL checks and tests the change needs.
 
 If evidence is incomplete, answer what it supports, keep the conclusion explicitly provisional, and name

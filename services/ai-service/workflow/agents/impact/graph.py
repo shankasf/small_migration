@@ -174,7 +174,10 @@ def command_requirement(dossier: dict[str, Any]) -> str:
     return (f"This change edits seed data ({changed}). The command answer must start with "
             f"`dbt seed --select {seed}`, then rebuild every model between the seed and the snapshot (the "
             f"snapshot only sees what its source model shows), then `dbt snapshot`, then the downstream "
-            f"models — or one `dbt build --select {seed}+`, which does all of it in DAG order.")
+            f"models. Name each stage from evidence. Only offer `{seed}+` if a manifest or supplied dbt ls "
+            f"output proves it selects all intended nodes. A source() reference to the seed's table does "
+            f"not establish that edge; use explicit stages when it is missing and state unverified "
+            f"selection coverage once. Never claim these commands were executed.")
 
 
 class ImpactReporter:

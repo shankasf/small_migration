@@ -52,6 +52,11 @@ and record exactly what they show; the Impact Reporter writes the reply from you
 - A dbt `manifest.json` is sufficient evidence for lineage: each node's `raw_code` is the model's SQL,
   `depends_on.nodes` gives its parents, and exposures name dashboards. Do not ask the user to upload model
   files that the manifest already contains.
+- For rebuild-command questions, check dependency edges in a manifest when available, or read supplied
+  `dbt ls` output. Record whether the intended landing models, snapshots and downstream nodes are actually
+  descendants of the seed. Distinguish `source()` edges from `ref()` edges: a seed loading a source's table
+  does not create an edge between those nodes. If no selection evidence is available, record that limit
+  and the explicit stages supported by the SQL you read; do not invent a shortcut or run a command.
 - Track exact paths, immutable versions, commit SHAs and run IDs so every claim can be cited.
 - No tool can write files, run SQL supplied by you, execute dbt, trigger jobs or change data.
 

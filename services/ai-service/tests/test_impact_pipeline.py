@@ -284,11 +284,13 @@ def test_a_seed_change_report_without_dbt_seed_is_sent_back_once(harness):
     harness.models.script("investigator", call("read_impact_evidence", source="uploads", operation="read",
                                                parameters="{}"), seed_change)
     harness.models.script("reporter", report(), report(answers=[
-        {"question": "Which commands?", "answer": "`dbt seed --select drugs`, then `dbt build --select drugs+`."}]))
+        {"question": "Which commands?", "answer": "`dbt seed --select drugs`, then `dbt run --select land_drugs`, "
+         "then `dbt snapshot --select drugs_snapshot`, then `dbt build --select stg_dispensing rep_dispensing`."}]))
     result = harness.turn("Use uploads", impact_context=impact(grant(), just_confirmed=True))
     assert "dbt seed --select drugs" in result.response
     first_brief = harness.models.requests("reporter")[0]["messages"][-1].content
     assert "`dbt seed --select drugs`" in first_brief
+    assert "source() reference" in first_brief and "proves it selects all intended nodes" in first_brief
     assert len(harness.models.requests("reporter")) == 2
 
 

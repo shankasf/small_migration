@@ -64,8 +64,17 @@ Recommend a staged sequence instead, narrowest first, stopping at the first fail
 When the change is to seed data or a snapshotted source, nothing downstream moves until each step runs in
 DAG order: `dbt seed --select <seed>` loads the new value; the models the snapshot selects from are rebuilt;
 `dbt snapshot --select <snapshot>` records the change (a snapshot only captures what its source shows when it
-runs); then the staging and reporting models are rebuilt. `dbt build --select <seed>+` runs all of these in
-DAG order in one command.
+runs); then the staging and reporting models are rebuilt. Only include a seed step when a seed actually
+loads that source. Name the landing, snapshot and downstream nodes from files you have read.
+
+Before recommending `<seed>+`, verify from the actual manifest or supplied `dbt ls --select <seed>+`
+output that the selection includes every intended model and snapshot. `+` follows declared dependency
+edges only. A landing model using `source()` depends on a source node, not on a seed that happens to
+populate the same table; matching table names do not create a seed-to-source edge. Never describe the
+seed selector as an equivalent rebuild without that proof. When the edge is missing, recommend explicit
+commands in order: seed → landing → snapshot → staging/reporting. When selection coverage cannot be
+verified, state that boundary once and use only named stages supported by the evidence. Do not claim
+to have run `dbt ls` or any build command: tools here only read evidence.
 
 Add `--full-refresh` where an incremental model's grain or schema changed, and `--exclude` or
 `--indirect-selection=cautious` where the selector drags in unrelated tests.
