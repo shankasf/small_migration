@@ -9,6 +9,14 @@ import time
 from urllib.request import urlopen
 from urllib.error import HTTPError
 from manage import aws, invoke
+
+
+def get(url):
+    """GET one of this check's fixed public endpoints; only https is ever opened."""
+    assert url.startswith('https://'), 'Only https endpoints are checked'
+    return urlopen(url, timeout=15)  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+
+
 production=['frontend','backend','ai-service']
 def prod():return {s['serviceName']:(s['taskDefinition'],s['desiredCount'],s['runningCount']) for s in aws('ecs','describe-services','--cluster','circini-demo','--services',*production)['services']}
 before=prod()
@@ -23,9 +31,9 @@ while True:
     time.sleep(20)
 assert prod()==before,'Production changed during testing shutdown'
 try:
-    urlopen('https://migration.callsphere.site/',timeout=15)
+    get('https://migration.callsphere.site/')
     raise AssertionError('Expired testing environment remained publicly open')
 except HTTPError as error:
     assert error.code==503
-assert urlopen('https://migration-agent.uat.signify.net.nz/api/health',timeout=15).status==200
+assert get('https://migration-agent.uat.signify.net.nz/api/health').status==200
 print(json.dumps({'testingAutomaticShutdown':'passed','productionUnchanged':True,'runningTestingTasks':0}),flush=True)
