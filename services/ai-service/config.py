@@ -76,6 +76,13 @@ class Settings:
     MAX_CONCURRENT_TURNS: int = int(os.getenv("MAX_CONCURRENT_TURNS", "4"))
     MAX_PARALLEL_TASKS: int = int(os.getenv("MAX_PARALLEL_TASKS", "3"))
     MAX_REVISIONS: int = int(os.getenv("MAX_REVISIONS", "2"))
+    # Output cap for the model author. Reasoning tokens count against it, and
+    # GPT-OSS 120B on Bedrock allows at most 16K output tokens per call, so a
+    # long model is recovered by reasoning less (AUTHOR_RECOVERY_EFFORT on the
+    # attempt after a cut-off reply), not by raising this past the model limit.
+    AUTHOR_MAX_TOKENS: int = int(os.getenv("AUTHOR_MAX_TOKENS", "16000"))
+    AUTHOR_REASONING_EFFORT: str = os.getenv("AUTHOR_REASONING_EFFORT", "medium").strip().lower()
+    AUTHOR_RECOVERY_EFFORT: str = os.getenv("AUTHOR_RECOVERY_EFFORT", "low").strip().lower()
 
     # --- LangSmith tracing (content is redacted with the guardrail patterns) ---
     AGENT_TRACING_ENABLED: bool = _bool("AGENT_TRACING_ENABLED", "false")

@@ -26,6 +26,8 @@ class ModelRole(StrEnum):
     CONSULTANT = "consultant"
     ANALYST = "analyst"
     AUTHOR = "author"
+    # The author after a reply was cut off at the output limit: same cap, less reasoning.
+    AUTHOR_RECOVERY = "author_recovery"
     REVIEWER = "reviewer"
     INVESTIGATOR = "investigator"
     REPORTER = "reporter"
@@ -47,7 +49,10 @@ PROFILES: dict[ModelRole, ModelProfile] = {
     ModelRole.REPOSITORY: ModelProfile(max_tokens=8000),
     ModelRole.CONSULTANT: ModelProfile(max_tokens=16000),
     ModelRole.ANALYST: ModelProfile(max_tokens=16000),
-    ModelRole.AUTHOR: ModelProfile(max_tokens=16000, reasoning_effort="medium"),
+    ModelRole.AUTHOR: ModelProfile(max_tokens=settings.AUTHOR_MAX_TOKENS,
+                                   reasoning_effort=settings.AUTHOR_REASONING_EFFORT),
+    ModelRole.AUTHOR_RECOVERY: ModelProfile(max_tokens=settings.AUTHOR_MAX_TOKENS,
+                                            reasoning_effort=settings.AUTHOR_RECOVERY_EFFORT),
     ModelRole.REVIEWER: ModelProfile(max_tokens=8000, reasoning_effort="medium"),
     # Impact analysis is multi-hop reasoning over code and data: medium effort.
     ModelRole.INVESTIGATOR: ModelProfile(max_tokens=16000, reasoning_effort="medium"),

@@ -125,7 +125,7 @@ class RecordingLogger:
         self.events: list[dict[str, Any]] = []
 
     async def log(self, step, message, log_type="info", data=None, **fields):
-        self.events.append({"step": step, "message": message, "type": log_type, **fields})
+        self.events.append({"step": step, "message": message, "type": log_type, "data": data, **fields})
 
     async def tool_call(self, name, args):
         self.events.append({"step": "tool.call", "tool": name, "args": args})

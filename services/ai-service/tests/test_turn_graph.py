@@ -385,10 +385,22 @@ def test_typed_sql_draft_is_validated_and_delivered(harness, reply):
     assert len(harness.models.requests("reviewer")) == 1
 
 
+# Author-only retry instructions; none of them may ever reach the user.
+INTERNAL_NUDGES = ("Call ModelDraft", "Do not call any function", "Your previous reply", "Reason briefly",
+                   "ONE fenced", "code block, then")
+
+
+def author_events(harness):
+    return [e["data"] for e in harness.logger.events if e["step"] == "model.author"]
+
+
+def truncated(reply=None):
+    return (reply or draft()).model_copy(update={"response_metadata": {"stopReason": "max_tokens"}})
+
+
 @pytest.mark.parametrize("reply,reason", [
-    ("Added a new dbt error model.", "did not return a structured SQL draft"),
-    (SQL, "did not return a structured SQL draft"),
-    ("```sql\n" + SQL + "\n```", "did not return a structured SQL draft"),
+    ("Added a new dbt error model.", "replied without any SQL"),
+    ("", "replied without any SQL"),
     (call("ModelDraft", notes="Created the model"), "invalid structured draft"),
     (call("ModelDraft", sql=""), "invalid structured draft"),
     (call("ModelDraft", sql="  \n  "), "invalid structured draft"),
@@ -398,41 +410,143 @@ def test_typed_sql_draft_is_validated_and_delivered(harness, reply):
     (call("ModelDraft", sql=SQL, notes=["a note"]), "invalid structured draft"),
     (call("ModelDraft", sql=SQL, notes="x" * 4001), "invalid structured draft"),
     (call("ModelDraft", sql=SQL, filename="unexpected.sql"), "invalid structured draft"),
-    (draft("```sql\n" + SQL + "\n```"), "invalid structured draft"),
     (calls(("ModelDraft", {"sql": SQL}), ("ModelDraft", {"sql": SQL})), "exactly one SQL draft"),
     (call("generate_output", sql=SQL), "exactly one SQL draft"),
-    (AIMessage(SQL, invalid_tool_calls=[{"name": "ModelDraft", "args": '{"sql":', "id": "bad"}]),
+    (AIMessage("", invalid_tool_calls=[{"name": "ModelDraft", "args": '{"sql":', "id": "bad"}]),
      "malformed structured output"),
-    (draft().model_copy(update={"response_metadata": {"stopReason": "max_tokens"}}), "output limit reached"),
-    (draft().model_copy(update={"response_metadata": {"finish_reason": "length"}}), "output limit reached"),
-    (draft().model_copy(update={"response_metadata": {"status": "incomplete"}}), "output limit reached"),
+    ("```sql\n" + SQL + "\n", "incomplete code block"),
+    ("```sql\nwith a as (select 1)\n```\n\n```sql\n" + SQL + "\n```", "several code blocks"),
+    ("```python\nprint('model')\n```", "unexpected format"),
 ])
-def test_invalid_generation_retries_without_false_success_or_partial_files(harness, reply, reason):
+def test_unusable_replies_retry_differently_and_never_leak_retry_instructions(harness, reply, reason):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec(findings="Added a new dbt error model enrolment_errors.sql."))
     harness.models.script("author", *[reply] * 3)
     result = harness.turn("Give me the model SQL")
     assert not result.files
     assert reason in result.response and "no file was saved" in result.response
+    assert "I tried 3 times" in result.response and "Please ask again" in result.response
     assert "Added a new" not in result.response
-    assert "Call ModelDraft" not in result.response
+    assert not any(nudge in result.response for nudge in INTERNAL_NUDGES)
     assert not harness.models.requests("reviewer")
     assert "generate_output" not in harness.logger.tools_called()
-    assert len(harness.models.requests("author")) == 3
-    feedback = harness.models.requests("author")[1]["messages"][-1].content
-    assert reason in feedback and "Call ModelDraft exactly once" in feedback
+    requests = harness.models.requests("author")
+    assert len(requests) == 3
+    # No attempt is a resend of the last one: the capture mode alternates and
+    # the brief names the concrete reason the previous reply was unusable.
+    assert [r["tools"] for r in requests] == [["ModelDraft"], [], ["ModelDraft"]]
+    assert "Do not call any function" in requests[1]["messages"][0].content
+    assert reason in requests[1]["messages"][-1].content
+    assert "Do not call any function this time" in requests[1]["messages"][-1].content
+    assert "Call ModelDraft exactly once" in requests[2]["messages"][-1].content
+    events = author_events(harness)
+    assert [e["captureMode"] for e in events] == ["tool", "text", "tool"]
+    assert all(reason in e["failure"] and e["capturedFrom"] == "" for e in events)
+
+
+LEAD_IN = "Here is the complete enrolment_errors model.\n\n"
+
+
+@pytest.mark.parametrize("reply,source", [
+    (SQL, "raw_sql"),
+    ("{{ config(materialized='table') }}\n" + SQL, "raw_sql"),
+    (LEAD_IN + SQL, "raw_sql"),
+    ("```sql\n" + SQL + "\n```", "fenced_block"),
+    (LEAD_IN + "```sql\n" + SQL + "\n```\nKeeps all fields.", "fenced_block"),
+    ("```snowflake\n" + SQL + "\n```", "fenced_block"),
+    ("```SQL title=enrolment_errors.sql\n" + SQL + "\n```", "fenced_block"),
+    ("````sql\n" + SQL + "\n````", "fenced_block"),
+    ("~~~\n" + SQL + "\n~~~", "fenced_block"),
+    (json.dumps({"sql": SQL, "notes": ""}), "json_text"),
+    ("```json\n" + json.dumps({"sql": SQL}) + "\n```", "json_text"),
+    (draft("```sql\n" + SQL + "\n```"), "tool_call"),
+    (AIMessage(SQL, invalid_tool_calls=[{"name": "ModelDraft", "args": '{"sql":', "id": "bad"}]), "raw_sql"),
+])
+def test_sql_without_a_function_call_is_captured_validated_and_delivered(harness, reply, source):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", reply)
+    harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
+    result = harness.turn("Give me the model SQL")
+    content = result.files["stg_contracts.sql"]
+    assert content.rstrip().endswith(SQL) and "```" not in content and "~~~" not in content
+    assert "Here is the complete" not in content and '"sql"' not in content
+    assert "Saved as" in result.response and "no file was saved" not in result.response
+    assert len(harness.models.requests("author")) == 1 and len(harness.models.requests("reviewer")) == 1
+    assert author_events(harness)[0]["capturedFrom"] == source
+
+
+def test_prose_notes_around_captured_sql_are_kept_as_notes(harness):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", LEAD_IN + "```sql\n" + SQL + "\n```\nAmount keeps its 2-decimal scale.")
+    harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
+    result = harness.turn("Give me the model SQL")
+    assert "Here is the complete" not in result.files["stg_contracts.sql"]
+    assert "Amount keeps its 2-decimal scale." in result.response
 
 
 @pytest.mark.parametrize("bad_reply", ["I added the model.", call("ModelDraft", sql=None)])
 def test_invalid_draft_recovers_on_retry_and_is_published(harness, bad_reply):
     harness.models.script("router", route("generate"))
     harness.models.script("analyst", spec())
-    harness.models.script("author", bad_reply, draft())
+    harness.models.script("author", bad_reply, "```sql\n" + SQL + "\n```")
     harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
     result = harness.turn("Give me the model SQL")
     assert list(result.files) == ["stg_contracts.sql"]
     assert "Saved as" in result.response and "no file was saved" not in result.response
     assert len(harness.models.requests("author")) == 2
+    assert harness.models.requests("author")[1]["tools"] == []
+    assert [e["capturedFrom"] for e in author_events(harness)] == ["", "fenced_block"]
+
+
+def test_a_cut_off_reply_is_retried_with_less_reasoning_and_published(harness):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", truncated())
+    harness.models.script("author_recovery", draft())
+    harness.models.script("reviewer", call("ModelReview", approved=True, issues=[]))
+    result = harness.turn("Give me the model SQL")
+    assert list(result.files) == ["stg_contracts.sql"] and "no file was saved" not in result.response
+    assert len(harness.models.requests("author")) == 1
+    retry = harness.models.requests("author_recovery")
+    assert len(retry) == 1 and retry[0]["tools"] == ["ModelDraft"]
+    assert "cut off at the output limit" in retry[0]["messages"][-1].content
+    first, second = author_events(harness)
+    assert (first["stopReason"], first["truncated"], first["reasoningEffort"]) == ("max_tokens", True, "medium")
+    assert (second["truncated"], second["reasoningEffort"]) == (False, "low")
+    stops = [e.get("stop_reason") for e in harness.logger.events if e["step"] == "llm.call"]
+    assert "max_tokens" in stops
+
+
+def test_reviewer_revisions_after_a_cut_off_keep_the_low_reasoning_author(harness):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", truncated())
+    harness.models.script("author_recovery", draft("select contract_id from {{ ref('in_scope_contracts') }}"),
+                          draft())
+    harness.models.script("reviewer", call("ModelReview", approved=False, issues=["amount is missing"]),
+                          call("ModelReview", approved=True, issues=[]))
+    result = harness.turn("Give me the model SQL")
+    assert "amount" in result.files["stg_contracts.sql"]
+    assert len(harness.models.requests("author")) == 1 and len(harness.models.requests("author_recovery")) == 2
+
+
+@pytest.mark.parametrize("metadata", [{"stopReason": "max_tokens"}, {"finish_reason": "length"},
+                                      {"status": "incomplete"}])
+def test_every_attempt_cut_off_tells_the_user_plainly(harness, metadata):
+    reply = draft().model_copy(update={"response_metadata": metadata})
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec(findings="Added a new dbt error model enrolment_errors.sql."))
+    harness.models.script("author", reply)
+    harness.models.script("author_recovery", reply, reply)
+    result = harness.turn("Give me the model SQL")
+    assert not result.files and "no file was saved" in result.response
+    assert "output limit" in result.response and "shorter retry with less reasoning" in result.response
+    assert "Please ask again" in result.response
+    assert not any(nudge in result.response for nudge in INTERNAL_NUDGES)
+    assert len(harness.models.requests("author")) == 1 and len(harness.models.requests("author_recovery")) == 2
+    assert not harness.models.requests("reviewer")
 
 
 @pytest.mark.parametrize("sql", [

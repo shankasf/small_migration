@@ -98,6 +98,24 @@ def test_llm_call_reports_token_counts():
     assert event["detail"]["reasoningTokens"] == 128
 
 
+def test_llm_call_records_why_the_model_stopped():
+    logger = CapturingLogger(turn_id="turn-7", user_id="user-42")
+    run(logger.llm_call(model="openai.gpt-oss-120b-1:0", provider="bedrock", input_tokens=20000,
+                        output_tokens=16000, stop_reason="max_tokens"))
+    event = logger.events[0]
+    assert event["detail"]["stopReason"] == "max_tokens"
+    assert "stopped: max_tokens" in event["message"]
+
+
+def test_stop_reason_is_read_from_every_provider_shape():
+    from workflow.usage import stop_reason
+    assert stop_reason({"stopReason": "max_tokens"}) == "max_tokens"
+    assert stop_reason({"finish_reason": "length"}) == "length"
+    assert stop_reason({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}) == "max_output_tokens"
+    assert stop_reason({"stopReason": "end_turn", "metrics": {}}) == "end_turn"
+    assert stop_reason({}) == ""
+
+
 # ---------------------------------------------------------------------------
 # Payload safety — previews are bounded and filtered
 # ---------------------------------------------------------------------------

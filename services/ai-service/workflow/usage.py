@@ -3,6 +3,8 @@
 Every completed model call emits one ``llm.call`` activity event with its own
 token counts, and the totals are returned to the backend for the turn rollup.
 The backend's aggregates count only the rollup, so the two never double count.
+Each event also records why the call stopped, so a reply cut off at the
+output limit is visible in the activity log.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ class UsageMeter(AsyncCallbackHandler):
     async def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
         started = self._started.pop(run_id, time.monotonic())
         usage = _usage(response)
+        metadata = _metadata(response)
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
         details = usage.get("output_token_details") or {}
@@ -44,6 +47,7 @@ class UsageMeter(AsyncCallbackHandler):
                     input_tokens=input_tokens, output_tokens=output_tokens,
                     duration_ms=int((time.monotonic() - started) * 1000),
                     reasoning_tokens=int(details.get("reasoning") or 0), cached_tokens=int(cached),
+                    stop_reason=stop_reason(metadata),
                 )
             except Exception as exc:  # pragma: no cover - telemetry never breaks a turn
                 print(f"[USAGE] Could not log model call: {type(exc).__name__}")
@@ -57,3 +61,22 @@ def _usage(response: LLMResult) -> dict[str, Any]:
             if usage:
                 return dict(usage)
     return dict((response.llm_output or {}).get("usage") or {})
+
+
+def stop_reason(metadata: dict[str, Any]) -> str:
+    """The provider's reason a call ended (Bedrock ``stopReason``, OpenAI ``finish_reason``)."""
+    for key in ("stopReason", "stop_reason", "finish_reason"):
+        if metadata.get(key):
+            return str(metadata[key])
+    if metadata.get("status") == "incomplete":
+        return str((metadata.get("incomplete_details") or {}).get("reason") or "incomplete")
+    return ""
+
+
+def _metadata(response: LLMResult) -> dict[str, Any]:
+    for generations in response.generations:
+        for generation in generations:
+            message = getattr(generation, "message", None)
+            if getattr(message, "response_metadata", None):
+                return dict(message.response_metadata)
+    return {}

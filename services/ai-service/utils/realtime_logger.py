@@ -150,6 +150,7 @@ class RealtimeLogger:
         duration_ms: Optional[int] = None,
         reasoning_tokens: int = 0,
         cached_tokens: int = 0,
+        stop_reason: str = "",
     ):
         """One model call completed — the unit tokens and cost are billed on."""
         await self.log(
@@ -157,6 +158,7 @@ class RealtimeLogger:
             message=(
                 f"Model call {model} — {input_tokens:,} in / {output_tokens:,} out"
                 + (f", {reasoning_tokens:,} reasoning" if reasoning_tokens else "")
+                + (f", stopped: {stop_reason}" if stop_reason else "")
             ),
             log_type="usage",
             model=model,
@@ -171,6 +173,7 @@ class RealtimeLogger:
                 "outputTokens": output_tokens,
                 "reasoningTokens": reasoning_tokens,
                 "cachedTokens": cached_tokens,
+                "stopReason": stop_reason,
             },
         )
 
