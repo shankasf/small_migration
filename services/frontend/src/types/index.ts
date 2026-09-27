@@ -40,6 +40,8 @@ export type FeedbackRating = 'up' | 'down';
 /** The signed-in reader's own rating of one response. Never another user's. */
 export interface MessageFeedback {
   rating: FeedbackRating;
+  /** 1-5 rubric grade; only ever set alongside a thumbs up. */
+  score: number | null;
   note: string | null;
   createdAt: string;
   updatedAt: string;
@@ -193,6 +195,7 @@ export interface SecuritySummary {
 export interface AdminFeedbackEntry {
   id: string;
   rating: FeedbackRating;
+  score: number | null;
   note: string | null;
   createdAt: string;
   updatedAt: string;
@@ -215,6 +218,11 @@ export interface AdminFeedbackPage {
     withNotes: number;
     /** Share of rated responses marked useful, or null before anything is rated. */
     satisfaction: number | null;
+    /** Thumbs up that carry a rubric grade. */
+    scored: number;
+    /** Mean rubric grade, or null before anything is graded. */
+    averageScore: number | null;
+    scoreDistribution: Array<{ score: number; count: number }>;
   };
   users: Array<{
     userId: string | null;

@@ -204,6 +204,7 @@ model MessageFeedback {
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   sessionId String
   rating    String // up | down
+  score     Int? // 1-5 rubric score; only ever set alongside a thumbs up
   note      String?  @db.Text // guardrail-screened before it is stored
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

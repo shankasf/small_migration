@@ -3,6 +3,7 @@ import { ThumbsUp, ThumbsDown, MessageSquarePlus, Check, Loader2 } from 'lucide-
 import type { FeedbackRating, MessageFeedback as Feedback } from '../types';
 import { rateMessage, clearMessageRating, apiErrorMessage } from '../services/api';
 import { cx } from './ui';
+import { RUBRIC, rubricLevel } from '../feedbackRubric';
 
 const MAX_NOTE_CHARS = 2000;
 
@@ -17,12 +18,16 @@ const RATING_LABELS: Record<FeedbackRating, string> = {
 };
 
 /**
- * Per-response rating: two thumbs and, only if the reader wants to say more,
- * a note. The thumb saves on click and stands on its own — the note is never
- * required, never blocks the rating, and can be added, edited or removed later.
+ * Per-response rating: two thumbs, a 1-5 rubric grade for a thumbs up, and,
+ * only if the reader wants to say more, a note. The thumb saves on click and
+ * stands on its own — neither the grade nor the note is ever required, and
+ * both can be added, changed or removed later.
  */
 export default function MessageFeedback({ messageId, initial }: MessageFeedbackProps) {
   const [rating, setRating] = useState<FeedbackRating | null>(initial?.rating ?? null);
+  const [score, setScore] = useState<number | null>(initial?.score ?? null);
+  const [hoverScore, setHoverScore] = useState<number | null>(null);
+  const [scoreSaving, setScoreSaving] = useState(false);
   const [note, setNote] = useState<string | null>(initial?.note ?? null);
   const [draft, setDraft] = useState('');
   const [composerOpen, setComposerOpen] = useState(false);
@@ -44,13 +49,20 @@ export default function MessageFeedback({ messageId, initial }: MessageFeedbackP
     confirmTimer.current = setTimeout(() => setConfirmed(false), 2600);
   };
 
+  // Thumb and score writes are serialised: a score save racing a thumb change
+  // could otherwise land last and resurrect a thumbs up the reader withdrew.
+  const busy = saving || scoreSaving;
+
   const choose = async (next: FeedbackRating) => {
-    if (saving) return;
-    const previous = { rating, note };
+    if (busy) return;
+    const previous = { rating, note, score };
     const clearing = rating === next;
     setError(null);
     setSaving(true);
     setRating(clearing ? null : next);
+    // The grade belongs to the thumbs up: withdrawing it or switching to a
+    // thumbs down takes the grade with it (the server does the same).
+    if (clearing || next !== 'up') setScore(null);
     if (clearing) {
       setNote(null);
       setComposerOpen(false);
@@ -61,6 +73,7 @@ export default function MessageFeedback({ messageId, initial }: MessageFeedbackP
       } else {
         const saved = await rateMessage(messageId, next);
         setNote(saved.note);
+        setScore(saved.score);
         flashConfirmation();
         if (next === 'down' && !saved.note && !invited.current) {
           invited.current = true;
@@ -71,9 +84,30 @@ export default function MessageFeedback({ messageId, initial }: MessageFeedbackP
     } catch (err) {
       setRating(previous.rating);
       setNote(previous.note);
+      setScore(previous.score);
       setError(apiErrorMessage(err, 'Could not save your rating'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Clicking the current grade again withdraws it; the thumbs up stays.
+  const chooseScore = async (next: number) => {
+    if (rating !== 'up' || busy) return;
+    const previous = score;
+    const value = score === next ? null : next;
+    setError(null);
+    setScoreSaving(true);
+    setScore(value);
+    try {
+      const saved = await rateMessage(messageId, 'up', undefined, value);
+      setScore(saved.score);
+      if (value !== null) flashConfirmation();
+    } catch (err) {
+      setScore(previous);
+      setError(apiErrorMessage(err, 'Could not save your score'));
+    } finally {
+      setScoreSaving(false);
     }
   };
 
@@ -102,7 +136,7 @@ export default function MessageFeedback({ messageId, initial }: MessageFeedbackP
   const thumbCls = (value: FeedbackRating) =>
     cx(
       'flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
-      'disabled:opacity-60',
+      'aria-disabled:opacity-60',
       rating === value
         ? value === 'up'
           ? 'border-success/40 bg-success/10 text-success'
@@ -118,7 +152,7 @@ export default function MessageFeedback({ messageId, initial }: MessageFeedbackP
             key={value}
             type="button"
             onClick={() => choose(value)}
-            disabled={saving}
+            aria-disabled={busy}
             aria-pressed={rating === value}
             aria-label={RATING_LABELS[value]}
             title={rating === value ? 'Undo this rating' : RATING_LABELS[value]}
@@ -127,6 +161,44 @@ export default function MessageFeedback({ messageId, initial }: MessageFeedbackP
             {value === 'up' ? <ThumbsUp className="h-3.5 w-3.5" /> : <ThumbsDown className="h-3.5 w-3.5" />}
           </button>
         ))}
+
+        {rating === 'up' && (
+          <div
+            role="group"
+            aria-label="Rubric score, 1 to 5"
+            className="ml-1 flex items-center gap-1"
+            onMouseLeave={() => setHoverScore(null)}
+          >
+            {RUBRIC.map(level => {
+              const active = (hoverScore ?? score ?? 0) >= level.score;
+              return (
+                <button
+                  key={level.score}
+                  type="button"
+                  aria-pressed={score === level.score}
+                  aria-label={`${level.score} of 5 — ${level.label}: ${level.description}`}
+                  title={score === level.score ? 'Remove this score' : `${level.score} — ${level.label}: ${level.description}`}
+                  aria-disabled={busy}
+                  onClick={() => void chooseScore(level.score)}
+                  onMouseEnter={() => setHoverScore(level.score)}
+                  onFocus={() => setHoverScore(level.score)}
+                  onBlur={() => setHoverScore(null)}
+                  className={cx(
+                    'flex h-6 w-6 items-center justify-center rounded-md border font-mono text-[11px] tabular-nums transition-colors aria-disabled:opacity-60',
+                    active
+                      ? 'border-success/40 bg-success/10 text-success'
+                      : 'border-hairline text-faint hover:text-ink',
+                  )}
+                >
+                  {level.score}
+                </button>
+              );
+            })}
+            <span className="ml-1 min-w-[5.5rem] text-xs text-muted" aria-live="polite">
+              {rubricLevel(hoverScore ?? score)?.label ?? 'Score it (optional)'}
+            </span>
+          </div>
+        )}
 
         {rating && !composerOpen && (
           <button

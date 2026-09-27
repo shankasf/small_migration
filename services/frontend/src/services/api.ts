@@ -87,16 +87,19 @@ export async function sendMessage(sessionId: string, message: string, fileRefs?:
 // Response feedback
 /**
  * Rate an assistant response. `note` is optional and independent of the thumb:
- * omit the key to leave an existing note alone, pass '' to clear it.
+ * omit the key to leave an existing note alone, pass '' to clear it. `score`
+ * (1-5, thumbs up only) works the same way: omit to keep it, null to clear it.
  */
 export async function rateMessage(
   messageId: string,
   rating: FeedbackRating,
   note?: string,
+  score?: number | null,
 ): Promise<MessageFeedback> {
   const response = await api.put(`/feedback/messages/${messageId}`, {
     rating,
     ...(note === undefined ? {} : { note }),
+    ...(score === undefined ? {} : { score }),
   });
   return response.data;
 }
@@ -389,6 +392,8 @@ export async function adminGetAiLogFacets(days = 7): Promise<AdminAiLogFacets> {
 
 export interface AdminFeedbackFilters {
   rating?: FeedbackRating | '';
+  /** One rubric level ('1'..'5'), or 'none' for ungraded thumbs up. */
+  score?: string;
   userId?: string;
   q?: string;
   withNote?: boolean;

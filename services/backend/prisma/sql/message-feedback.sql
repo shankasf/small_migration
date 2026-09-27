@@ -32,3 +32,7 @@ CREATE INDEX IF NOT EXISTS "MessageFeedback_userId_createdAt_idx" ON "MessageFee
 
 -- CreateIndex
 CREATE INDEX IF NOT EXISTS "MessageFeedback_sessionId_idx" ON "MessageFeedback"("sessionId");
+
+-- Rubric score (1-5) that grades a thumbs up. Nullable and additive so tasks
+-- still running the previous image keep reading and writing the table.
+ALTER TABLE "MessageFeedback" ADD COLUMN IF NOT EXISTS "score" INTEGER;

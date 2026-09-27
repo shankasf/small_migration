@@ -295,6 +295,9 @@ jobs:
       - name: Verify live chat history search
         run: python3 scripts/verify-chat-search-production.py
 
+      - name: Verify response feedback rubric
+        run: python3 scripts/verify-feedback-production.py
+
       - name: Verify head and impact analysis agents
         env:
           EXPECTED_LLM_MODEL: ${{ vars.LLM_PROVIDER == 'bedrock' && (vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0') || (vars.OPENAI_MODEL || 'gpt-6-astra') }}

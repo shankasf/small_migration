@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
 import { screenPayload } from '../services/aiService.js';
 import { recordAudit, recordDeniedAudit } from '../services/audit.js';
-import { FEEDBACK_RATINGS, MAX_NOTE_CHARS, toFeedbackDto } from '../services/feedback.js';
+import { FEEDBACK_RATINGS, MAX_NOTE_CHARS, MAX_SCORE, MIN_SCORE, isRubricScore, toFeedbackDto } from '../services/feedback.js';
 
 const router = Router();
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
@@ -39,19 +39,26 @@ async function authorizeRating(req: AuthedRequest, res: Response) {
   return { prisma, user, message };
 }
 
-// Rate an assistant response, optionally with a note. Both halves are
-// idempotent: re-rating replaces the thumb, and `note` is only touched when
-// the caller sends the key — so saving a note never disturbs the rating and
-// switching the thumb never drops the note.
+// Rate an assistant response, optionally with a rubric score and a note. All
+// three are idempotent: re-rating replaces the thumb, and `score` / `note` are
+// only touched when the caller sends the key — so saving a note never disturbs
+// the rating and switching the thumb never drops the note. The score is the
+// exception by design: it grades a thumbs up, so switching to down clears it.
 router.put('/messages/:messageId', requireWriteAccess, async (req: AuthedRequest, res: Response, next) => {
   try {
     const authorized = await authorizeRating(req, res);
     if (!authorized) return;
     const { prisma, user, message } = authorized;
-    const { rating, note } = req.body || {};
+    const { rating, note, score } = req.body || {};
 
     if (!FEEDBACK_RATINGS.includes(rating)) {
       return res.status(400).json({ error: `Rating must be one of: ${FEEDBACK_RATINGS.join(', ')}` });
+    }
+    if (score !== undefined && score !== null && !isRubricScore(score)) {
+      return res.status(400).json({ error: `Score must be a whole number from ${MIN_SCORE} to ${MAX_SCORE}` });
+    }
+    if (isRubricScore(score) && rating !== 'up') {
+      return res.status(400).json({ error: 'A rubric score can only accompany a thumbs up' });
     }
     if (note !== undefined && note !== null && typeof note !== 'string') {
       return res.status(400).json({ error: 'Note must be text' });
@@ -67,17 +74,17 @@ router.put('/messages/:messageId', requireWriteAccess, async (req: AuthedRequest
     const screened = trimmed ? await screenPayload(trimmed) : null;
     const data = {
       rating,
+      ...(rating !== 'up' ? { score: null } : score === undefined ? {} : { score }),
       ...(note === undefined ? {} : { note: screened ? screened.message : null }),
     };
 
-    const existing = await prisma.messageFeedback.findFirst({
-      where: { messageId: message.id, userId: user.id },
+    // One upsert on the (message, user) key: two saves racing for the first
+    // rating (a thumb and its score) can no longer both try to create the row.
+    const row = await prisma.messageFeedback.upsert({
+      where: { messageId_userId: { messageId: message.id, userId: user.id } },
+      update: data,
+      create: { messageId: message.id, userId: user.id, sessionId: message.sessionId, score: null, note: null, ...data },
     });
-    const row = existing
-      ? await prisma.messageFeedback.update({ where: { id: existing.id }, data })
-      : await prisma.messageFeedback.create({
-          data: { messageId: message.id, userId: user.id, sessionId: message.sessionId, note: null, ...data },
-        });
 
     await recordAudit(prisma, {
       userId: user.id,
@@ -87,6 +94,8 @@ router.put('/messages/:messageId', requireWriteAccess, async (req: AuthedRequest
       severity: screened?.guardrail?.decision === 'redacted' ? 'warning' : 'info',
       detail: JSON.stringify({
         decision: screened?.guardrail?.decision || 'allow',
+        rating: row.rating,
+        ...(row.score ? { score: row.score } : {}),
         ...(screened?.guardrail?.reasons ? { reasons: screened.guardrail.reasons } : {}),
       }),
       ip: req.ip,

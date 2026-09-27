@@ -5,7 +5,7 @@ import { AuthedRequest, requireRole } from '../middleware/auth.js';
 import { retentionPolicy } from '../services/retention.js';
 import { securityStatus, cancelUserRuns, userMemory, forgetUserMemory } from '../services/aiService.js';
 import { recordAudit } from '../services/audit.js';
-import { FEEDBACK_RATINGS } from '../services/feedback.js';
+import { FEEDBACK_RATINGS, isRubricScore } from '../services/feedback.js';
 
 const router = Router();
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
@@ -450,9 +450,16 @@ router.get('/feedback', requireRole('admin'), async (req: AuthedRequest, res: Re
           }
         : {}),
     };
-    const where = { ...scope, ...(FEEDBACK_RATINGS.includes(rating) ? { rating } : {}) };
+    // `score` narrows to one rubric level, or to thumbs up nobody graded.
+    const scoreParam = req.query.score as string | undefined;
+    const scoreFilter = scoreParam === 'none'
+      ? { rating: 'up', score: null }
+      : isRubricScore(Number(scoreParam)) ? { score: Number(scoreParam) } : {};
+    // Filters intersect: "not helpful" + "not scored" is empty, rather than
+    // one filter's `rating` key silently overwriting the other's.
+    const where = { AND: [scope, scoreFilter, FEEDBACK_RATINGS.includes(rating) ? { rating } : {}] };
 
-    const [rows, splits, notes, byUser] = await Promise.all([
+    const [rows, splits, notes, byUser, scores] = await Promise.all([
       prisma.messageFeedback.findMany({
         where,
         include: {
@@ -470,6 +477,9 @@ router.get('/feedback', requireRole('admin'), async (req: AuthedRequest, res: Re
         by: ['userId', 'rating'],
         where: { createdAt: { gte: since } },
         _count: { _all: true },
+      }),
+      prisma.messageFeedback.groupBy({
+        by: ['score'], where: { ...scope, rating: 'up', score: { not: null } }, _count: { _all: true },
       }),
     ]);
 
@@ -505,6 +515,13 @@ router.get('/feedback', requireRole('admin'), async (req: AuthedRequest, res: Re
       : [];
     const userById = new Map(users.map(u => [u.id, u]));
 
+    const scoreDistribution = [1, 2, 3, 4, 5].map(level => ({
+      score: level,
+      count: scores.find(s => s.score === level)?._count._all || 0,
+    }));
+    const scored = scoreDistribution.reduce((sum, d) => sum + d.count, 0);
+    const scoreTotal = scoreDistribution.reduce((sum, d) => sum + d.score * d.count, 0);
+
     const up = splits.find(s => s.rating === 'up')?._count._all || 0;
     const down = splits.find(s => s.rating === 'down')?._count._all || 0;
     const perUser = new Map<string, { userId: string | null; email: string; name: string | null; up: number; down: number }>();
@@ -525,7 +542,7 @@ router.get('/feedback', requireRole('admin'), async (req: AuthedRequest, res: Re
     await recordAudit(prisma, {
       userId: req.user!.id,
       action: 'admin.feedback_view',
-      detail: JSON.stringify({ filters: { rating, userId, q: q ? 'set' : undefined }, limit }),
+      detail: JSON.stringify({ filters: { rating, score: scoreParam, userId, q: q ? 'set' : undefined }, limit }),
       ip: req.ip,
     });
 
@@ -538,6 +555,10 @@ router.get('/feedback', requireRole('admin'), async (req: AuthedRequest, res: Re
         withNotes: notes,
         // Share of rated responses marked useful; null until anything is rated.
         satisfaction: up + down > 0 ? up / (up + down) : null,
+        // Rubric grades on thumbs up; the mean is null until one is graded.
+        scored,
+        averageScore: scored > 0 ? scoreTotal / scored : null,
+        scoreDistribution,
       },
       users: Array.from(perUser.values())
         .map(u => ({ ...u, total: u.up + u.down }))
@@ -545,6 +566,7 @@ router.get('/feedback', requireRole('admin'), async (req: AuthedRequest, res: Re
       entries: rows.map(r => ({
         id: r.id,
         rating: r.rating,
+        score: r.score,
         note: r.note,
         createdAt: r.createdAt.toISOString(),
         updatedAt: r.updatedAt.toISOString(),

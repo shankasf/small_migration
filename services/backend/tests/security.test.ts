@@ -234,6 +234,28 @@ test('only screened notes are persisted and a blocked note leaves the rating int
   assert.equal(stored.rating, 'down');
   screeningMode = 'allow';
 });
+test('a rubric score grades a thumbs up only and follows the thumb', async () => {
+  const message = await ratableMessage();
+  const stored = () => prisma.messageFeedback.findFirstOrThrow({where:{messageId:message.id}});
+  for (const score of [0, 6, 3.5, '4']) {
+    assert.equal((await rate(message.id, {rating:'up', score})).status, 400);
+  }
+  assert.equal((await rate(message.id, {rating:'down', score:4})).status, 400);
+  const saved = await rate(message.id, {rating:'up', score:4});
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as {score: number}).score, 4);
+  // Saving a note (score key omitted) keeps the grade; null clears it.
+  assert.equal((await rate(message.id, {rating:'up', note:'minor tweak needed'})).status, 200);
+  assert.equal((await stored()).score, 4);
+  assert.equal((await rate(message.id, {rating:'up', score:null})).status, 200);
+  assert.equal((await stored()).score, null);
+  // Switching to a thumbs down takes the grade with it, but keeps the note.
+  assert.equal((await rate(message.id, {rating:'up', score:5})).status, 200);
+  assert.equal((await rate(message.id, {rating:'down'})).status, 200);
+  const down = await stored();
+  assert.equal(down.score, null);
+  assert.equal(down.note, 'minor tweak needed');
+});
 test('a transcript carries the reader\'s own rating and nobody else\'s', async () => {
   const message = await ratableMessage();
   assert.equal((await rate(message.id, {rating:'up', note:'exactly what I needed'})).status, 200);
@@ -258,13 +280,38 @@ test('feedback across all users is admin-only and carries the thread it came fro
   const res = await request('/api/admin/feedback', await issueToken(admin));
   assert.equal(res.status, 200);
   const body = await res.json() as {summary: {total: number; up: number; withNotes: number};
-    entries: Array<{note: string | null; userEmail: string; sessionId: string; prompt: string | null; rating: string}>};
+    entries: Array<{note: string | null; userEmail: string; sessionId: string; prompt: string | null; rating: string; score: number | null}>};
   const entry = body.entries.find(e => e.note === 'clear and correct');
   assert.ok(entry, 'the admin view lists the note that was just left');
   assert.equal(entry!.userEmail, owner.email);
   assert.equal(entry!.sessionId, sessionId);
   assert.equal(entry!.rating, 'up');
   assert.ok(body.summary.total >= 1 && body.summary.withNotes >= 1);
+});
+test('the admin view averages rubric scores and filters by level', async () => {
+  const graded = await ratableMessage();
+  assert.equal((await rate(graded.id, {rating:'up', score:2, note:'rubric-two'})).status, 200);
+  const adminToken = await issueToken(admin);
+  const res = await request('/api/admin/feedback?score=2', adminToken);
+  assert.equal(res.status, 200);
+  const body = await res.json() as {summary: {scored: number; averageScore: number | null;
+    scoreDistribution: Array<{score: number; count: number}>}; entries: Array<{score: number | null; note: string | null}>};
+  assert.ok(body.entries.length >= 1 && body.entries.every(e => e.score === 2));
+  assert.ok(body.entries.some(e => e.note === 'rubric-two'));
+  assert.ok(body.summary.scored >= 1);
+  assert.ok(body.summary.averageScore !== null && body.summary.averageScore >= 1 && body.summary.averageScore <= 5);
+  assert.equal(body.summary.scoreDistribution.length, 5);
+  const ungraded = await request('/api/admin/feedback?score=none', adminToken);
+  const rows = (await ungraded.json() as {entries: Array<{score: number | null; rating: string}>}).entries;
+  assert.ok(rows.every(e => e.rating === 'up' && e.score === null));
+  const conflicting = await request('/api/admin/feedback?score=none&rating=down', adminToken);
+  assert.equal((await conflicting.json() as {entries: unknown[]}).entries.length, 0);
+});
+test('concurrent first saves for one response settle on a single row', async () => {
+  const message = await ratableMessage();
+  const results = await Promise.all([rate(message.id, {rating:'up'}), rate(message.id, {rating:'up', score:3})]);
+  assert.deepEqual(results.map(r => r.status), [200, 200]);
+  assert.equal(await prisma.messageFeedback.count({where:{messageId:message.id}}), 1);
 });
 
 after(async () => {

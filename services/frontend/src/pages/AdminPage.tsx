@@ -15,6 +15,7 @@ import {
 import type { AdminAiLog, AdminAiLogFacets, AdminAiLogPage } from '../services/api';
 import { AdminFeedbackPage, AdminUser, AuditEvent, FeedbackRating, SecuritySummary, UsageSummary, User } from '../types';
 import { Button, CenterSpinner, Field, Modal, Stat, StatusChip, Spinner, cx } from '../components/ui';
+import { RUBRIC, rubricLevel } from '../feedbackRubric';
 
 const num = new Intl.NumberFormat('en-NZ');
 const money = (v: number) => `$${v.toFixed(v >= 100 ? 0 : v >= 1 ? 2 : 4)}`;
@@ -1020,20 +1021,28 @@ function AiLogsTab({ initialSessionId }: { initialSessionId: string }) {
 
 // ---------------------------------------------------------------- Feedback
 
-// A rating is two bits of signal — the thumb, and whether the user chose to
-// explain it. Both are rendered plainly: notes are user prose, never markdown,
-// so they are shown as text and never re-interpreted.
-function RatingChip({ rating }: { rating: FeedbackRating }) {
+// A rating is up to three bits of signal — the thumb, the rubric grade on a
+// thumbs up, and whether the user chose to explain it. All are rendered
+// plainly: notes are user prose, never markdown, so they are shown as text.
+function RatingChip({ rating, score }: { rating: FeedbackRating; score: number | null }) {
   const up = rating === 'up';
+  const level = up ? rubricLevel(score) : undefined;
   return (
-    <span
-      className={cx(
-        'chip !py-0.5',
-        up ? '!border-success/40 !text-success' : '!border-warn/40 !text-warn',
+    <span className="inline-flex flex-col items-start gap-1">
+      <span
+        className={cx(
+          'chip !py-0.5',
+          up ? '!border-success/40 !text-success' : '!border-warn/40 !text-warn',
+        )}
+      >
+        {up ? <ThumbsUp className="h-3 w-3" /> : <ThumbsDown className="h-3 w-3" />}
+        {up ? 'Helpful' : 'Not helpful'}
+      </span>
+      {up && (
+        <span className="text-[11px] text-muted" title={level?.description}>
+          {level ? <><span className="font-mono tabular-nums text-ink">{level.score}/5</span> · {level.label}</> : <span className="text-faint">No score</span>}
+        </span>
       )}
-    >
-      {up ? <ThumbsUp className="h-3 w-3" /> : <ThumbsDown className="h-3 w-3" />}
-      {up ? 'Helpful' : 'Not helpful'}
     </span>
   );
 }
@@ -1044,6 +1053,7 @@ function FeedbackTab({ onViewLogs }: { onViewLogs: (sessionId: string) => void }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rating, setRating] = useState<FeedbackRating | ''>('');
+  const [score, setScore] = useState('');
   const [userId, setUserId] = useState('');
   const [withNote, setWithNote] = useState(false);
   const [queryInput, setQueryInput] = useState('');
@@ -1055,19 +1065,21 @@ function FeedbackTab({ onViewLogs }: { onViewLogs: (sessionId: string) => void }
     setLoading(true);
     setError(null);
     try {
-      setData(await adminGetFeedback({ rating, userId, q: query, withNote, days, limit }));
+      setData(await adminGetFeedback({ rating, score, userId, q: query, withNote, days, limit }));
     } catch (err) {
       setError(apiErrorMessage(err, 'Failed to load feedback'));
     } finally {
       setLoading(false);
     }
-  }, [rating, userId, query, withNote, days, limit]);
+  }, [rating, score, userId, query, withNote, days, limit]);
 
   useEffect(() => { load(); }, [load]);
 
   const selectCls = 'field !h-8 !py-0 !px-2 !text-xs !w-auto';
   const summary = data?.summary;
   const satisfaction = summary?.satisfaction == null ? '—' : `${Math.round(summary.satisfaction * 100)}%`;
+  const averageScore = summary?.averageScore == null ? '—' : `${summary.averageScore.toFixed(1)} / 5`;
+  const distribution = (summary?.scoreDistribution || []).map(d => `${d.score}: ${num.format(d.count)}`).join(' · ');
 
   return (
     <div className="space-y-4 animate-fade-up">
@@ -1075,7 +1087,7 @@ function FeedbackTab({ onViewLogs }: { onViewLogs: (sessionId: string) => void }
         <div>
           <h2 className="font-display text-lg font-700 text-ink">Response feedback</h2>
           <p className="mt-0.5 text-xs text-muted">
-            Every thumb left on an assistant response, across all users. Notes are optional, so most rows carry only a rating.
+            Every thumb left on an assistant response, across all users. A thumbs up can carry a 1–5 rubric score; scores and notes are optional.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1090,6 +1102,13 @@ function FeedbackTab({ onViewLogs }: { onViewLogs: (sessionId: string) => void }
             <option value="">All ratings</option>
             <option value="up">Helpful</option>
             <option value="down">Not helpful</option>
+          </select>
+          <select className={selectCls} value={score} onChange={e => setScore(e.target.value)}>
+            <option value="">Any score</option>
+            {RUBRIC.map(level => (
+              <option key={level.score} value={String(level.score)}>{level.score} · {level.label}</option>
+            ))}
+            <option value="none">Helpful, not scored</option>
           </select>
           <select className={selectCls} value={userId} onChange={e => setUserId(e.target.value)}>
             <option value="">All users</option>
@@ -1122,11 +1141,16 @@ function FeedbackTab({ onViewLogs }: { onViewLogs: (sessionId: string) => void }
 
       {error && <div className="panel border-danger/40 p-3 text-sm text-danger">{error}</div>}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Stat label="Ratings" value={num.format(summary?.total || 0)} sub={`Last ${data?.windowDays ?? days} days`} />
         <Stat label="Helpful" value={num.format(summary?.up || 0)} />
         <Stat label="Not helpful" value={num.format(summary?.down || 0)} />
         <Stat label="Satisfaction" value={satisfaction} accent sub={`${num.format(summary?.withNotes || 0)} with a note`} />
+        <Stat
+          label="Avg rubric score"
+          value={averageScore}
+          sub={summary?.scored ? `${num.format(summary.scored)} scored — ${distribution}` : 'No thumbs up scored yet'}
+        />
       </div>
 
       <div className={viewportTablePanelCls}>
@@ -1157,7 +1181,7 @@ function FeedbackTab({ onViewLogs }: { onViewLogs: (sessionId: string) => void }
                   {entry.userEmail}
                   {entry.userName && <span className="mt-0.5 block text-faint">{entry.userName}</span>}
                 </ResponsiveCell>
-                <ResponsiveCell label="Rating"><RatingChip rating={entry.rating} /></ResponsiveCell>
+                <ResponsiveCell label="Rating"><RatingChip rating={entry.rating} score={entry.score} /></ResponsiveCell>
                 <ResponsiveCell label="Note" valueClassName="text-xs">
                   {entry.note
                     ? <span className="whitespace-pre-wrap break-words text-ink">{entry.note}</span>
