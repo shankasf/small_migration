@@ -391,336 +391,59 @@ def validate(cases: list[dict]) -> list[str]:
 # --- document ------------------------------------------------------------------------------------------------
 
 def write_docx(cases: list[dict], path: Path, notes: list[str], prod_path: Path | None) -> None:
-    from docx import Document
-    from docx.enum.table import WD_TABLE_ALIGNMENT
-    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
-    from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
-    from docx.shared import Pt, RGBColor, Cm
+    """Render the reviewable document; layout lives in docx_layout.py."""
+    sys.path.insert(0, str(HERE))
+    import docx_layout
 
-    thresholds = json.loads((EVALS / "thresholds.json").read_text())
-    doc = Document()
-    for section in doc.sections:
-        section.left_margin = section.right_margin = Cm(2.0)
-        section.top_margin = section.bottom_margin = Cm(2.0)
-    styles = doc.styles
-    styles["Normal"].font.name = "Calibri"
-    styles["Normal"].font.size = Pt(10)
-    for name, size in (("Heading 1", 16), ("Heading 2", 13), ("Heading 3", 11)):
-        styles[name].font.color.rgb = RGBColor(0x1E, 0x3A, 0x5F)
-        styles[name].font.size = Pt(size)
-    ink = RGBColor(0x1E, 0x3A, 0x5F)
+    docx_layout.write(
+        cases, path, suites=SUITES, categories=CATEGORIES, suite_agent=SUITE_AGENT,
+        thresholds=json.loads((EVALS / "thresholds.json").read_text()), notes=notes,
+        prod_present=bool(prod_path and prod_path.exists()), sources_text=DOC_TEXT)
 
-    def shade(cell, hex_fill):
-        tc_pr = cell._tc.get_or_add_tcPr()
-        shd = OxmlElement("w:shd")
-        shd.set(qn("w:val"), "clear")
-        shd.set(qn("w:color"), "auto")
-        shd.set(qn("w:fill"), hex_fill)
-        tc_pr.append(shd)
 
-    def table(rows, header=True, widths=None, mono_cols=(), font=9, tight=False):
-        t = doc.add_table(rows=len(rows), cols=len(rows[0]))
-        t.style = "Table Grid"
-        if tight:  # narrow cell margins so short headers are not broken mid-word
-            margins = OxmlElement("w:tblCellMar")
-            for side in ("left", "right"):
-                m = OxmlElement(f"w:{side}")
-                m.set(qn("w:w"), "30")
-                m.set(qn("w:type"), "dxa")
-                margins.append(m)
-            t._tbl.tblPr.append(margins)
-        t.alignment = WD_TABLE_ALIGNMENT.CENTER
-        if widths:
-            t.autofit = False
-            for c, width in enumerate(widths):
-                t.columns[c].width = width  # grid widths: what LibreOffice and Word lay out from
-        for r, row in enumerate(rows):
-            for c, value in enumerate(row):
-                cell = t.cell(r, c)
-                cell.text = ""
-                para = cell.paragraphs[0]
-                run = para.add_run(str(value))
-                run.font.size = Pt(font)
-                if c in mono_cols and r > 0:
-                    run.font.name = "Consolas"
-                if header and r == 0:
-                    run.bold = True
-                    run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-                    shade(cell, "1E3A5F")
-                if widths:
-                    cell.width = widths[c]
-        return t
-
-    def para(text, bold=False, italic=False, size=None, align=None, color=None):
-        p = doc.add_paragraph()
-        run = p.add_run(text)
-        run.bold, run.italic = bold, italic
-        if size:
-            run.font.size = Pt(size)
-        if color:
-            run.font.color.rgb = color
-        if align:
-            p.alignment = align
-        return p
-
-    def code(text):
-        p = doc.add_paragraph()
-        run = p.add_run(text)
-        run.font.name = "Consolas"
-        run.font.size = Pt(8.5)
-        return p
-
-    def bullet(text):
-        doc.add_paragraph(text, style="List Bullet")
-
-    by_suite = Counter(c["suite"] for c in cases)
-    by_cat = Counter(c["category"] for c in cases)
-    by_sev = Counter(c["severity"] for c in cases)
-    prod = [c for c in cases if c["case_id"].startswith("prod-")]
-    runnable = [c for c in cases if c["harness"].get("example")]
-
-    # Title page
-    for _ in range(6):
-        doc.add_paragraph()
-    para("Circini Migration Agent", size=14, align=WD_ALIGN_PARAGRAPH.CENTER, color=ink)
-    para("Offline Regression Evaluation Dataset", bold=True, size=26, align=WD_ALIGN_PARAGRAPH.CENTER, color=ink)
-    para("Agent behaviour cases mined from the project's development and production history, "
-         "mapped one-to-one onto the LangGraph eval harness", italic=True, size=12, align=WD_ALIGN_PARAGRAPH.CENTER)
-    doc.add_paragraph()
-    para(f"{len(cases)} cases · {len(by_suite)} harness suites · {len(by_cat)} categories · "
-         f"{by_sev['blocker']} blockers", bold=True, size=12, align=WD_ALIGN_PARAGRAPH.CENTER)
-    para(f"Generated {dt.date.today().isoformat()} by docs/eval-dataset/build_dataset.py",
-         size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
-    para("All content is synthetic or redacted: no customer data, end-user names, emails, NHI numbers, "
-         "tokens or keys.", italic=True, size=9, align=WD_ALIGN_PARAGRAPH.CENTER)
-    doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
-
-    # Contents (a Word field; Word fills it on open / F9)
-    doc.add_heading("Contents", level=1)
-    p = doc.add_paragraph()
-    fld = OxmlElement("w:fldSimple")
-    fld.set(qn("w:instr"), 'TOC \\o "1-2" \\h \\z \\u')
-    r = OxmlElement("w:r")
-    t = OxmlElement("w:t")
-    t.text = "Right-click and choose Update Field to build the table of contents."
-    r.append(t)
-    fld.append(r)
-    p._p.append(fld)
-    doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
-
-    # 1 Purpose
-    doc.add_heading("1. Purpose and scope", level=1)
-    para("This dataset turns every agent-behaviour failure recorded in the project's history into a regression "
-         "case the existing LangSmith/LangGraph harness can replay offline. Each case states what the end user "
-         "asked, what the agent must do, the machine-checkable reference the evaluators score against, and the "
-         "bug or commit it guards.")
-    doc.add_heading("Sources", level=2)
-    bullet("Claude Code session transcripts for this project (30 sessions and their subagent transcripts, "
-           "2026-09-03 to 2026-09-27): user bug reports, pasted production conversations, production "
-           "investigations, eval runs and the fixes that followed.")
-    bullet("Fix commits on main (e.g. 659e28a, 9a68840, ac92c10, 757e53a, 34788c5, 10142c0, 1508d14, 6d1fc25, "
-           "1199e16, cffa760, 2620575), whose messages record the failure and the intended behaviour.")
-    bullet("The existing eval suite in services/ai-service/evals (datasets, suites.py, evaluators.py, harness.py, "
-           "fixtures.py, thresholds.json) and the agent roster in docs/LangGraph_Agent_Architecture.md.")
-    bullet("Project memory notes (GitHub App access model, file hand-over, long-term memory, production-check "
-           "fixtures).")
-    if prod:
-        bullet(f"A redacted production chat corpus ({len(prod)} cases, prefixed prod-).")
-    else:
-        bullet("A redacted production chat corpus was not available when this document was generated; re-run "
-               "build_dataset.py with --prod-corpus to fold it in (cases are prefixed prod-).")
-    doc.add_heading("Relationship to the existing suites", level=2)
-    para("The harness already holds 99 synthetic cases across nine suites. These cases extend them and do not "
-         "duplicate them: case ids are unique across both sets and no case repeats an existing case's inputs. "
-         "Where a production incident is already covered (for example the Losartan impact replay), the cases "
-         "here target the specific failure modes found along the way (placeholder ids, line-label ids, snapshot "
-         "stages, answers with gaps) rather than the scenario as a whole.")
-    doc.add_heading("Agents under test", level=2)
-    table([["Harness suite", "Agent / pipeline", "Cases"]] +
-          [[s, SUITE_AGENT[s], by_suite.get(s, 0)] for s in SUITES], widths=[Cm(3.2), Cm(10), Cm(2)])
-
-    # 2 How to run
-    doc.add_heading("2. How to run offline", level=1)
-    para("Offline means local mode: the harness runs the production LangGraph turn graph, agents, prompts and "
-         "guardrails in-process against the synthetic backend gateway (evals/gateway.py). Nothing reaches the real "
-         "backend, the database or LangSmith. The agents themselves still call the model under test (GPT-OSS 120B "
-         "on Bedrock), so AWS_BEARER_TOKEN_BEDROCK must be set; the deterministic evaluators need no network.")
-    doc.add_heading("Option A: the dataset runner (recommended)", level=2)
-    code("cd services/ai-service\npip install -r requirements-dev.txt\n"
-         "python ../../docs/eval-dataset/run_offline.py --list                      # show cases per suite, no model calls\n"
-         "python ../../docs/eval-dataset/run_offline.py --gate --repetitions 2      # all suites, offline, gate as in CI\n"
-         "python ../../docs/eval-dataset/run_offline.py --suite history,generation --gate --repetitions 2\n"
-         "python ../../docs/eval-dataset/run_offline.py --case enrolment-give-me-the-model-sql --repetitions 4\n"
-         "python ../../docs/eval-dataset/run_offline.py --with-existing --gate --repetitions 2   # plus the 99 existing cases")
-    para("run_offline.py points evals.suites at docs/eval-dataset/harness/<suite>.jsonl (optionally merged with the "
-         "existing datasets), adds the dataset-extension evaluators listed in section 4, merges their thresholds "
-         "into evals/thresholds.json for this run only, and then calls python -m evals.run's own main with "
-         "--no-upload. All other flags (--suite, --case, --gate, --repetitions, --concurrency, --report) pass "
-         "through unchanged. No file under services/ is modified.")
-    doc.add_heading("Option B: the stock harness", level=2)
-    code("cp docs/eval-dataset/harness/history.jsonl /tmp/history.jsonl   # or append to evals/datasets/history.jsonl\n"
-         "cat docs/eval-dataset/harness/history.jsonl >> services/ai-service/evals/datasets/history.jsonl\n"
-         "cd services/ai-service && python -m evals.run --suite history --no-upload --gate --repetitions 2")
-    para("Every line in harness/<suite>.jsonl is already in the harness's example shape "
-         "({inputs, outputs, metadata.case_id}) and uses the harness's own conventions: @fixture:NAME references "
-         "into evals/fixtures.py, @response:N / @previous_response substitution of earlier replies, backend "
-         "stand-ins for uploads, chat search, file fetch and GitHub (including the evals/repos/pharma_dbt "
-         "snapshot). Keys the stock evaluators do not know (for example must_not_contain on a generation case) are "
-         "ignored there, so appending is safe; only run_offline.py scores them.")
-    doc.add_heading("Loading the JSONL directly", level=2)
-    code("import json\n"
-         "cases = [json.loads(line) for line in open('docs/eval-dataset/agent_eval_dataset.jsonl') if line.strip()]\n"
-         "history = [c['harness']['example'] for c in cases if c['suite'] == 'history']\n"
-         "# each example: {'inputs': ..., 'outputs': ..., 'metadata': {'case_id': ..., 'tags': [...], ...}}\n"
-         "from evals.suites import SUITES; from evals.harness import run_local\n"
-         "run = await run_local(SUITES['history'], history, concurrency=4, repetitions=2)")
-    para("agent_eval_dataset.jsonl carries one full case per line: the documentation fields (case_id, category, "
-         "agent, suite, source, turns, input, attached_files, expected_behaviour, reference_outputs, evaluators, "
-         "severity, regression_of) and the harness block {suite, example}. reference_outputs is identical to "
-         "harness.example.outputs. Production cases that lack machine-checkable references keep "
-         "harness.example = null and harness.offline_runnable = false; they are listed for review only.")
-    doc.add_heading("Regenerating", level=2)
-    code("python docs/eval-dataset/build_dataset.py                          # rebuild jsonl, harness/*.jsonl and this document\n"
-         "python docs/eval-dataset/build_dataset.py --prod-corpus cases.json  # fold in a redacted production corpus")
-    para("mined_scenarios.json is the curated intermediate: add or edit a scenario there, then rebuild. The build "
-         "validates required fields, unique case ids, unique inputs, suite-specific shapes and regexes, and fails on "
-         "any email (other than RFC 2606 example domains), NHI-shaped value, secret-shaped token or real person's "
-         "name. Production records are redacted before validation.")
-
-    # 3 Coverage
-    doc.add_heading("3. Coverage matrix", level=1)
-    para("Cases per agent pipeline (rows) and behaviour category (columns).")
-    agents = [SUITE_AGENT[s] for s in SUITES]
-    cats = [c for c in CATEGORIES if by_cat.get(c)]
-    matrix = defaultdict(Counter)
-    for c in cases:
-        matrix[SUITE_AGENT[c["suite"]]][c["category"]] += 1
-    short = {"routing": "Routing", "injection guard": "Guard", "history/file delivery": "History / files",
-             "impact analysis": "Impact", "SQL/dbt model generation": "SQL / dbt gen", "mapping interpretation": "Mapping",
-             "GitHub/GitLab integration": "GitHub", "memory": "Memory", "clarification-asking": "Clarify", "feedback": "Feedback"}
-    agent_short = {"router": "Router", "guard": "Injection Guard", "grant_judge": "Grant Judge",
-                   "generation": "Migration build", "impact": "Impact pipeline", "history": "History Agent",
-                   "repository": "Repository Agent", "memory": "Memory", "consult": "Consultant"}
-    rows = [["Agent \\ category"] + [short[c] for c in cats] + ["Total"]]
-    for suite in SUITES:
-        a = SUITE_AGENT[suite]
-        rows.append([agent_short[suite]] + [matrix[a].get(c, "") or "" for c in cats] + [sum(matrix[a].values())])
-    rows.append(["Total"] + [by_cat[c] for c in cats] + [len(cases)])
-    first = Cm(2.5)
-    total = Cm(0.9)
-    rest = Cm(round((17.0 - 2.5 - 0.9) / len(cats), 2))
-    table(rows, font=6.5, widths=[first] + [rest] * len(cats) + [total], tight=True)
-    para("Migration build = Requirements Analyst, Model Author (fan-out) and Model Reviewer; Impact pipeline = "
-         "Evidence Investigator and Impact Reporter; Memory = Migration Consultant remember/forget plus the "
-         "capture_memory step.", italic=True, size=8)
-    doc.add_paragraph()
-    table([["Severity", "Cases", "Meaning"],
-           ["blocker", by_sev["blocker"], "A miss is a release-blocking regression of a production incident or a hard rule "
-                                          "(file not delivered, SQL not delivered, attack passed, benign user blocked)."],
-           ["major", by_sev["major"], "Wrong or degraded behaviour a user would notice; tracked against the suite rate."],
-           ["minor", by_sev["minor"], "Wording or robustness; informative, not gating on its own."]],
-          widths=[Cm(2.5), Cm(1.5), Cm(13)])
-    doc.add_paragraph()
-    para(f"Harness-runnable offline: {len(runnable)} of {len(cases)}.", bold=True)
-
-    # 4 Scoring
-    doc.add_heading("4. Scoring rubric and thresholds", level=1)
-    para("Scoring follows evals/thresholds.json exactly. The deploy gate runs every case twice and averages "
-         "(--repetitions 2): single runs vary, so a one-off miss must not block a release while a systematic "
-         "regression still does. Hard zeros stay hard: a crash (target_error), a fabricated impact report or one "
-         "written without reading evidence, active content (images/HTML) in a reply and SQL that fails static "
-         "validation fail the gate on any occurrence. History delivery keys are hard because the hand-over is "
-         "deterministic once the answer names the file.")
-    rows = [["Suite", "Feedback key", "Gate"]]
-    for suite in ["*"] + SUITES:
-        for key, rule in (thresholds.get(suite) or {}).items():
-            rows.append([suite, key, f">= {rule['min']}" if "min" in rule else f"<= {rule['max']}"])
-    table(rows, widths=[Cm(3.5), Cm(7), Cm(3)], font=8)
-    doc.add_heading("Dataset-extension evaluators (run_offline.py)", level=2)
-    para("A few regressions need checks the stock evaluators do not make. run_offline.py adds these only for cases "
-         "whose reference carries the key. Their gates are proposed values, not yet calibrated against repeated "
-         "live runs; calibrate them the same way thresholds.json was (two runs, set just below measured "
-         "reliability) before wiring them into CI.")
-    table([["Reference key", "Feedback key", "Proposed gate", "What it checks"],
-           ["must_contain / must_not_contain (generation, impact, consult)", "mentions_required / avoids_forbidden",
-            ">= 0.9 / = 1.0", "Final reply text, e.g. the leaked 'Reply with the complete model in ONE fenced ```sql block' nudge."],
-           ["must_contain_any", "mentions_any", ">= 0.75", "Each group: at least one alternative phrase appears."],
-           ["expect_no_files", "no_unrequested_files", "= 1.0", "No file card on the final turn (filename-only recall, unknown asset)."],
-           ["max_files", "file_cap", "= 1.0", "At most N files attached (delivery cap of three)."],
-           ["asks_clarification", "asks_clarification", ">= 0.9", "Reply asks the user (evaluators.asks_user) when true."],
-           ["not_blocked", "not_blocked", "= 1.0", "No turn in the conversation was blocked by guardrails."]],
-          widths=[Cm(4.5), Cm(3.5), Cm(2.2), Cm(6.8)], font=8)
-    doc.add_heading("Reading a result", level=2)
-    bullet("A case passes when every feedback key it produces meets its gate; a suite passes when the mean of each "
-           "key across its cases and both repetitions meets the gate.")
-    bullet("A blocker case failing in both repetitions is a regression of the incident in its regression_of field, "
-           "even if the suite mean still passes: open the per-case lines printed by the runner (--report writes "
-           "them to JSON).")
-    bullet("LLM-as-judge keys (correctness, groundedness) use GPT-OSS 120B as judge; a judge outage yields a missing "
-           "score (None), not a failure.")
-
-    # 5 Cases
-    doc.add_heading("5. Cases", level=1)
-    para("Grouped by harness suite. Prior turns shown as <live reply ...> are produced by the agent during the "
-         "run and replayed as history by the harness, as the backend does in production.")
-    for suite in SUITES:
-        group = [c for c in cases if c["suite"] == suite]
-        if not group:
-            continue
-        doc.add_heading(f"5.{SUITES.index(suite) + 1} {suite}: {SUITE_AGENT[suite]} ({len(group)})", level=2)
-        for c in group:
-            doc.add_heading(c["case_id"], level=3)
-            src = c["source"]
-            src_text = ", ".join(f"{k}: {v}" for k, v in src.items()) if isinstance(src, dict) else str(src)
-            prior = "\n".join(f"[{t['role']}] {t['content']}" for t in c["turns"]) or "(none)"
-            files = "\n".join(f"{f['name']} ({f.get('kind', 'file')}) -> {f.get('fixture', '')}" for f in c["attached_files"]) or "(none)"
-            rows = [["Field", "Value"],
-                    ["Category", c["category"]], ["Agent", c["agent"]], ["Suite", c["suite"]],
-                    ["Severity", c["severity"]], ["Source", src_text], ["Regression of", c["regression_of"]],
-                    ["Prior turns", prior], ["Input (final user message)", c["input"]], ["Attached files", files],
-                    ["Expected behaviour", c["expected_behaviour"]],
-                    ["Reference outputs", json.dumps(c["reference_outputs"], indent=1, ensure_ascii=False)],
-                    ["Evaluators", ", ".join(c["evaluators"])]]
-            if not c["harness"].get("example"):
-                rows.append(["Offline runnable", "no: review only"])
-            t = table(rows, widths=[Cm(3.6), Cm(13.4)], mono_cols=(), font=8)
-            for r in range(1, len(rows)):
-                shade(t.cell(r, 0), "E8EEF5")
-                t.cell(r, 0).paragraphs[0].runs[0].bold = True
-                if rows[r][0] == "Reference outputs":
-                    for run in t.cell(r, 1).paragraphs[0].runs:
-                        run.font.name = "Consolas"
-                        run.font.size = Pt(7.5)
-            doc.add_paragraph()
-
-    # 6 Gaps
-    doc.add_heading("6. Known gaps", level=1)
-    for text in [
-        "Finding while building the dataset: the static validator (services/ai-service/validation.py, "
-        "compile_model) accepts only literal ref/source/config Jinja. '{{ target.name }}' and '{% if %}' blocks, the "
-        "idiomatic way to write the enrolment rule 'unmasked PII in non-prod', are rejected on every author retry. "
-        "prompts/author.md:11 already forbids other macros, but a requirement that is explicitly environment-dependent "
-        "invites one, so this is a plausible contributing cause of the 'give me the model sql' failure (unconfirmed "
-        "against that turn's trace). pii-rule-without-jinja-target guards it.",
-        "Model-side transport faults seen in production (Harmony control tokens in tool names, 'Invalid JSON when "
-        "parsing model output', invented tool names such as github.tree) cannot be forced from a dataset; they are "
-        "covered only by target_error = 0 across every case and by the service's unit tests.",
-        "The enrolment output-cap failure depends on the model spending its output budget on reasoning; the "
-        "wide-mapping and enrolment cases make it likely but not certain. Check the author llm.call rows "
-        "(outputTokens near the cap) in the run's trace when they pass unexpectedly.",
-        "Cross-chat memory recall cannot be replayed: conversation_target runs one thread per case, so memory cases "
-        "check same-chat recall and the guard, not a second chat (the production memory check covers that).",
-        "Health-PII blocking (NHI in a message) is not included, to keep NHI-shaped values out of the dataset; it is "
-        "covered by the service's guardrail unit tests.",
-        "GitLab, dbt Cloud and Snowflake metadata sources have no synthetic gateway yet, so only their "
-        "'not connected' and grant behaviour is covered.",
-        "Extension-evaluator thresholds are proposals; calibrate over repeated live runs before gating CI on them.",
-    ] + ([f"Production corpus: {n}" for n in notes] if notes else []) + (
-        [] if prod_path and prod_path.exists() else
-        ["The redacted production chat corpus was not present at build time; rebuild with --prod-corpus to include it."]):
-        bullet(text)
-    doc.save(path)
+# Prose for the document, kept here with the dataset it describes.
+DOC_TEXT = {
+    "sources": [
+        "Claude Code session transcripts for this project (30 sessions and their subagent transcripts, 2026-09-03 to "
+        "2026-09-27): user bug reports, pasted production conversations, production investigations, eval runs and "
+        "the fixes that followed.",
+        "Fix commits on main (for example 659e28a, 9a68840, ac92c10, 757e53a, 34788c5, 10142c0, 1508d14, 6d1fc25, "
+        "1199e16, cffa760, 2620575, 616f5e7), whose messages record the failure and the intended behaviour.",
+        "The existing eval suite in services/ai-service/evals (datasets, suites.py, evaluators.py, harness.py, "
+        "fixtures.py, thresholds.json) and the agent roster in docs/LangGraph_Agent_Architecture.md.",
+        "Project memory notes: GitHub App access model, file hand-over, long-term memory, production-check fixtures.",
+    ],
+    "no_prod": "A redacted production chat corpus was not available when this document was generated; rebuild with "
+               "--prod-corpus to fold it in (cases are prefixed prod-).",
+    "relationship": "The harness already holds 99 synthetic cases across nine suites. These cases extend them without "
+                    "duplicating them: case ids are unique across both sets and no case repeats an existing case's "
+                    "inputs. Where a production incident is already covered (for example the Losartan impact replay), "
+                    "the cases here target the specific failure modes found along the way (placeholder ids, line-label "
+                    "ids, snapshot stages, answers with gaps) rather than the scenario as a whole.",
+    "gaps": [
+        "Draft capture: the 2026-09-23 'give me the model sql' failure was traced in production to the author "
+        "returning no usable SQL draft on all three attempts (output 2,972 / 1,589 / 560 tokens of a 16k cap; input "
+        "about 20k of 128k), not to a context or output limit. It is fixed in 616f5e7 and guarded by "
+        "enrolment-give-me-the-model-sql. The model's reply form varies run to run, so a single pass is weak "
+        "evidence; run that case with --repetitions 4.",
+        "Template syntax: the static validator (services/ai-service/validation.py) accepts only literal "
+        "ref/source/config Jinja, so '{{ target.name }}' and '{% if %}' are always rejected. An environment-dependent "
+        "rule must be written without them; pii-rule-without-jinja-target guards this.",
+        "Output-limit truncation is guarded by wide-mapping-output-cap. If it fails, check the model.author activity "
+        "rows for stopReason max_tokens.",
+        "Model-side transport faults seen in production (control tokens in tool names, 'Invalid JSON when parsing "
+        "model output', invented tool names) cannot be forced from a dataset; they are covered only by "
+        "target_error = 0 across every case and by the service's unit tests.",
+        "Cross-chat memory recall cannot be replayed: the harness runs one thread per case, so memory cases check "
+        "same-chat recall and the guard, not a second chat (the production memory check covers that).",
+        "Health-PII blocking (an NHI in a message) is not included, to keep NHI-shaped values out of the dataset; it "
+        "is covered by the service's guardrail unit tests.",
+        "GitLab, dbt Cloud and Snowflake metadata sources have no synthetic gateway yet, so only their 'not "
+        "connected' and grant behaviour is covered.",
+        "Extension-evaluator thresholds are proposals; calibrate them over repeated live runs before gating CI on "
+        "them.",
+    ],
+}
 
 
 def main(argv: list[str]) -> int:

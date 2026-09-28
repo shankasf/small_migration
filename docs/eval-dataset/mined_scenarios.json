@@ -2954,8 +2954,9 @@
     "session": "59a27615",
     "date": "2026-09-27",
     "topic": "'give me the model sql' enrolment error model failure",
-    "commit": "1199e16",
-    "note": "reply: 'I could not produce a version of this model that passes static validation, so no file was saved: Reply with the complete model in ONE fenced ```sql block.'"
+    "commit": "616f5e7",
+    "note": "reply: 'I could not produce a version of this model that passes static validation, so no file was saved: Reply with the complete model in ONE fenced ```sql block.'",
+    "incident": "production turn 2026-09-23"
    },
    "expected_behaviour": "With the mapping workbook and build reference attached and the requirements already given, 'give me the model sql' must deliver a statically valid enrolment_errors.sql with one CTE per error rule unioned together (including a self-join overlap check and a Jinja-free unmasked-nhi check, since the static validator rejects {{ target.name }}). The internal retry nudge must never be shown as the failure reason.",
    "inputs": {
@@ -3007,7 +3008,7 @@
     ]
    },
    "severity": "blocker",
-   "regression_of": "prod thumbs-down 2026-09-27; e59585d nudge leaked; 6d1fc25/1199e16 extraction + typed drafts",
+   "regression_of": "prod thumbs-down 2026-09-23: the author returned no usable SQL draft on all 3 attempts (2,972 / 1,589 / 560 output tokens of a 16k cap; input about 20k of 128k, so not a context or output limit) and e59585d leaked the retry nudge; fixed by 616f5e7 (capture the draft in any form, switch capture mode on retry)",
    "tags": [
     "generate",
     "user-feedback",
@@ -3130,7 +3131,7 @@
     ]
    },
    "severity": "major",
-   "regression_of": "hypothesis from the 2026-09-27 enrolment failure: Jinja target checks can never pass validation.py",
+   "regression_of": "guard raised during the enrolment investigation: validation.py rejects '{{ target.name }}' and '{% if %}', so an environment-dependent rule must be written without them. The production trace showed the 2026-09-23 failure itself was a missing draft, not this",
    "tags": [
     "generate",
     "user-feedback",
