@@ -7,6 +7,7 @@ const {generateApiKey} = require(process.cwd() + '/dist/services/apiKeys.js');
 const prisma = new PrismaClient();
 const sessionId = process.env.GENERATION_RETRY_SESSION_ID;
 const failedTurnId = process.env.GENERATION_RETRY_TURN_ID;
+const mode = process.env.GENERATION_RETRY_MODE || 'retry';
 let keyId, token;
 async function main() {
   for (const id of [sessionId, failedTurnId]) assert.match(id || '', /^[a-f0-9-]{36}$/, 'An explicit chat and failed turn are required');
@@ -15,6 +16,19 @@ async function main() {
   const failed = await prisma.aiActivityLog.findFirstOrThrow({where: {sessionId, turnId: failedTurnId,
     step: 'model.author', type: 'warning'}});
   assert.equal(failed.userId, session.ownerUserId, 'The failed turn must belong to this chat owner');
+  if (mode === 'inspect') {
+    const messages = await prisma.message.findMany({where: {sessionId, role: 'assistant'},
+      orderBy: {createdAt: 'desc'}, take: 3, select: {id: true, createdAt: true, content: true}});
+    const files = await prisma.generatedOutput.findMany({where: {sessionId}, orderBy: {createdAt: 'desc'},
+      take: 3, select: {id: true, messageId: true, filename: true, validation: true, createdAt: true}});
+    console.log(JSON.stringify({agentGraphProductionCheck: 'passed', inspection: true, sessionId, files,
+      messages: messages.map(m => ({id: m.id, createdAt: m.createdAt,
+        reviewIssues: m.content.includes('**Still open after review')
+          ? m.content.slice(m.content.indexOf('**Still open after review')) : '',
+        failure: m.content.includes('no file was saved') ? m.content.slice(-1000) : ''}))}));
+    return;
+  }
+  assert.ok(['retry', 'resolve_review'].includes(mode), 'Unknown verification mode');
   const original = await prisma.message.findFirstOrThrow({where: {sessionId, role: 'user',
     createdAt: {lte: failed.createdAt}}, orderBy: {createdAt: 'desc'}});
   const minted = generateApiKey(); token = minted.key;
@@ -29,12 +43,18 @@ async function main() {
     return response.json();
   }
   const start = new Date();
-  const diagnostic = await chat(original.content);
-  assert.equal(diagnostic.savedOutputs.length, 0, 'The original diagnostic question must not generate SQL');
-  assert.equal(await prisma.aiActivityLog.count({where: {sessionId, step: 'model.author', createdAt: {gte: start}}}),
-    0, 'The original diagnostic question must not invoke generation');
+  let diagnostic;
+  if (mode === 'retry') {
+    diagnostic = await chat(original.content);
+    assert.equal(diagnostic.savedOutputs.length, 0, 'The original diagnostic question must not generate SQL');
+    assert.equal(await prisma.aiActivityLog.count({where: {sessionId, step: 'model.author', createdAt: {gte: start}}}),
+      0, 'The original diagnostic question must not invoke generation');
+  }
   const generationStart = new Date();
-  const result = await chat('Retry the model generation requested earlier in this chat and save the complete updated SQL file. ' +
+  const correction = process.env.GENERATION_RETRY_CORRECTION;
+  if (mode === 'resolve_review') assert.ok(correction?.trim(), 'A specific review correction is required');
+  const result = await chat(mode === 'resolve_review' ? correction :
+    'Retry the model generation requested earlier in this chat and save the complete updated SQL file. ' +
     'Use the original supplied model and the business-rule changes I already confirmed. ' +
     'Preserve every original output column, CTE, default, masking expression, literal macro call and configuration ' +
     'except where the requested change requires an edit. Do not merely repeat the error explanation.');
@@ -52,7 +72,7 @@ async function main() {
   const turns = await prisma.aiActivityLog.findMany({where: {sessionId, step: 'turn.complete',
     createdAt: {gte: generationStart}}, select: {turnId: true}});
   console.log(JSON.stringify({agentGraphProductionCheck: 'passed', sessionId, failedTurnId,
-    diagnosticMessageId: diagnostic.assistantMessage.id, assistantMessageId: result.assistantMessage.id,
+    diagnosticMessageId: diagnostic?.assistantMessage.id, assistantMessageId: result.assistantMessage.id,
     generationTurnIds: turns.map(t => t.turnId), files: files.map(f => ({id: f.id, filename: f.filename,
       chars: f.content.length, sha256: createHash('sha256').update(f.content).digest('hex'), validation: f.validation}))}));
 }

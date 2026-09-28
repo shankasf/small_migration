@@ -35,7 +35,9 @@ overrides = {'containerOverrides': [{'name': 'backend', 'command': ['node', '-e'
     'environment': [{'name': 'EXPECTED_LLM_MODEL', 'value': os.environ.get('EXPECTED_LLM_MODEL', 'gpt-6-astra')},
                     {'name': 'EXPECTED_LLM_PROVIDER', 'value': os.environ.get('EXPECTED_LLM_PROVIDER', 'openai')},
                     {'name': 'GENERATION_RETRY_SESSION_ID', 'value': retry_session},
-                    {'name': 'GENERATION_RETRY_TURN_ID', 'value': retry_turn}]}]}
+                    {'name': 'GENERATION_RETRY_TURN_ID', 'value': retry_turn},
+                    {'name': 'GENERATION_RETRY_MODE', 'value': os.environ.get('GENERATION_RETRY_MODE', 'retry')},
+                    {'name': 'GENERATION_RETRY_CORRECTION', 'value': os.environ.get('GENERATION_RETRY_CORRECTION', '')}]}]}
 serialized = json.dumps(overrides, separators=(',', ':'))
 assert len(serialized.encode()) <= 8192, 'ECS overrides exceed the 8192-byte limit'
 with tempfile.TemporaryDirectory(prefix='circini-agent-graph-') as directory:

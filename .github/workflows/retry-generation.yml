@@ -11,6 +11,15 @@ on:
         description: 'Failed diagnostic turn belonging to that chat'
         required: true
         type: string
+      mode:
+        description: 'Inspect results without writing, replay the failure, or resolve known review issues'
+        type: choice
+        options: [inspect, retry, resolve_review]
+        default: inspect
+      correction:
+        description: 'Specific authorized correction for resolve_review mode'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -29,6 +38,8 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       GENERATION_RETRY_SESSION_ID: ${{ inputs.session_id }}
       GENERATION_RETRY_TURN_ID: ${{ inputs.failed_turn_id }}
+      GENERATION_RETRY_MODE: ${{ inputs.mode }}
+      GENERATION_RETRY_CORRECTION: ${{ inputs.correction }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
