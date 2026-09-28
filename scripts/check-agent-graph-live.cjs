@@ -102,7 +102,10 @@ async function main() {
   assert.ok(modelCalls >= 5, 'Expected router, guard, analyst, author and reviewer model calls');
   const drafts = await prisma.aiActivityLog.findMany({where: {sessionId, createdAt: {gte: start}, step: 'model.author', type: 'info'},
     select: {detail: true}});
-  assert.ok(drafts.filter(d => JSON.parse(d.detail || '{}').format === 'structured').length >= 2,
+  // Every capture path (ModelDraft call, one fenced block, raw SQL, arguments as
+  // JSON text) is validated into the same ModelDraft schema before it is used.
+  const CAPTURES = ['tool_call', 'fenced_block', 'raw_sql', 'json_text'];
+  assert.ok(drafts.filter(d => CAPTURES.includes(JSON.parse(d.detail || '{}').capturedFrom)).length >= 2,
     'Both generated models must use the validated structured draft contract');
   const usage = await prisma.usageRecord.findMany({where: {sessionId}});
   assert.ok(usage.length >= 2 && usage.every(u => u.model === expectedModel && u.provider === expectedProvider && u.totalTokens > 0),
