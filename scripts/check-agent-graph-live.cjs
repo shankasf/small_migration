@@ -74,6 +74,16 @@ async function main() {
     "duplicate date_to per nhi, overlapping date ranges for the same nhi but different enrolment_id, " +
     "date_from > date_to, and date_to > DATEADD(month, 11, date_from). Use descriptive error_name values and UNION ALL. " +
     "Compare only non-null dates; ranges overlap inclusively. Give me the complete model SQL and save the file.");
+  // Diagnostics before the assertion: a missing file otherwise leaves no trace of
+  // how each author attempt ended. Everything here is this check's own fixture.
+  const authoring = await prisma.aiActivityLog.findMany({where: {sessionId, step: {in: ['model.author', 'llm.call']},
+    createdAt: {gte: new Date(Date.now() - 900000)}}, select: {step: true, message: true, detail: true}, orderBy: {createdAt: 'asc'}});
+  console.log(JSON.stringify({agentGraphProgress: 'enrolment diagnostics',
+    outputs: errors.savedOutputs.map(output => ({name: output.filename || output.name, validation: output.validation?.status})),
+    replyExcerpt: (errors.assistantMessage.content || '').slice(0, 600),
+    attempts: authoring.filter(row => row.step === 'model.author').map(row => ({message: (row.message || '').slice(0, 200),
+      detail: (row.detail || '').slice(0, 500)})),
+    calls: authoring.filter(row => row.step === 'llm.call').slice(-8).map(row => (row.message || '').slice(0, 160))}));
   assert.ok(errors.savedOutputs.some(output => /enrolment_errors\.sql$/.test(output.filename || output.name || '')),
     'The enrolment error model was not delivered');
   const errorFile = await prisma.generatedOutput.findFirstOrThrow({where: {sessionId, filename: {endsWith: 'enrolment_errors.sql'}}});
