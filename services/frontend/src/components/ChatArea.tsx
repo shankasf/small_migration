@@ -109,7 +109,7 @@ const ChatArea = memo(function ChatArea({
               sessionId: '',
               role: 'assistant',
               content: streamingText,
-              createdAt: new Date().toISOString(),
+              createdAt: realtimeLogs.find(log => log.type === 'delta')!.timestamp,
             }}
             showFeedback={false}
           />

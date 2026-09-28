@@ -18,6 +18,33 @@ interface MessageBubbleProps {
   showFeedback?: boolean;
 }
 
+// PST is fixed at UTC-8, including summer; do not substitute PDT or browser time.
+const messageDateFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Etc/GMT+8',
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: true,
+});
+
+function MessageTimestamp({ createdAt, alignRight = false }: { createdAt: string; alignRight?: boolean }) {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return (
+    <time
+      dateTime={date.toISOString()}
+      title="Pacific Standard Time (UTC−08:00)"
+      className={`block text-xs text-muted tabular-nums ${alignRight ? 'mt-2 text-right' : 'mb-2'}`}
+    >
+      {messageDateFormatter.format(date)} PST
+    </time>
+  );
+}
+
 const languageIcons: Record<string, string> = {
   javascript: 'JS',
   typescript: 'TS',
@@ -145,6 +172,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
               </p>
             </div>
           )}
+          <MessageTimestamp createdAt={message.createdAt} alignRight />
         </div>
       </div>
     );
@@ -164,6 +192,7 @@ const MessageBubble = memo(function MessageBubble({ message, sessionFiles = [], 
 
         {/* Content */}
         <div className="flex-1 min-w-0 pt-1">
+          <MessageTimestamp createdAt={message.createdAt} />
           <FileReferenceChips files={message.fileRefs || []} label="Used files" />
           <div className="prose-console max-w-none">
             <ReactMarkdown
