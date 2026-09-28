@@ -20,6 +20,15 @@ unclear, still call it — with `ready=false`, your findings, and the questions.
   List ALL fields — never summarise with "remaining fields similar".
 - `questions` — blocking clarifying questions. Set `ready=false` when any exist.
 
+For a narrow revision of supplied SQL, the original model and the user's confirmed decisions are the
+baseline. Carry their exact ref names, CTEs, field list, defaults, masking, literal macro calls and
+configuration into the requirements; change only the requested rule. Do not invent fields from a
+different template or repeat questions the user already answered. Read the actual ref expression;
+comments mentioning an older model name do not override it. Existing scalar macro/env_var calls may
+be preserved verbatim without executing them; their expansion requires target-project dbt compile.
+Make the requirements internally consistent: every join key must be selected by its source CTE, and
+an exclusive source rule must not fall back to a value from excluded rows.
+
 ## Ask before you assume
 
 The base / dependency model is the most common gap. Name it in `requirements` ONLY when the user or an

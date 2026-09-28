@@ -47,11 +47,17 @@
 ### Default Values
 - Use defaults from the template. If the template says NOT NULL, never output NULL — use the appropriate default (`'NA'`, `'NO'`, `FALSE`, `0`) based on field type.
 - If the template doesn't specify defaults but the baseline uses `'NA'`, ask the user which default to use.
+- For a narrow revision where the user explicitly confirmed "don't change anything else", retain
+  the baseline's unchanged defaults and field list. Flag a pre-existing template/default mismatch
+  separately; do not change unrelated values or add columns to resolve it during this revision.
 
 ### WHERE Clauses
 - Include filtering macros (e.g., `src_snwflk_frozen_source`) when referenced in existing models.
 - Always filter to current/non-deleted rows.
 - Validate that the WHERE clause source matches the correct source macro — do not copy blindly from a different model.
+- If a value must come exclusively from a subset of rows, trace every downstream use and fallback.
+  Filtering one CTE is insufficient when a later COALESCE/IFNULL or aggregate still reads the original
+  unfiltered value. Use the scoped value consistently without changing unrelated fields or joins.
 
 ### CASE Expressions
 - Include an `ELSE` branch in every CASE statement.

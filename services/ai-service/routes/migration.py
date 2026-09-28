@@ -208,10 +208,12 @@ async def _chat(request: ChatRequest) -> ChatResponse:
         await logger.complete("Response ready")
 
         files = []
+        model_sources = [request.message, *(request.files or {}).values(),
+                         *(m["content"] for m in (request.history or []) if m.get("role") == "user")]
         for name, content in sorted(result.files.items()):
             filtered = guardrails.check_outbound(content).text
             files.append(GeneratedFile(name=name, path=name, content=filtered,
-                                       validation=validate_output(name, filtered)))
+                                       validation=validate_output(name, filtered, sources=model_sources)))
         return ChatResponse(
             response=response_text,
             impact_action=result.impact_action,

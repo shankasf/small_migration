@@ -29,6 +29,8 @@ HAND_IT_OVER = re.compile(r"\b(?:give|send|share|attach|hand|provide|email)\b[^.
                           r"attachment|upload|copy|it|that|this|one)\b"
                           r"|\bdownload\b|\battach(?:ment|ed)?\b", re.IGNORECASE)
 NAMES_A_REPOSITORY = re.compile(r"\bgit ?hub\b|\bgit ?lab\b|\brepo(?:sitory|sitories)?\b|\bbranch\b", re.IGNORECASE)
+ERROR_QUESTION = re.compile(r"\b(?:why|which|what|explain|tell me)\b.*\b(?:invalid|error|fail(?:ed|ure)?|rejected)\b", re.IGNORECASE | re.DOTALL)
+REQUESTS_EDIT = re.compile(r"\b(?:fix|correct|change|update|revise|rewrite|regenerate|generate|retry|try again|create|write)\b", re.IGNORECASE)
 
 
 class RouteChoice(BaseModel):
@@ -69,6 +71,10 @@ class RouterAgent:
         """
         pending, chosen = state.get("pending"), decision["route"]
         if not pending:
+            message = state.get("message", "")
+            if (chosen == Route.GENERATE and ERROR_QUESTION.search(message)
+                    and not REQUESTS_EDIT.search(message)):
+                return RouteDecision(route=Route.CONSULT.value, new_analysis=False)
             # "give me that file" after a chat-file answer is the same request
             # continued, not a repository question; GPT-OSS reads the bare word
             # "file" as GitHub often enough to send the user to the wrong agent.

@@ -34,6 +34,9 @@ Route this migration chatbot turn to exactly one specialist. Do not answer the u
 
 ## Precedence and analysis boundaries
 
+- A question about a failed generation ("which SQL is invalid?", "why did it fail?", "explain the
+  error") is consult, even immediately after a generate turn. Only choose generate when the CURRENT
+  request asks for a file to be created, fixed or retried. Mentioning "SQL" or "model" is insufficient.
 - An impact-analysis request takes priority over edits in a mixed request.
 - Merely mentioning a migration, mapping, model or file does NOT request impact analysis.
 - `new_analysis` matters only for impact. A new target or proposed change, or switching/adding evidence

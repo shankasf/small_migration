@@ -87,6 +87,8 @@ def render_model(item: dict[str, Any], content: str) -> str:
     parts = [f"### `{item['file_name']}`", f"```sql\n{content.rstrip()}\n```"]
     if item.get("notes"):
         parts.append(item["notes"])
+    for warning in item.get("validation", {}).get("warnings", []):
+        parts.append(warning)
     if item["approved"]:
         parts.append("Checked against the 12-point self-validation checklist.")
     elif item["open_issues"]:

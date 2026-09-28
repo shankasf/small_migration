@@ -24,13 +24,18 @@ while True:
     assert time.monotonic() < stable_deadline, 'Backend did not stabilize before verification deadline'
     print(json.dumps({'agentGraphProgress': 'waiting for backend steady state'}), flush=True)
     time.sleep(15)
-source = Path('scripts/check-agent-graph-live.cjs').read_bytes()
+retry_session = os.environ.get('GENERATION_RETRY_SESSION_ID', '')
+retry_turn = os.environ.get('GENERATION_RETRY_TURN_ID', '')
+assert bool(retry_session) == bool(retry_turn), 'A recovery needs both the session and failed turn'
+source = Path('scripts/retry-generation-live.cjs' if retry_session else 'scripts/check-agent-graph-live.cjs').read_bytes()
 encoded = base64.b64encode(gzip.compress(source, mtime=0)).decode()
 # /tmp is the task's explicitly writable ephemeral volume. The code is trusted repository code.
 command = "require('node:fs').writeFileSync('/tmp/agent-graph-check.cjs',require('node:zlib').gunzipSync(Buffer.from('" + encoded + "','base64')));require('/tmp/agent-graph-check.cjs')"
 overrides = {'containerOverrides': [{'name': 'backend', 'command': ['node', '-e', command],
     'environment': [{'name': 'EXPECTED_LLM_MODEL', 'value': os.environ.get('EXPECTED_LLM_MODEL', 'gpt-6-astra')},
-                    {'name': 'EXPECTED_LLM_PROVIDER', 'value': os.environ.get('EXPECTED_LLM_PROVIDER', 'openai')}]}]}
+                    {'name': 'EXPECTED_LLM_PROVIDER', 'value': os.environ.get('EXPECTED_LLM_PROVIDER', 'openai')},
+                    {'name': 'GENERATION_RETRY_SESSION_ID', 'value': retry_session},
+                    {'name': 'GENERATION_RETRY_TURN_ID', 'value': retry_turn}]}]}
 serialized = json.dumps(overrides, separators=(',', ':'))
 assert len(serialized.encode()) <= 8192, 'ECS overrides exceed the 8192-byte limit'
 with tempfile.TemporaryDirectory(prefix='circini-agent-graph-') as directory:

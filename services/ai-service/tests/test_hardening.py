@@ -132,3 +132,46 @@ def test_revocation_cancels_active_agent_task(monkeypatch):
         assert task.cancelled()
         assert 'cancel-test' not in route._active_sessions
     asyncio.run(scenario())
+
+
+def test_supplied_literal_macros_are_preserved_without_execution(monkeypatch):
+    monkeypatch.setenv('DBT_MAPPED_DEFAULTS_ENV', 'DO_NOT_READ_THIS_VALUE')
+    sql = '''{{ config(materialized='table', cluster_by=['account_id']) }}
+    select {{ account_key('a.id', 'a.date_from') }} as account_id,
+      case when '{{ env_var("DBT_MAPPED_DEFAULTS_ENV") }}' = 'PRD' then a.id else a.mask_id end as masked_id,
+      to_timestamp_ntz(a.date_from, 'YYYY-MM-DD') as started_at
+    from {{ ref('accounts') }} a'''
+    assert validate_output('accounts.sql', sql)['status'] == 'rejected'
+    report = validate_output('accounts.sql', sql, sources=[sql])
+    assert report['status'] == 'draft' and report['static_checks'] == 'partial'
+    assert report['deferred_macros'] == ['account_key', 'env_var']
+    assert report['dbt_compile'] == report['target_database_test'] == 'required'
+    from validation import compile_model, supplied_macros
+    compiled = compile_model(sql, allowed_macros=supplied_macros([sql]))
+    assert 'DO_NOT_READ_THIS_VALUE' not in compiled
+    assert report['columns'] == ['account_id', 'masked_id', 'started_at']
+    changed = sql.replace("account_key('a.id', 'a.date_from')", "account_key('a.other_id', 'a.date_from')")
+    assert validate_output('accounts.sql', changed, sources=[sql])['status'] == 'rejected'
+
+
+@pytest.mark.parametrize('sql', [
+    "{{ run_query('delete from accounts') }} select 1",
+    "{{ config(pre_hook='delete from accounts') }} select 1",
+    "{{ statement('write') }} select 1",
+    "{{ adapter.execute('delete from accounts') }} select 1",
+    "{{ cycler.__init__ }} select 1",
+    "select {{ account_key(env_var('SECRET')) }} as id",
+    "{% set value = 1 %} select {{ value }}",
+    "select {{ account_key('id') }}; delete from accounts",
+    "select custom_udf(id) from accounts",
+    "select untrusted.to_timestamp_ntz(id, 'YYYY') from accounts",
+])
+def test_supplied_source_does_not_authorize_executable_templates_or_unsafe_sql(sql):
+    assert validate_output('accounts.sql', sql, sources=[sql])['status'] == 'rejected'
+
+
+def test_invalid_sql_reports_location_without_echoing_source():
+    report = validate_output('accounts.sql', 'select id from where secret_value')
+    assert report['status'] == 'rejected'
+    assert 'line' in report['errors'][0]
+    assert 'secret_value' not in report['errors'][0]

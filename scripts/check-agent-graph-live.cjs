@@ -94,6 +94,32 @@ async function main() {
   assert.match(errorFile.content, /union\s+all/i, 'Error model does not combine validation violations');
   assert.doesNotMatch(errors.assistantMessage.content, /no file was saved|ONE fenced/i, 'Generation reported failure');
 
+  mark('revise a model supplied earlier without removing its dbt macros');
+  const original = "{{ config(materialized='table', cluster_by=['contract_id']) }}\n" +
+    "with existing as (select contract_id, amount from {{ ref('in_scope_contracts') }})\n" +
+    "select {{ contract_key('contract_id') }} as contract_id, " +
+    "case when '{{ env_var(\"DBT_MAPPED_DEFAULTS_ENV\") }}' = 'PRD' then amount else 0 end as amount from existing";
+  await chat('This is a separate existing contract_totals.sql model, unrelated to the earlier files. ' +
+    'Only explain its amount expression briefly; do not generate a file yet.\n' + original);
+  const revision = await chat('Generate and save contract_totals.sql from the exact model in my previous message. ' +
+    'Change only the amount expression so a null amount becomes 0. Preserve its two output columns, ' +
+    'existing CTE, ref, cluster_by, env_var and contract_key call exactly. No other template or mapping applies.');
+  const revised = await prisma.generatedOutput.findFirstOrThrow({where: {
+    sessionId, messageId: revision.assistantMessage.id, filename: 'contract_totals.sql'}});
+  assert.match(revised.content, /contract_key\(['"]contract_id['"]\)/, 'Supplied ID macro was lost');
+  assert.match(revised.content, /env_var/, 'Supplied environment-dependent masking was lost');
+  assert.match(revised.content, /cluster_by/, 'Supplied clustering was lost');
+  assert.equal(revised.validation?.static_checks, 'partial', 'Unexpanded macros must not be marked fully validated');
+  assert.equal(revised.validation?.dbt_compile, 'required', 'Target dbt compilation must remain required');
+  assert.match(revision.assistantMessage.content, /Macro expansion has not been validated/);
+
+  mark('a validation question does not start another model build');
+  const diagnosticStart = new Date();
+  const diagnostic = await chat('can you tell me which sql is invalid');
+  assert.equal(diagnostic.savedOutputs.length, 0, 'An explanation request generated a file');
+  assert.equal(await prisma.aiActivityLog.count({where: {sessionId, step: 'model.author',
+    createdAt: {gte: diagnosticStart}}}), 0, 'An explanation request invoked the model author');
+
   mark('activity log, metering and scope');
   const calls = await prisma.aiActivityLog.findMany({where: {sessionId, createdAt: {gte: start}, step: 'tool.call'}, select: {tool: true}});
   assert.ok(calls.some(c => c.tool === 'generate_output'), 'The published file was not logged');
@@ -133,7 +159,8 @@ async function main() {
   await prisma.session.delete({where: {id: sessionId}});
   console.log(JSON.stringify({agentGraphProductionCheck: 'passed', sessionId, model: expectedModel, provider: expectedProvider,
     clarificationPause: 'passed', resume: 'passed', generation: 'passed', enrolmentErrorModel: 'passed',
-    structuredDrafts: 'passed', chatIdTraceability: 'passed', metering: 'passed'}));
+    structuredDrafts: 'passed', suppliedMacroRevision: 'passed', errorQuestionRouting: 'passed',
+    chatIdTraceability: 'passed', metering: 'passed'}));
 }
 main().catch(error => {console.error(JSON.stringify({agentGraphProductionCheck: 'failed', phase, reason: failureReason(error)})); process.exitCode = 1;})
   .finally(async () => {if (keyId) await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}}); await prisma.$disconnect();});

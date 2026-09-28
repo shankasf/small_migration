@@ -61,9 +61,13 @@ class RequirementsAnalyst(ToolLoopAgent):
     def brief(self, context: TurnContext, work: dict) -> list:
         workspace = context.workspace
         sections = [f"## Current request\n{workspace.message}", files_block(workspace.files)]
-        if work.get("spec"):
+        if work.get("spec") and (not work["spec"].get("ready") or work.get("drafts")):
             sections.append("## Your previous specification for this chat (update it; do not re-ask answered "
                             f"questions)\n{as_json(work['spec'])}")
+        elif work.get("spec"):
+            sections.append("## Retry after unsuccessful generation\nThe earlier plan produced no saved model. "
+                            "Rebuild the specification from the original user-supplied SQL and confirmed "
+                            "decisions in the conversation. Do not carry forward assumptions from the failed plan.")
         if work.get("drafts"):
             sections.append("## Model files already generated in this chat\n" + ", ".join(sorted(work["drafts"])))
         system = "\n\n".join([prompt("analyst", "dbt_rules"), *memory_notes(context)])

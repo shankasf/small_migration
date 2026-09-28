@@ -31,9 +31,9 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 from config import settings
-from validation import rejection_reason, validate_output
+from validation import rejection_reason, supplied_macros, validate_output
 from workflow.agents.base import clean_tool_name
-from workflow.agents.formatting import files_block
+from workflow.agents.formatting import files_block, history_messages, memory_notes
 from workflow.agents.migration.schemas import ModelDraft, ModelReview
 from workflow.context import TurnContext
 from workflow.models import PROFILES, ModelRole
@@ -238,6 +238,7 @@ class ModelAuthor:
             model = model.bind_tools([ModelDraft])
         reply = await model.ainvoke([
             SystemMessage(prompt("author", "dbt_rules", "self_validation", f"author_output_{mode}")),
+            *history_messages(context.workspace.history),
             HumanMessage(self.brief(state, context)),
         ])
         source, truncated = "", False
@@ -277,6 +278,7 @@ class ModelAuthor:
             f"## User request\n{context.workspace.message}",
             f"## Requirements (from the analyst)\n{spec.get('requirements', '')}",
             files_block(context.workspace.files),
+            *memory_notes(context),
         ]
         if state.get("previous"):
             sections.append(f"## Previous version of this file — keep every CTE\n```sql\n{state['previous']}```")
@@ -288,17 +290,21 @@ class ModelAuthor:
         return "\n\n".join(sections)
 
 
-def validate(state: BuildState) -> Command[Literal["author", "review", "finish"]]:
+def validate(state: BuildState, runtime: Runtime[TurnContext]) -> Command[Literal["author", "review", "finish"]]:
     """Data step: static SQL/dbt checks (sqlglot); never a warehouse run."""
+    workspace = runtime.context.workspace
+    sources = [workspace.message, *workspace.files.values(), state.get("previous", ""),
+               *(m["content"] for m in workspace.history if m.get("role") == "user")]
     if not state.get("sql"):
         report = {"status": "rejected", "static_checks": "not_run",
                   "errors": [state.get("generation_error") or NO_SQL_ERROR]}
     else:
-        report = validate_output(state["target"]["file_name"], state["sql"])
+        report = validate_output(state["target"]["file_name"], state["sql"], sources=sources)
     if report["status"] != "rejected":
         return Command(update={"validation": report}, goto="review")
     retry = attempts_left(state)
-    reason = (rejection_reason(state["sql"]) if state.get("sql") else "") or report["errors"][0]
+    reason = (rejection_reason(state["sql"], allowed_macros=supplied_macros(sources))
+              if state.get("sql") else "") or report["errors"][0]
     if state.get("sql"):
         feedback = f"Static validation failed: {reason}"
     elif state.get("truncated"):
@@ -321,6 +327,7 @@ class ModelReviewer:
             await context.logger.thinking(f"Reviewing {state['target']['file_name']} against the checklist...")
         review = await invoke_structured(context.models.get(ModelRole.REVIEWER), ModelReview, [
             SystemMessage(prompt("reviewer", "self_validation", "dbt_rules")),
+            *history_messages(context.workspace.history),
             HumanMessage(self.brief(state, context)),
         ])
         update = {"review": review.model_dump()}
@@ -334,6 +341,7 @@ class ModelReviewer:
             f"## Model under review: {state['target']['file_name']}\nPurpose: {state['target']['purpose']}",
             f"## Requirements (from the analyst)\n{state['spec'].get('requirements', '')}",
             files_block(context.workspace.files),
+            *memory_notes(context),
         ]
         if state.get("previous"):
             sections.append(f"## Previous version\n```sql\n{state['previous']}```")

@@ -1,0 +1,43 @@
+name: Verify generation recovery in an existing chat
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'Authorized chat ID (appends a diagnostic replay and generation retry)'
+        required: true
+        type: string
+      failed_turn_id:
+        description: 'Failed diagnostic turn belonging to that chat'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 35
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      GENERATION_RETRY_SESSION_ID: ${{ inputs.session_id }}
+      GENERATION_RETRY_TURN_ID: ${{ inputs.failed_turn_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Verify and save a generation in the authorized chat
+        run: python3 scripts/verify-agent-graph-production.py
+      - name: Verify production service state
+        run: |
+          aws ecs describe-services --cluster circini-demo --services backend frontend ai-service \
+            --query 'services[].{Service:serviceName,Desired:desiredCount,Running:runningCount,Pending:pendingCount,Deployments:deployments[].{State:rolloutState,Task:taskDefinition}}'

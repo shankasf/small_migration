@@ -560,7 +560,8 @@ def test_typed_sql_still_goes_through_safety_validation(harness, sql):
     harness.models.script("author", *[draft(sql)] * 3)
     result = harness.turn("Generate stg_contracts.sql")
     assert not result.files
-    assert "unsupported/unsafe" in result.response
+    assert any(reason in result.response for reason in (
+        "one read-only SELECT", "hooks are prohibited", "SQL does not parse near line"))
     assert not harness.models.requests("reviewer")
 
 
@@ -706,3 +707,56 @@ def test_the_author_is_told_exactly_why_static_validation_failed(harness):
     assert "stg_contracts.sql" in harness.turn("Generate stg_contracts").files
     feedback = harness.models.requests("author")[1]["messages"][-1].content
     assert "Unrecognised functions" in feedback and "my_udf" in feedback
+
+
+def test_generation_reuses_original_sql_and_macros_from_earlier_user_message(harness):
+    original = """{{ config(materialized='table', cluster_by=['contract_id']) }}
+    with existing as (select * from {{ ref('in_scope_contracts') }})
+    select {{ contract_key('contract_id') }} as contract_id,
+      case when '{{ env_var("DBT_MAPPED_DEFAULTS_ENV") }}' = 'PRD' then amount else 0 end as amount
+    from existing"""
+    updated = original.replace('then amount else 0', 'then ifnull(amount, 0) else 0')
+    harness.models.script('router', route('generate'))
+    harness.models.script('analyst', spec())
+    harness.models.script('author', draft(updated))
+    harness.models.script('reviewer', call('ModelReview', approved=True, issues=[]))
+    result = harness.turn('Fix only the amount null handling; keep everything else.',
+                          history=[{'role': 'user', 'content': original}])
+    assert result.files['stg_contracts.sql'].strip() == updated
+    assert 'Macro expansion has not been validated' in result.response
+    for role in ('author', 'reviewer'):
+        messages = harness.models.requests(role)[0]['messages']
+        assert any(m.type == 'human' and m.content == original for m in messages)
+
+
+@pytest.mark.parametrize('question', ['can you tell me which sql is invalid', 'Why did the model fail?',
+                                      'Explain the validation error'])
+def test_failed_generation_question_is_answered_without_another_build(harness, question):
+    harness.models.script('router', route('generate'))
+    harness.models.script('consultant', 'The validator rejected the supplied dbt macro; no SQL was executed.')
+    result = harness.turn(question, history=[{'role': 'assistant', 'content':
+        'I could not produce a complete, valid model, so no file was saved.'}])
+    assert result.route == 'consult' and not result.files
+    assert not harness.models.requests('author') and not harness.models.requests('analyst')
+
+
+def test_explicit_error_fix_still_generates(harness):
+    harness.models.script('router', route('generate'))
+    harness.models.script('analyst', spec())
+    harness.models.script('author', draft())
+    harness.models.script('reviewer', call('ModelReview', approved=True, issues=[]))
+    result = harness.turn('Explain the error and fix the SQL model')
+    assert result.route == 'generate' and result.files
+
+
+def test_failed_generation_does_not_reuse_an_unverified_specification(harness):
+    harness.models.script('router', route('generate'), route('generate'))
+    harness.models.script('analyst', spec(requirements='STALE_PLAN_ADDS_AN_UNREQUESTED_COLUMN'), spec())
+    harness.models.script('author', *[draft('drop table contracts')] * 3, draft())
+    harness.models.script('reviewer', call('ModelReview', approved=True, issues=[]))
+    assert not harness.turn('Revise the supplied SQL').files
+    result = harness.turn('Retry using my original SQL and confirmed requirements')
+    assert result.files
+    second = harness.models.requests('analyst')[1]['messages'][-1].content
+    assert 'STALE_PLAN_ADDS_AN_UNREQUESTED_COLUMN' not in second
+    assert 'Rebuild the specification' in second
