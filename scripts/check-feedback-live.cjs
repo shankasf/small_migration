@@ -34,6 +34,8 @@ async function main() {
   keyId = (await prisma.apiKey.create({ data: { userId: user.id, name: 'E2E feedback rubric', prefix: minted.prefix,
     keyHash: minted.keyHash, expiresAt: new Date(Date.now() + 900000) } })).id;
   const nonce = crypto.randomBytes(4).toString('hex');
+  // Letters only: an all-digit hex nonce reads as a phone number and PII redaction rewrites the note.
+  const noteTag = nonce.replace(/\d/g, (digit) => 'ghijklmnop'[digit]);
   mark('prepare a rated response');
   sessionId = (await call('POST', '/api/sessions', { name: `E2E feedback ${nonce}` }, 201)).id;
   // The response is written directly: this check grades the feedback path, not the model.
@@ -44,7 +46,7 @@ async function main() {
   assert.equal((await rate({ rating: 'up', score: 4 })).score, 4, 'Score was not saved with the thumbs up');
   await rate({ rating: 'up', score: 7 }, 400);
   await rate({ rating: 'down', score: 3 }, 400);
-  const noted = await rate({ rating: 'up', note: `rubric check ${nonce}` });
+  const noted = await rate({ rating: 'up', note: `rubric check ${noteTag}` });
   assert.equal(noted.score, 4, 'Saving a note dropped the score');
   mark('read the score back from the transcript');
   const thread = await call('GET', `/api/sessions/${sessionId}`);
@@ -59,7 +61,7 @@ async function main() {
   mark('switching to thumbs down clears the score');
   const down = await rate({ rating: 'down' });
   assert.equal(down.score, null, 'Thumbs down kept the rubric score');
-  assert.equal(down.note, `rubric check ${nonce}`, 'Switching the thumb dropped the note');
+  assert.equal(down.note, `rubric check ${noteTag}`, 'Switching the thumb dropped the note');
   await call('DELETE', `/api/feedback/messages/${message.id}`);
   evidence.rubric = 'passed';
   console.log(JSON.stringify({ feedbackProductionCheck: 'passed', ...evidence }));
