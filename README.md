@@ -632,8 +632,8 @@ flowchart TD
         PG -- "impact follow-up on sources<br/>the user already approved" --> GJ["Grant Judge Agent<br/>is this still the approved analysis?<br/>node: grant_judge"]
         PG --> DI{"Node: dispatch<br/>picks the specialist<br/>from State.route"}
         GJ --> DI
-        DI -- "route = generate" --> GEN["Subgraph: generate<br/>writes dbt / SQL models<br/>Analyst, Author, Reviewer agents"]
-        DI -- "route = impact" --> IMP["Subgraph: impact<br/>what breaks if this changes?<br/>Investigator, Reporter agents"]
+        DI -- "route = generate" --> GEN["Subgraph: generate<br/>writes dbt / SQL models<br/>Requirements Analyst, Model Author,<br/>Model Reviewer agents"]
+        DI -- "route = impact" --> IMP["Subgraph: impact<br/>what breaks if this changes?<br/>Evidence Investigator,<br/>Impact Reporter agents"]
         DI -- "route = history" --> HIS["Subgraph: history<br/>finds an earlier chat or file<br/>History Agent"]
         DI -- "route = consult" --> CON["Migration Consultant Agent<br/>answers migration questions<br/>node: consult, tool loop"]
         DI -- "route = repository" --> REP["Repository Agent<br/>reads the GitHub repo<br/>node: repository, tool loop"]
