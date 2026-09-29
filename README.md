@@ -16,68 +16,27 @@ AI-powered DBT/SQL data migration assistant with a ChatGPT-like interface for an
 
 ```mermaid
 flowchart LR
-    U["🖥️ Browser<br/>React + Vite"]
-
-    subgraph edge["Edge — TLS termination"]
-        IG["Application Load Balancer<br/>migration-agent.uat.signify.net.nz<br/>ACM · TLS 1.3 policy · HTTP→HTTPS"]
-    end
-
-    subgraph cluster["ECS Fargate — cluster circini-demo · Service Connect"]
-        FE["frontend :5173<br/>React 18 · Vite · Tailwind"]
-        BE["backend :3001<br/>Express · Prisma · Socket.IO<br/>🔐 Cognito JWT + RBAC"]
-        AI["ai-service :8084<br/>FastAPI · LangGraph turn graph<br/>10 agents + Injection Guard<br/>🔐 x-internal-key · internal only"]
-        OT["ADOT collector sidecars<br/>traces → X-Ray · metrics → CloudWatch"]
-    end
-
-    subgraph data["AWS data services"]
-        DB[("RDS PostgreSQL 16<br/>users · sessions · messages · files<br/>audit · usage · AI activity logs")]
-        CK[("DynamoDB circini-agent-checkpoints<br/>LangGraph thread state · TTL 30 days")]
-        MEM[("DynamoDB circini-agent-memory<br/>LangGraph store · per user · no expiry")]
-        S3[("S3 checkpoint offload<br/>items over 350 KB · lifecycle 30 days")]
-        SM["Secrets Manager<br/>circini/*"]
-    end
-
-    subgraph models["Model providers"]
-        BR["☁️ AWS Bedrock ap-southeast-2<br/>GPT-OSS 120B · Converse API"]
-        EMB["☁️ OpenAI embeddings<br/>file and chat search vectors"]
-    end
-
-    subgraph integrations["User-connected integrations · read-only"]
-        GH["GitHub App · GitLab"]
-        DW["dbt Cloud · Snowflake"]
-    end
-
-    LS["☁️ LangSmith (US)<br/>redacted traces · eval experiments"]
-
-    U -- HTTPS --> IG
-    IG -- "/" --> FE
-    IG -- "/api/* · /socket.io/*" --> BE
-    BE <-- Prisma --> DB
-    BE -- "POST /ai/chat · x-internal-key" --> AI
-    AI -- "evidence · GitHub · chat search<br/>/api/internal/* · x-internal-key" --> BE
-    AI -- "activity log events" --> BE
-    BE -. "Socket.IO live logs" .-> U
-    BE -- "installation / OAuth tokens" --> GH
-    BE -- "fixed metadata reads" --> DW
-    AI -- "IAM task role" --> CK
-    AI -- "IAM task role" --> S3
-    AI -- "approved regional host" --> BR
-    AI -- "search embeddings" --> EMB
-    AI -. "anonymised callback" .-> LS
-    AI --> OT
-    BE --> OT
-    SM -. "injected at task start" .-> AI
-    SM -. "injected at task start" .-> BE
-
-    classDef svc fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
-    classDef data fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
-    classDef ext fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
-    classDef client fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#0f172a
-    class FE,BE,AI,OT svc
-    class DB,CK,S3,SM data
-    class BR,EMB,LS,IG,GH,DW ext
-    class U client
+    U["Browser"] -->|HTTPS| ALB["AWS ALB<br/>TLS termination"]
+    ALB -->|"/"| FE["frontend<br/>React + Vite"]
+    ALB -->|"/api · /socket.io"| BE["backend<br/>Express + Prisma"]
+    BE -->|"POST /ai/chat<br/>x-internal-key"| AI["ai-service<br/>FastAPI + LangGraph"]
+    AI -->|"/api/internal/*"| BE
+    BE --> PG[("RDS PostgreSQL")]
+    BE --> INT["GitHub · GitLab<br/>dbt Cloud · Snowflake"]
+    AI --> DDB[("DynamoDB<br/>checkpoints + memory")]
+    AI --> LLM["AWS Bedrock<br/>GPT-OSS 120B"]
 ```
+
+| Piece | Role |
+|---|---|
+| ECS Fargate (`circini-demo`) | Runs the three services; they talk over Service Connect |
+| RDS PostgreSQL 16 | Users, sessions, messages, files, audit, usage, AI activity logs |
+| DynamoDB `circini-agent-checkpoints` | LangGraph thread state per chat (TTL 30 days); items over 350 KB offload to S3 |
+| DynamoDB `circini-agent-memory` | LangGraph store: each user's standing instructions (no expiry) |
+| AWS Bedrock (ap-southeast-2) | GPT-OSS 120B through the Converse API |
+| OpenAI embeddings | Vectors for file and chat search |
+| Secrets Manager `circini/*` | Injected into the tasks at start |
+| ADOT sidecars · LangSmith (US) | Traces and metrics to X-Ray/CloudWatch · anonymised traces and eval runs |
 
 Only `/api/*` and `/socket.io/*` are routed to the backend at the edge; everything
 else is the frontend. The AI service has **no public route**: the backend reaches
@@ -175,71 +134,37 @@ sequenceDiagram
     autonumber
     participant U as Browser
     participant B as backend
-    participant D as PostgreSQL
-    participant A as ai-service (LangGraph)
-    participant K as DynamoDB checkpoints
-    participant M as Bedrock GPT-OSS
-
-    U->>B: POST /api/chat/:id/messages<br/>Authorization: Bearer JWT
-    B->>B: authenticate · requireWriteAccess · canAccessSession
-    B->>D: checkTokenCaps (over budget → 429 + audit)
-    B->>A: POST /ai/policy/check — screen before anything is stored
-    B->>D: save screened message · parse an explicit evidence-source reply
-    B->>A: POST /ai/chat + x-internal-key (history, files, impact grant)
-    A->>K: load the chat's thread
-    alt thread paused on a question
-        A->>A: Command(resume) — reply re-enters at intake
-    else
-        A->>A: start a new run
-    end
-    A->>A: screen_input — injection · deny-list · health PII · secrets
-    alt blocked
-        A-->>B: refusal + reasons (no model call)
-    else allowed or redacted
-        par routing
-            A->>M: Router Agent
-        and model-based guardrail
-            A->>M: Injection Guard
-        end
-        A->>A: policy_gate — flagged → refusal
-        opt impact on a confirmed grant
-            A->>M: Grant Judge — same analysis?
-        end
-        A->>M: specialist agent(s) and their tool loops
-        A->>B: read-only tools via /api/internal/* (screened, grant re-checked)
-        alt a user-input step
-            A-->>A: interrupt() — the question is the reply
-        else
-            A->>A: screen_output — redact · strip active content · canary check
-        end
-        A->>K: one checkpoint per turn (durability = exit)
-        A-->>B: reply · files · usage · impact_action
-    end
-    B->>D: recordUsage · audit · impact grant state
-    B-->>U: reply and generated files
+    participant A as ai-service
+    U->>B: POST /api/chat/:id/messages (Bearer JWT)
+    B->>B: auth · write access · session owner · token budget (429)
+    B->>A: POST /ai/policy/check — screen before storing
+    B->>B: save the screened message
+    B->>A: POST /ai/chat + x-internal-key
+    A->>A: run one LangGraph turn (see AI agents)
+    A-->>B: reply · files · token usage
+    B->>B: record usage · audit
+    B-->>U: reply + generated files
 ```
+
+While the turn runs, the AI service streams progress to the browser over
+Socket.IO. The graph itself is shown step by step in
+[AI agents (LangGraph)](#ai-agents-langgraph).
 
 ### Defence in depth
 
-```mermaid
-flowchart TD
-    L1["🌐 Edge<br/>ALB TLS 1.3 policy · HTTP→HTTPS · only /api and /socket.io exposed"]
-    L2["🔐 Identity<br/>Cognito OIDC JWT or admin API key · fail-closed x-internal-key between services"]
-    L3["👤 Authorisation<br/>role guards · write guard · per-session ownership"]
-    L4["📊 Quota<br/>per-user daily and monthly token caps → 429"]
-    L5["🛡️ Input guardrails — screen_input<br/>injection + deny patterns · encoded obfuscation · health PII blocked · PII and secrets redacted"]
-    L6["🧠 Model-based guardrail — Injection Guard<br/>paraphrased extraction · overrides · exfiltration · hidden instructions in files → policy_gate, fail-closed"]
-    L7["🧰 Least-privilege agents<br/>per-agent tool allow-list · every tool read-only · identity from the turn, never the model<br/>evidence sources only after the user confirms (interrupt) · backend re-checks the grant"]
-    L8["🔎 Tool results<br/>backend payloads screened like uploads · ToolNode wrapper redacts and caps every result"]
-    L9["📤 Output<br/>PII and secret redaction · images and HTML stripped · system-prompt canary<br/>SQL static checks: one read-only SELECT, no DDL/DML, allow-listed file names"]
-    L10["📦 Runtime and state<br/>checkpoints in DynamoDB SSE + TTL · strict msgpack deserialisation<br/>IAM task role scoped to one table and bucket · non-root read-only containers"]
-    L11["📝 Audit and observability<br/>audit trail · per-call activity logs · OTEL · LangSmith traces anonymised, env-level tracing refused"]
-
-    L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7 --> L8 --> L9 --> L10 --> L11
-
-    classDef layer fill:#e0e7ff,stroke:#4f46e5,stroke-width:2px,color:#0f172a
-    class L1,L2,L3,L4,L5,L6,L7,L8,L9,L10,L11 layer
-```
+| # | Layer | Controls |
+|---|---|---|
+| 1 | Edge | ALB TLS 1.3 policy · HTTP→HTTPS · only `/api` and `/socket.io` reach the backend |
+| 2 | Identity | Cognito OIDC JWT or admin API key · fail-closed `x-internal-key` between services |
+| 3 | Authorisation | Role guards · write guard · per-session ownership |
+| 4 | Quota | Per-user daily and monthly token caps → `429` |
+| 5 | Input guardrails (`screen_input`) | Injection and deny patterns · encoded obfuscation · health PII blocked · PII and secrets redacted |
+| 6 | Model guardrail (Injection Guard) | Paraphrased extraction, overrides, exfiltration, hidden instructions in files → `policy_gate`, fail-closed |
+| 7 | Least-privilege agents | Per-agent tool allow-list · every tool read-only · identity from the turn, never the model · evidence sources only after the user confirms |
+| 8 | Tool results | Backend payloads screened like uploads · `ToolNode` wrapper redacts and caps every result |
+| 9 | Output (`screen_output`) | PII and secret redaction · images and HTML stripped · system-prompt canary · SQL static checks (one read-only `SELECT`, no DDL/DML) |
+| 10 | Runtime and state | DynamoDB SSE + TTL · strict msgpack deserialisation · IAM role scoped to one table and bucket · non-root read-only containers |
+| 11 | Audit and observability | Audit trail · per-call activity logs · OTEL · anonymised LangSmith traces |
 
 ### Secrets
 
@@ -409,26 +334,25 @@ deploy path. The agent evals also run nightly against the live model.
 
 ```mermaid
 flowchart LR
-    P(["push to main"]) --> CI["CI<br/>typecheck · lint · build<br/>AI tests incl. DynamoDB checkpoints<br/>backend security integration tests<br/>pip-audit · Trivy fs · Semgrep · Gitleaks"]
-    CI -- fail --> X1["❌ stop"]
-    CI -- pass --> EV["Agent evals<br/>LangSmith · live Bedrock<br/>router · guard · grant judge · generation<br/>impact · history · repository · consult"]
-    CI -- pass --> B["Build 3 images<br/>tag sha-&lt;commit&gt; · push to ECR"]
-    EV -- "below thresholds" --> X2["❌ nothing deployed"]
-    B --> SC["Trivy image scan<br/>CRITICAL blocks"]
-    SC -- fail --> X2
-    EV -- pass --> D
-    SC -- pass --> D["Deploy<br/>OIDC role · business-hours hold<br/>network · data · cognito stacks<br/>Bedrock preflight · LangSmith key<br/>app stack: ECS · DynamoDB · S3 · IAM<br/>schema sync · roll services"]
-    D --> V["Production checks<br/>smoke · GitHub · chat search<br/>impact agent · agent graph"]
-    V -- pass --> OK(["✅ live"])
-    V -- fail --> RB["❌ job fails<br/>redeploy the last good tag"]
-
-    classDef ok fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
-    classDef bad fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
-    classDef step fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
-    class OK ok
-    class X1,X2,RB bad
-    class CI,EV,B,SC,D,V step
+    P(["push to main"]) --> CI["CI<br/>tests · lint · security scans"]
+    CI --> EV["Agent evals<br/>LangSmith · live Bedrock"]
+    CI --> IMG["Build + scan images<br/>tag sha-commit"]
+    EV --> D["Deploy<br/>CloudFormation · ECS"]
+    IMG --> D
+    D --> V["Production checks"]
+    V --> OK(["live"])
 ```
+
+Any failing stage stops the pipeline and nothing is deployed. If the production
+checks fail after a deploy, redeploy the last good `sha-<commit>` tag.
+
+| Stage | What runs |
+|---|---|
+| CI | Typecheck, lint, build · AI tests incl. DynamoDB checkpoints · backend security integration tests · pip-audit, Trivy fs, Semgrep, Gitleaks |
+| Agent evals | Router, guard, grant judge, generation, impact, history, repository and consult suites; below threshold blocks the deploy |
+| Build + scan | Three images pushed to ECR · Trivy image scan, `CRITICAL` blocks |
+| Deploy | OIDC role · business-hours hold · network, data and Cognito stacks · Bedrock preflight · app stack · schema sync · roll services |
+| Production checks | Smoke · GitHub · chat search · impact agent · agent graph |
 
 **Why GitHub-hosted runners.** CD runs on standard GitHub-hosted runners and
 reaches AWS over the public API, so there is no self-hosted runner and no
@@ -664,164 +588,200 @@ wrong key `401`.
 
 ## AI agents (LangGraph)
 
-Each chat turn is one run of a LangGraph `StateGraph`; each chat is a thread.
-Every step is one of four kinds — **LLM**, **data**, **action** or **user input**
-(`interrupt()`). Full design: [docs/LangGraph_Agent_Architecture.md](docs/LangGraph_Agent_Architecture.md).
+Each chat turn is one run of a LangGraph `StateGraph`, and each chat is one
+thread (`thread_id` = chat session id). Code: `services/ai-service/workflow/`
+(`orchestrator.py` builds the graph, `runner.py` runs it). Design notes:
+[docs/LangGraph_Agent_Architecture.md](docs/LangGraph_Agent_Architecture.md).
 
-### The twelve agents, and what each one is for
+### Complete flow: input to output
 
-```mermaid
-flowchart TD
-    U(["chat turn"])
-    U --> IG["Injection Guard<br/>is this message a manipulation attempt?<br/>fails closed"]
-    U --> SUM["Summarizer<br/>folds this chat's older turns<br/>into a running summary"]
-    U --> RT{"Router<br/>which specialist,<br/>and only one?"}
-
-    IG -- flagged --> STOP(["refused, nothing runs"])
-
-    RT -- consult --> CON["Migration Consultant<br/>answers migration questions;<br/>records standing instructions"]
-    RT -- repository --> REPO["Repository Agent<br/>reads and explains the<br/>connected GitHub repo"]
-    RT -- history --> HIST["History Agent<br/>finds earlier chats and files,<br/>and hands the file over"]
-    RT -- generate --> AN["Requirements Analyst<br/>turns the request into a build spec;<br/>pauses to ask when truly unclear"]
-    RT -- impact --> GJ["Grant Judge<br/>does this turn continue the<br/>analysis whose sources were confirmed?"]
-    RT -- out of scope --> STOP
-
-    AN --> AU["Model Author ×N<br/>writes one dbt model each,<br/>in parallel"]
-    AU --> RV["Model Reviewer<br/>12-point checklist"]
-    RV -- "defects · up to 2 revisions" --> AU
-
-    GJ --> INV["Evidence Investigator<br/>reads the confirmed sources<br/>line by line, cites every fact"]
-    INV --> RPT["Impact Reporter<br/>answers the user's questions<br/>in the order they asked"]
-
-    CON --> OUT(["screened reply + files"])
-    REPO --> OUT
-    HIST --> OUT
-    RV --> OUT
-    RPT --> OUT
-    SUM -.-> RT
-
-    classDef llm fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
-    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
-    class IG,SUM,RT,CON,REPO,HIST,AN,GJ,AU,RV,INV,RPT llm
-    class STOP stop
-```
-
-Every agent is an LLM step. What surrounds them — screening, routing, recall,
-delivery, validation, publication — is deterministic code, so no model decides
-whether a guardrail applies, whose files are read, or what reaches the user.
-
-### The turn graph
+Every box is a LangGraph node. Solid arrows are edges; the labels name the
+LangGraph mechanism that takes the turn there.
 
 ```mermaid
 flowchart TD
-    S(["chat turn"]) --> SI["screen_input · action<br/>guardrails in"]
-    SI -- blocked --> BL(["refusal"])
-    SI --> R["Router Agent · LLM"]
-    SI --> G["Injection Guard · LLM"]
-    SI --> RM["recall_memories · data<br/>store · this user's standing instructions"]
-    SI --> SM["summarize_history · LLM<br/>older turns → running summary"]
-    R --> PG{"policy_gate"}
-    G --> PG
-    RM --> PG
-    SM --> PG
-    PG -- flagged --> BL
-    PG -- "impact on a confirmed grant" --> GJ["Grant Judge · LLM"]
-    PG --> DI{"dispatch"}
-    GJ --> DI
-    DI -- generate --> MIG[["Migration pipeline"]]
-    DI -- impact --> IMP[["Impact pipeline"]]
-    DI -- consult --> CON["Migration Consultant<br/>LLM + file tools"]
-    DI -- repository --> REP["Repository Agent<br/>LLM + GitHub tools"]
-    DI -- history --> HIS[["History pipeline"]]
-    DI -- out_of_scope --> SG["scope_guard · action"]
-    MIG --> CM["capture_memory · action<br/>store · a remembered instruction"]
-    CM --> SO["screen_output · action<br/>guardrails out"]
-    IMP --> CM
-    CON --> CM
-    REP --> CM
-    HIS --> CM
-    SG --> CM
-    MIG -. "paused question answered" .-> SI
-    IMP -. "paused question answered" .-> SI
-    SO --> E(["reply + files"])
+    IN(["INPUT: POST /ai/chat<br/>message · files · history · user"])
+    IN --> RUN["TurnRunner<br/>request goes into Runtime context,<br/>never into checkpointed state"]
+    RUN --> LOAD[("Checkpointer: DynamoDBSaver<br/>aget_state(thread_id)")]
+    LOAD --> Q{"thread paused<br/>on interrupt()?"}
+    Q -- "no: ainvoke(TurnInput)" --> S0
+    Q -- "yes: ainvoke(Command(resume))" --> PAUSED["paused node re-runs<br/>and sets rerun = true"]
 
-    classDef llm fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
-    classDef act fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
-    classDef sub fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
-    class R,G,GJ,CON,REP,SM llm
-    class SI,SO,SG,PG,DI,RM,CM act
-    class MIG,IMP,HIS sub
-```
-
-**Migration pipeline** — evaluator-optimizer loop, one build per target model:
-
-```mermaid
-flowchart LR
-    AN["Requirements Analyst<br/>LLM + GitHub reads"]
-    CL["clarify<br/>user input · interrupt()"]
-    PL["plan_builds"]
-    subgraph BUILD["build_model × N · Send · up to 3 in parallel"]
-        AU["Model Author · LLM"] --> VA["validate · data<br/>sqlglot static checks"]
-        VA -- "rejected: exact reason" --> AU
-        VA -- passed --> RV["Model Reviewer · LLM<br/>12-point checklist"]
-        RV -- "defects · up to 2 revisions" --> AU
+    subgraph TURN["StateGraph migration_assistant · state TurnState"]
+        S0(["START"]) --> SI["screen_input<br/>guardrails in"]
+        SI -- "Command(goto=END) · blocked" --> E0(["END"])
+        SI -- "Command(goto=[4 nodes]) · parallel" --> RT["route_intent<br/>Router · LLM"]
+        SI --> IG["injection_guard<br/>LLM"]
+        SI --> RM["recall_memories<br/>Store search"]
+        SI --> SUM["summarize_history<br/>LLM"]
+        RT --> PG{"policy_gate<br/>join of all 4"}
+        IG --> PG
+        RM --> PG
+        SUM --> PG
+        PG -- "Command(goto=END) · flagged" --> E0
+        PG -- "impact on a confirmed grant" --> GJ["grant_judge<br/>LLM"]
+        PG --> DI{"dispatch<br/>conditional edge on route"}
+        GJ --> DI
+        DI -- generate --> GEN[["generate<br/>subgraph"]]
+        DI -- impact --> IMP[["impact<br/>subgraph"]]
+        DI -- history --> HIS[["history<br/>subgraph"]]
+        DI -- consult --> CON["consult<br/>tool loop"]
+        DI -- repository --> REP["repository<br/>tool loop"]
+        DI -- out_of_scope --> SG["scope_guard<br/>no LLM"]
+        GEN --> AS{"after_specialist"}
+        IMP --> AS
+        HIS --> AS
+        CON --> AS
+        REP --> AS
+        SG --> AS
+        AS -- "rerun: a question was answered" --> SI
+        AS --> CM["capture_memory<br/>Store put"]
+        CM --> SO["screen_output<br/>guardrails out"]
+        SO --> E0
     end
-    PUB["publish · action<br/>files + reply"]
-    AN -- "blocking questions" --> CL
-    AN -- targets --> PL --> AU
+
+    PAUSED --> AS
+    GEN -. "interrupt(): ask the user" .-> SAVE
+    IMP -. "interrupt(): ask the user" .-> SAVE
+    E0 --> SAVE[("Checkpoint written once<br/>durability = exit")]
+    SAVE --> OUT(["OUTPUT: TurnResult<br/>reply · files · usage · paused?"])
+
+    classDef llm fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef code fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef sub fill:#fef3c7,stroke:#d97706,color:#0f172a
+    class RT,IG,SUM,GJ,CON,REP llm
+    class SI,RM,PG,DI,SG,AS,CM,SO code
+    class GEN,IMP,HIS sub
+```
+
+Blue nodes call the model, green nodes are plain code, amber nodes are compiled
+subgraphs (below). No model decides whether a guardrail applies, whose files are
+read, or what reaches the user.
+
+When a specialist needs an answer from the user (a missing base model, which
+evidence sources to use), it calls `interrupt()`. The run stops, the checkpoint
+is saved, and the question is the reply. The user's next message resumes the
+thread with `Command(resume=...)`, then goes back through `screen_input` so it is
+screened and routed like any other message.
+
+### LangGraph components used
+
+| Component | Where it is used |
+|---|---|
+| `StateGraph` + reducers | `TurnState` is the turn graph's state; `latest` and `operator.add` reducers merge parallel writes |
+| `input_schema` / `output_schema` | `TurnInput` in, `TurnOutput` out; the rest of the state stays internal |
+| `context_schema` + `Runtime` | `TurnContext` carries the message, files, user, backend gateway and logger; it is never checkpointed |
+| `START` / `END` | Entry and exit of every graph and subgraph |
+| `add_edge` | Fixed steps, and the join `[route_intent, injection_guard, recall_memories, summarize_history] → policy_gate` |
+| `Command(goto=...)` | Routing from inside a node: `screen_input` fan-out, `policy_gate`, `grant_judge`, analyst, gates, author/validate/review |
+| `add_conditional_edges` | `dispatch` → specialist, `after_specialist`, the tool loop |
+| Subgraphs | `generate`, `impact`, `history`, `build_model`, and every tool loop are compiled graphs used as nodes |
+| `Send` | One `build_model` run per target file, in parallel (map-reduce) |
+| `ToolNode` | Runs agent tools; `guard_tool_call` screens and caps every result |
+| `interrupt()` + `Command(resume)` | `clarify`, `ask_sources`, `ask_user` pause for the user; the next message resumes |
+| `RetryPolicy` | `LLM_RETRY` on every model node |
+| Checkpointer | `DynamoDBSaver`: one thread per chat, one write per turn (`durability="exit"`), 30-day TTL |
+| Store | `DynamoDBStore`: long-term memory per user, read by `recall_memories`, written by `capture_memory` |
+| Config | `recursion_limit=100`, `max_concurrency`, callbacks for token usage and LangSmith tracing |
+
+### Inside the subgraphs
+
+**generate** — plan the models, build each one in parallel, publish the files:
+
+```mermaid
+flowchart LR
+    S(["START"]) --> AN["analyze<br/>Requirements Analyst<br/>tool loop"]
+    AN -- "unclear" --> CL["clarify<br/>interrupt()"]
+    AN -- "targets" --> PB["plan_builds"]
     AN -- "nothing to build" --> PUB
-    RV -- "approved or budget spent" --> PUB
+    PB -- "Send × N" --> BM[["build_model"]]
+    BM --> PUB["publish<br/>files + reply"]
+    CL --> E(["END"])
+    PUB --> E
 ```
 
-**History pipeline** — finding a file and handing it over are separate steps:
+**build_model** — one per target file; errors go back to the author until the
+revision budget is spent:
 
 ```mermaid
 flowchart LR
-    SE["History Agent · LLM<br/>search_chat_history · search_chat_files<br/>request_file_delivery"]
-    SE --> GA{"delivery_gate<br/>asked for the file?"}
-    GA -- "no" --> EN(["reply"])
-    GA -- "asked for by asset id" --> DL["deliver_files · action<br/>backend fetch · chat.file.attach<br/>guardrails out"]
-    GA -- "answer only names it" --> LO["locate_file · data<br/>one owned asset with that name"]
-    LO -- "exactly one match" --> DL
-    LO -- "none or several" --> EN
-    DL --> EN
+    S(["START"]) --> AU["author<br/>LLM"]
+    AU --> VA["validate<br/>sqlglot static checks"]
+    VA -- "rejected" --> AU
+    VA -- "passed" --> RV["review<br/>LLM · 12-point checklist"]
+    RV -- "defects" --> AU
+    RV -- "approved or budget spent" --> FI["finish"]
+    VA -- "budget spent" --> FI
+    FI --> E(["END"])
 ```
 
-Asked for a file, the model reliably answers with its name and where it lives
-rather than calling the delivery tool, so the hand-over does not depend on it:
-the gate recognises the request and `locate_file` resolves the name the answer
-already gave. Ambiguity is never guessed at. The user's own files only — the
-backend re-checks ownership — and the content is attached to the reply without
-ever entering the model's context.
-
-**Impact pipeline** — evidence only from sources the user confirmed:
+**impact** — evidence only from sources the user confirmed:
 
 ```mermaid
 flowchart LR
-    PS["plan_sources · data<br/>backend grant"] -- "not confirmed" --> AS["ask_sources<br/>user input · interrupt()"]
-    PS -- confirmed --> IN["Evidence Investigator<br/>LLM + read_impact_evidence<br/>line-numbered files"]
-    IN --> EG{"evidence_gate · data"}
-    EG -- "nothing read yet · once" --> IN
-    EG -- "open questions it can read · once" --> IN
-    EG -- grounded --> RP["Impact Reporter · LLM<br/>answers in order · file:line"]
-    EG -- "needs the user" --> AK["ask_user<br/>user input · interrupt()"]
-    RP --> FI["finish · action"]
+    S(["START"]) --> PS["plan_sources<br/>backend grant"]
+    PS -- "not confirmed" --> AS["ask_sources<br/>interrupt()"]
+    PS -- "confirmed" --> INV["investigate<br/>Evidence Investigator<br/>tool loop"]
+    INV --> EG{"evidence_gate"}
+    EG -- "read more · once" --> INV
+    EG -- "grounded" --> RP["report<br/>Impact Reporter · LLM"]
+    EG -- "needs the user" --> AU["ask_user<br/>interrupt()"]
+    RP --> FI["finish"]
+    AS --> E(["END"])
+    AU --> E
+    FI --> E
 ```
 
-| Agent | Steps | Tools (all read-only) |
+**history** — finding a file and handing it over are separate steps:
+
+```mermaid
+flowchart LR
+    S(["START"]) --> SE["search<br/>History Agent<br/>tool loop"]
+    SE --> DG{"delivery_gate"}
+    DG -- "requested by id" --> DF["deliver_files"]
+    DG -- "asked for, only named" --> LF["locate_file"]
+    DG -- "no file wanted" --> E(["END"])
+    LF -- "one match" --> DF
+    LF -- "none or several" --> E
+    DF --> E
+```
+
+The model often names the file instead of calling the delivery tool, so
+`delivery_gate` spots the request and `locate_file` resolves the name against
+the user's own files. Ambiguity is never guessed at, and the file content never
+enters the model's context.
+
+**tool loop** — every agent that uses tools (analyst, consultant, repository,
+history search, evidence investigator) is this small compiled graph, run
+without a checkpointer:
+
+```mermaid
+flowchart LR
+    S(["START"]) --> MO["model<br/>LLM"]
+    MO -- "tool calls" --> TN["tools<br/>ToolNode"]
+    TN -- "more to do" --> MO
+    TN -- "submit_* result recorded" --> E(["END"])
+    MO -- "no answer yet" --> NU["nudge"]
+    NU --> MO
+    MO -- "answered" --> E
+```
+
+### The agents
+
+| Agent | Node | Tools (all read-only) |
 |---|---|---|
-| Router Agent | LLM | — |
-| Injection Guard | LLM | — |
-| Grant Judge | LLM | — |
-| History Agent | LLM + data, action | `search_chat_history`, `search_chat_files`, `request_file_delivery` (delivered by `attach_chat_file`) |
-| Repository Agent | LLM + data | `github_connection_status`, `list_github_repositories`, `list_github_files`, `read_github_file` |
-| Migration Consultant | LLM + data, action | `list_files`, `get_file_content`, `remember`, `forget` |
-| Requirements Analyst | LLM + data, user input | GitHub tools, `submit_migration_spec` |
-| Model Author | LLM | — (one per target model) |
-| Model Reviewer | LLM | — |
-| Evidence Investigator | LLM + data, user input | `read_impact_evidence`, `submit_evidence_dossier` |
-| Impact Reporter | LLM | — |
-| Summarizer | LLM | — (condenses a long chat's older turns) |
+| Router Agent | `route_intent` | — |
+| Injection Guard | `injection_guard` | — |
+| Summarizer | `summarize_history` | — (condenses a long chat's older turns) |
+| Grant Judge | `grant_judge` | — |
+| Migration Consultant | `consult` | `list_files`, `get_file_content`, `remember`, `forget` |
+| Repository Agent | `repository` | `github_connection_status`, `list_github_repositories`, `list_github_files`, `read_github_file` |
+| History Agent | `history` → `search` | `search_chat_history`, `search_chat_files`, `request_file_delivery` (delivered by `attach_chat_file`) |
+| Requirements Analyst | `generate` → `analyze` | GitHub tools, `submit_migration_spec` |
+| Model Author | `build_model` → `author` | — (one per target model) |
+| Model Reviewer | `build_model` → `review` | — |
+| Evidence Investigator | `impact` → `investigate` | `read_impact_evidence`, `submit_evidence_dossier` |
+| Impact Reporter | `impact` → `report` | — |
 
 Tool names are part of the activity-log contract: the admin AI log and the
 release checks key on them. `generate_output`, `attach_chat_file` and
