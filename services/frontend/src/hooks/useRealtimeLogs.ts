@@ -40,7 +40,8 @@ export function useRealtimeLogs(sessionId: string | null, enabled: boolean = tru
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
-      auth: { token: getToken() },
+      // Read on every (re)connect so a reconnect presents the renewed token.
+      auth: cb => cb({ token: getToken() }),
     });
 
     socketRef.current = socket;

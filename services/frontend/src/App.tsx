@@ -11,7 +11,7 @@ import SettingsPage from './pages/SettingsPage';
 import FilePreviewModal from './components/FilePreviewModal';
 import { Session, Message, UploadedFile, GeneratedOutput, User, Integration, IntegrationProvider, LibraryFile } from './types';
 import * as api from './services/api';
-import { getToken, getStoredUser, fetchMe, logout } from './services/auth';
+import { getToken, getStoredUser, restoreSession, logout } from './services/auth';
 import { AuthConfig, fetchAuthConfig, completeLogin } from './services/oidc';
 import { CenterSpinner } from './components/ui';
 import { useRealtimeLogs } from './hooks/useRealtimeLogs';
@@ -102,7 +102,7 @@ function App() {
   // Validate the stored token on mount (401s are handled by the interceptor)
   useEffect(() => {
     if (!getToken()) return;
-    fetchMe()
+    restoreSession()
       .then(me => setUser(me))
       .catch(() => setUser(null))
       .finally(() => setAuthChecked(true));

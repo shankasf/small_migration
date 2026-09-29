@@ -1,7 +1,7 @@
 import { useState, FormEvent, InputHTMLAttributes } from 'react';
 import { ArrowRight, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import QRCode from 'qrcode';
-import { login, storeToken, storeRefreshToken, fetchMe, clearAuth } from '../services/auth';
+import { login, startSession, fetchMe, clearAuth, REMEMBER_DAYS } from '../services/auth';
 import { AuthConfig } from '../services/oidc';
 import {
   initPool,
@@ -64,6 +64,7 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [remember, setRemember] = useState(false);
 
   // Embedded Cognito flow state (oidc mode only)
   const [step, setStep] = useState<StepName>('credentials');
@@ -104,8 +105,7 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
         setNewPassword('');
         setConfirmPassword('');
         setQrDataUrl(null);
-        storeToken(next.idToken);
-        storeRefreshToken(next.refreshToken);
+        startSession(next.idToken, next.refreshToken, remember);
         try {
           const me = await fetchMe();
           onLogin(me);
@@ -469,7 +469,16 @@ export default function LoginPage({ config, onLogin }: LoginPageProps) {
                   onChange={setPassword}
                 />
               </Field>
-              <div className="flex justify-end">
+              <div className="flex items-center justify-between gap-3">
+                <label className="flex cursor-pointer items-center gap-2 text-[13px] text-muted transition-colors hover:text-ink">
+                  <input
+                    type="checkbox"
+                    className="accent-brass"
+                    checked={remember}
+                    onChange={e => setRemember(e.target.checked)}
+                  />
+                  Keep me signed in for {REMEMBER_DAYS} days
+                </label>
                 <button
                   type="button"
                   onClick={startForgotPassword}

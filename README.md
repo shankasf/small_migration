@@ -84,6 +84,13 @@ Gates 2–4 are re-evaluated on **every** request, not just at login — revokin
 role or disabling an account takes effect on the user's next action rather than
 when their token expires.
 
+**Staying signed in.** Sign-in lasts one day by default. Tick **Keep me
+signed in for 30 days** on the login page to stay signed in for 30 days on that
+browser. The 5-minute Cognito ID token is renewed silently from the refresh
+token, including after a page reload. Signing out revokes the refresh token in
+Cognito, and a disabled or re-roled account is still refused on its next
+request.
+
 Service-to-service routes are **registered ahead of** the user-auth middleware
 and carry their own fail-closed `requireInternalKey` guard. There is no path
 prefix exemption inside `authenticate`, so a newly added route cannot silently

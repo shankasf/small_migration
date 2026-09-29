@@ -64,7 +64,7 @@ Resources:
       EnableTokenRevocation: true
       AccessTokenValidity: 5
       IdTokenValidity: 5
-      RefreshTokenValidity: 1
+      RefreshTokenValidity: 30
       TokenValidityUnits: { AccessToken: minutes, IdToken: minutes, RefreshToken: days }
       AllowedOAuthFlowsUserPoolClient: true
       AllowedOAuthFlows: [code]
