@@ -602,74 +602,85 @@ thread (`thread_id` = chat session id). Code: `services/ai-service/workflow/`
 
 ### Complete flow: input to output
 
-Each box is one step of the turn, with its code name (the LangGraph node) in
-small print underneath. Arrows show where the turn goes next, and each arrow's
-label says why.
+One chat message is one run of the turn graph. Each box names what it is
+(**Agent**, **Node** or **Subgraph**, see the key below), what it does, and its
+node name in the code. Arrows are edges, and each label says why the turn goes
+that way.
 
 ```mermaid
+%%{init: {"flowchart": {"padding": 16, "wrappingWidth": 260}}}%%
 flowchart TD
-    IN(["User sends a message<br/><small>POST /ai/chat · message, files, history, user</small>"])
-    IN --> RUN["Start the turn<br/><small>TurnRunner · request data kept out of saved state</small>"]
-    RUN --> LOAD[("Load this chat's saved progress<br/><small>DynamoDB checkpoint · one thread per chat</small>")]
-    LOAD --> Q{"Was the chat waiting<br/>for the user's answer?"}
-    Q -- "no: start a new turn" --> S0
-    Q -- "yes: pick up where it stopped" --> PAUSED["Paused step runs again<br/>with the user's answer<br/><small>Command(resume) · sets rerun</small>"]
+    IN(["INPUT · POST /ai/chat<br/>message, files, history, user"])
+    IN --> RUN["TurnRunner<br/>starts the turn<br/>request data goes in Runtime<br/>context, never in State"]
+    RUN --> LOAD[("Load checkpoint<br/>this chat's saved State<br/>DynamoDBSaver · thread = chat id")]
+    LOAD --> Q{"Is the thread paused,<br/>waiting for the user?"}
+    Q -- "no · new run with TurnInput" --> S0
+    Q -- "yes · Command(resume)" --> PAUSED["Paused node runs again<br/>with the user's answer<br/>sets State.rerun = true"]
 
-    subgraph TURN["One chat turn · migration_assistant graph"]
-        S0(["Start"]) --> SI["Check the incoming message<br/><small>screen_input · guardrails</small>"]
-        SI -- "unsafe: stop here" --> E0(["Finish"])
-        SI -- "safe: run these 4 at the same time" --> RT["Work out what the user wants<br/><small>route_intent · LLM</small>"]
-        SI --> IG["Look for prompt injection<br/><small>injection_guard · LLM</small>"]
-        SI --> RM["Recall what we know about this user<br/><small>recall_memories · long-term memory</small>"]
-        SI --> SUM["Shorten a long chat history<br/><small>summarize_history · LLM</small>"]
-        RT --> PG{"Wait for all 4,<br/>then apply the rules<br/><small>policy_gate</small>"}
+    subgraph TURN["Turn graph · StateGraph migration_assistant · State = TurnState"]
+        S0(["START"]) --> SI["Node: screen_input<br/>checks the incoming message<br/>guardrails, no LLM"]
+        SI -- "blocked · go to END" --> E0(["END"])
+        SI -- "safe · fan out: 4 nodes in parallel" --> RT["Router Agent<br/>works out what the user wants<br/>node: route_intent"]
+        SI --> IG["Injection Guard Agent<br/>looks for prompt injection<br/>node: injection_guard"]
+        SI --> RM["Node: recall_memories<br/>loads what we know about the user<br/>from the Store, no LLM"]
+        SI --> SUM["Summarizer Agent<br/>shortens a long chat history<br/>node: summarize_history"]
+        RT --> PG{"Node: policy_gate<br/>waits for all 4,<br/>then applies the rules"}
         IG --> PG
         RM --> PG
         SUM --> PG
-        PG -- "injection found: stop" --> E0
-        PG -- "impact follow-up on sources<br/>the user already approved" --> GJ["Is this still the same<br/>approved analysis?<br/><small>grant_judge · LLM</small>"]
-        PG --> DI{"Send to the right specialist<br/><small>dispatch</small>"}
+        PG -- "injection found · go to END" --> E0
+        PG -- "impact follow-up on sources<br/>the user already approved" --> GJ["Grant Judge Agent<br/>is this still the approved analysis?<br/>node: grant_judge"]
+        PG --> DI{"Node: dispatch<br/>picks the specialist<br/>from State.route"}
         GJ --> DI
-        DI -- "write dbt / SQL models" --> GEN[["Generate models<br/><small>generate · subgraph</small>"]]
-        DI -- "what breaks if this changes?" --> IMP[["Impact analysis<br/><small>impact · subgraph</small>"]]
-        DI -- "find an earlier chat or file" --> HIS[["Chat history search<br/><small>history · subgraph</small>"]]
-        DI -- "migration question" --> CON["Answer as a consultant<br/><small>consult · tool loop</small>"]
-        DI -- "GitHub repo question" --> REP["Read the GitHub repo<br/><small>repository · tool loop</small>"]
-        DI -- "off-topic" --> SG["Politely decline<br/><small>scope_guard · no LLM</small>"]
-        GEN --> AS{"Anything left to do?<br/><small>after_specialist</small>"}
+        DI -- "route = generate" --> GEN["Subgraph: generate<br/>writes dbt / SQL models<br/>Analyst, Author, Reviewer agents"]
+        DI -- "route = impact" --> IMP["Subgraph: impact<br/>what breaks if this changes?<br/>Investigator, Reporter agents"]
+        DI -- "route = history" --> HIS["Subgraph: history<br/>finds an earlier chat or file<br/>History Agent"]
+        DI -- "route = consult" --> CON["Migration Consultant Agent<br/>answers migration questions<br/>node: consult, tool loop"]
+        DI -- "route = repository" --> REP["Repository Agent<br/>reads the GitHub repo<br/>node: repository, tool loop"]
+        DI -- "route = out_of_scope" --> SG["Node: scope_guard<br/>politely declines off-topic<br/>no LLM"]
+        GEN --> AS{"Conditional edge<br/>after_specialist<br/>checks State.rerun"}
         IMP --> AS
         HIS --> AS
         CON --> AS
         REP --> AS
         SG --> AS
-        AS -- "user just answered a question:<br/>check and route it again" --> SI
-        AS -- "done" --> CM["Save anything worth remembering<br/><small>capture_memory · long-term memory</small>"]
-        CM --> SO["Check the reply before sending<br/><small>screen_output · removes secrets and PII</small>"]
+        AS -- "rerun · the user just answered,<br/>check and route it again" --> SI
+        AS -- "done" --> CM["Node: capture_memory<br/>saves anything worth remembering<br/>to the Store, no LLM"]
+        CM --> SO["Node: screen_output<br/>checks the reply before sending<br/>removes secrets and PII"]
         SO --> E0
     end
 
     PAUSED --> AS
-    GEN -. "needs info: pause and ask the user" .-> SAVE
-    IMP -. "needs info: pause and ask the user" .-> SAVE
-    E0 --> SAVE[("Save the chat's progress once<br/><small>checkpoint · durability = exit</small>")]
-    SAVE --> OUT(["Reply to the user<br/><small>TurnResult · reply, files, token usage, paused?</small>"])
+    GEN -. "interrupt() · pause and ask the user" .-> SAVE
+    IMP -. "interrupt() · pause and ask the user" .-> SAVE
+    E0 --> SAVE[("Save checkpoint<br/>State written once per turn<br/>durability = exit")]
+    SAVE --> OUT(["OUTPUT · TurnResult<br/>reply, files, token usage, paused?"])
 
-    classDef llm fill:#dbeafe,stroke:#2563eb,color:#0f172a
-    classDef code fill:#dcfce7,stroke:#16a34a,color:#0f172a
-    classDef sub fill:#fef3c7,stroke:#d97706,color:#0f172a
-    class RT,IG,SUM,GJ,CON,REP llm
-    class SI,RM,PG,DI,SG,AS,CM,SO code
+    classDef agent fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef step fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef sub fill:#fef3c7,stroke:#d97706,stroke-width:3px,color:#0f172a
+    class RT,IG,SUM,GJ,CON,REP agent
+    class SI,RM,PG,DI,SG,AS,CM,SO step
     class GEN,IMP,HIS sub
 ```
 
-Blue boxes ask the AI model, green boxes are plain code, and amber boxes are
-multi-step sub-flows (shown below). The AI model never decides whether a safety
-rule applies, whose files get read, or what reaches the user. Plain code does.
+| Term | What it means here |
+|---|---|
+| **Agent** (blue) | A node that calls the LLM. Some agents also use read-only tools in a tool loop. |
+| **Node** (green) | One step in the graph. Plain Python code, no LLM. |
+| **Subgraph** (amber) | A small graph of its own, used as one node. Its agents are listed in the box and drawn below. |
+| **State** | `TurnState`, the shared data every node reads and writes during the turn (route, reply, files, `rerun`). |
+| **Edge** | The next step. A **conditional edge** picks the next step from State. |
+| **Checkpoint** | This chat's State, saved in DynamoDB so a paused turn can resume. |
+| **Store** | Long-term memory for each user, kept across chats. |
 
-When a specialist needs something from the user, such as a missing base model or
-which evidence sources to use, it pauses the chat with `interrupt()`. The progress
-is saved and the question becomes the reply. The user's next message picks the
-chat up where it stopped (`Command(resume=...)`) and is then checked and routed
+The LLM never decides whether a guardrail applies, whose files get read, or what
+reaches the user. Nodes (plain code) do.
+
+When a subgraph needs something from the user, such as a missing base model or
+which evidence sources to use, it calls `interrupt()`. The run stops, the
+checkpoint is saved, and the question becomes the reply. The user's next message
+resumes the thread with `Command(resume=...)` and is then screened and routed
 like any other message.
 
 ### LangGraph components used
