@@ -683,6 +683,278 @@ checkpoint is saved, and the question becomes the reply. The user's next message
 resumes the thread with `Command(resume=...)` and is then screened and routed
 like any other message.
 
+### The graph in "Thinking in LangGraph" terms
+
+This section follows the five steps in LangChain's
+[Thinking in LangGraph](https://docs.langchain.com/oss/python/langgraph/thinking-in-langgraph)
+guide. Every name below is the exact node, State key or tool name in
+`services/ai-service/workflow/`.
+
+#### 1. Map out the workflow as discrete steps
+
+Each box is a LangGraph node, named as in `add_node`. Solid arrows are fixed
+edges (`add_edge`). Dotted arrows are dynamic routing: a node returning
+`Command(goto=...)`, a conditional edge (`add_conditional_edges`), or `Send`. The
+two diamonds are conditional-edge functions, not nodes. Each grey cluster is a
+compiled subgraph used as one node of the turn graph.
+
+```mermaid
+flowchart TD
+    tS([START]) --> screen_input
+    screen_input -. "Command: blocked" .-> tE([END])
+    screen_input -. "Command: goto 4 nodes in parallel" .-> route_intent
+    screen_input -.-> injection_guard
+    screen_input -.-> recall_memories
+    screen_input -.-> summarize_history
+    route_intent --> policy_gate
+    injection_guard --> policy_gate
+    recall_memories --> policy_gate
+    summarize_history --> policy_gate
+    policy_gate -. "Command: injection flagged" .-> tE
+    policy_gate -. "Command: impact turn on a confirmed grant" .-> grant_judge
+    policy_gate -. "Command" .-> dispatch
+    grant_judge -. "Command" .-> dispatch
+
+    dispatch -. "route = generate" .-> gS
+    dispatch -. "route = impact" .-> iS
+    dispatch -. "route = history" .-> hS
+    dispatch -. "route = consult" .-> consult
+    dispatch -. "route = repository" .-> repository
+    dispatch -. "route = out_of_scope" .-> scope_guard
+
+    subgraph GEN["generate · subgraph · MigrationState"]
+        gS([START]) --> analyze
+        analyze -. "Command: not ready or has questions" .-> clarify
+        analyze -. "Command: targets" .-> plan_builds
+        analyze -. "Command: no targets" .-> publish
+        plan_builds -. "Send × each target, max 6" .-> bS
+        subgraph BUILD["build_model · subgraph per target · BuildState"]
+            bS([START]) --> author
+            author -. "Command" .-> validate
+            validate -. "Command: passed" .-> review
+            validate -. "Command: rejected, attempts left" .-> author
+            validate -. "Command: rejected, 3 attempts used" .-> bfinish["finish"]
+            review -. "Command: defects, attempts left" .-> author
+            review -. "Command: approved, no issues, or no attempts left" .-> bfinish
+            bfinish --> bE([END])
+        end
+        bE --> publish
+        clarify --> gE([END])
+        publish --> gE
+    end
+
+    subgraph IMP["impact · subgraph · ImpactState"]
+        iS([START]) --> plan_sources
+        plan_sources -. "Command: sources not confirmed" .-> ask_sources
+        plan_sources -. "Command: grant confirmed" .-> investigate
+        investigate -. "Command" .-> evidence_gate
+        evidence_gate -. "Command: nothing read, or open questions (once each)" .-> investigate
+        evidence_gate -. "Command: ready and grounded" .-> report
+        evidence_gate -. "Command: otherwise" .-> ask_user
+        report -. "Command" .-> ifinish["finish"]
+        ask_sources --> iE([END])
+        ask_user --> iE
+        ifinish --> iE
+    end
+
+    subgraph HIS["history · subgraph · HistoryState"]
+        hS([START]) --> search
+        search --> delivery_gate
+        delivery_gate -. "Command: requested_files set" .-> deliver_files
+        delivery_gate -. "Command: user asked for the file" .-> locate_file
+        delivery_gate -. "Command: otherwise" .-> hE([END])
+        locate_file -. "Command: filename matched" .-> deliver_files
+        locate_file -. "Command: no filename or no match" .-> hE
+        deliver_files --> hE
+    end
+
+    gE --> AS{"after_specialist<br/>conditional edge"}
+    iE --> AS
+    hE --> AS
+    consult --> AS
+    repository --> AS
+    scope_guard --> AS
+    AS -. "rerun: a paused question was answered" .-> screen_input
+    AS -. "otherwise" .-> capture_memory
+    capture_memory --> screen_output
+    screen_output --> tE
+
+    classDef llm fill:#E5F4FF,stroke:#006DDD,stroke-width:2px,color:#030710
+    classDef data fill:#E6F7EC,stroke:#16A34A,stroke-width:2px,color:#030710
+    classDef action fill:#FFF4E5,stroke:#D97706,stroke-width:2px,color:#030710
+    classDef user fill:#F3E8FF,stroke:#9333EA,stroke-width:2px,color:#030710
+    classDef routing fill:#F1F5F9,stroke:#64748B,stroke-width:2px,color:#030710
+    class route_intent,injection_guard,summarize_history,grant_judge,analyze,author,review,investigate,report,search,consult,repository llm
+    class recall_memories,plan_sources,validate,evidence_gate,locate_file data
+    class screen_input,scope_guard,publish,bfinish,ifinish,deliver_files,capture_memory,screen_output action
+    class clarify,ask_sources,ask_user user
+    class policy_gate,dispatch,plan_builds,delivery_gate routing
+```
+
+`consult`, `repository`, `analyze`, `investigate` and `search` each run a
+**tool loop** inside the node. The tool loop is a small compiled graph with
+`checkpointer=False`:
+
+```mermaid
+flowchart LR
+    S([START]) --> model
+    model -. "tool calls" .-> tools["tools<br/>ToolNode + guard_tool_call"]
+    model -. "no answer yet, max 2 nudges" .-> nudge
+    model -. "answered" .-> E([END])
+    tools -. "no result submitted" .-> model
+    tools -. "submit_* result recorded" .-> E
+    nudge --> model
+
+    classDef llm fill:#E5F4FF,stroke:#006DDD,stroke-width:2px,color:#030710
+    classDef data fill:#E6F7EC,stroke:#16A34A,stroke-width:2px,color:#030710
+    classDef action fill:#FFF4E5,stroke:#D97706,stroke-width:2px,color:#030710
+    class model llm
+    class tools data
+    class nudge action
+```
+
+#### 2. Identify what each step needs to do
+
+The guide sorts steps into four kinds. Colours match the diagram above.
+
+| Kind | Nodes |
+|---|---|
+| **LLM step** (blue): understand, analyse, generate or decide | `route_intent`, `injection_guard`, `summarize_history` (only once the chat outgrows the window), `grant_judge`, `analyze`, `author`, `review`, `investigate`, `report`, `search`, `consult`, `repository` |
+| **Data step** (green): read information | `recall_memories` (Store search), `plan_sources` (backend grant), `validate` (sqlglot static checks, never a warehouse run), `evidence_gate` (were the reads real?), `locate_file` (user's own files) |
+| **Action step** (amber): do something with an effect | `screen_input` and `screen_output` (guardrails), `scope_guard`, `publish` (save files), `deliver_files`, `capture_memory` (Store write; calls the LLM only when the user asked to remember something and the turn saved nothing), both `finish` nodes |
+| **User input step** (purple): pause for the user | `clarify`, `ask_sources`, `ask_user`. Each calls `interrupt()` first, then re-runs on resume and sets `rerun = true` |
+| **Routing** (grey): only choose the next node | `policy_gate`, `dispatch`, `plan_builds`, `delivery_gate`. This fifth kind is ours, not the guide's |
+
+#### 3. Design your state
+
+As the guide says, State holds raw data, not formatted text; each node builds its
+own prompt. Bulky per-turn inputs (message, files, history, user, backend
+gateway, logger) travel in the **Runtime context** (`TurnContext`) and are never
+checkpointed.
+
+```python
+class TurnState(TypedDict, total=False):
+    # Reset at the start of every turn by screen_input.
+    turn_id: str
+    message: str
+    guardrail: GuardrailVerdict
+    route: RouteDecision | None                  # {route, new_analysis}
+    safety: dict[str, Any] | None                # Injection Guard verdict
+    response: Annotated[str, latest]
+    outputs: Annotated[dict[str, str], latest]   # file name -> content
+    impact_action: Annotated[str | None, latest]
+    rerun: Annotated[bool, latest]               # a paused step was answered
+    # Carried across turns in the thread's checkpoint.
+    last_route: Annotated[str | None, latest]
+    summary: Annotated[str, latest]
+    summarized_upto: Annotated[int, latest]
+    pending: Annotated[PendingInput | None, latest]   # the question we are waiting on
+    migration: Annotated[MigrationWork, latest]       # {spec, drafts}
+    impact: Annotated[ImpactWork, latest]             # {analysis_id, evidence_reads}
+```
+
+`latest` is a last-write-wins reducer for keys that subgraphs write back.
+`input_schema=TurnInput` (`turn_id`) and `output_schema=TurnOutput` (`response`,
+`outputs`, `impact_action`, `guardrail`, `route`) keep everything else internal.
+
+Each subgraph shares some keys with `TurnState` and keeps some of its own:
+
+| State | Keys private to the subgraph |
+|---|---|
+| `MigrationState` (generate) | `built` (reducer `operator.add`, collects every `Send` branch) |
+| `BuildState` (build_model) | `target`, `spec`, `previous`, `attempt`, `sql`, `notes`, `generation_error`, `capture_mode`, `truncated`, `recovering`, `feedback`, `validation`, `review`, `built` |
+| `ImpactState` (impact) | `dossier`, `evidence_reads`, `started`, `reread`, `deepened` |
+| `HistoryState` (history) | `requested_files` |
+| `LoopState` (tool loop) | `messages` (reducer `add_messages`), `rounds`, `nudges`, `result` |
+
+Memory has two halves. The **checkpointer** (`DynamoDBSaver`) keeps one chat's
+State: one thread per chat, written once per turn (`durability="exit"`), expired
+after 30 days (`CHECKPOINT_TTL_DAYS`). The **Store** (`DynamoDBStore`) keeps each
+user's long-term memories, with no TTL.
+
+#### 4. Build your nodes
+
+Each specialist is registered against a route, so `dispatch` never needs
+changing when one is added:
+
+| Route | Node | Built from |
+|---|---|---|
+| `generate` | `generate` | `build_migration_graph()` subgraph |
+| `impact` | `impact` | `build_impact_graph()` subgraph |
+| `history` | `history` | `build_history_graph()` subgraph |
+| `consult` | `consult` | `ConsultantAgent()` (tool loop) |
+| `repository` | `repository` | `RepositoryAgent()` (tool loop) |
+| `out_of_scope` | `scope_guard` | `scope_guard` function |
+
+**All tools.** The tools run in `ToolNode`, and `guard_tool_call` screens and
+size-caps every result. Every tool is read-only except `remember` and `forget`
+(which write the user's Store) and `request_file_delivery` (which queues a file
+for this reply).
+
+| Tool | Used by (node) | What it does |
+|---|---|---|
+| `list_files` | `consult` | List the files attached to this turn |
+| `get_file_content` | `consult` | Read one attached file by its exact label |
+| `remember` | `consult` | Save a standing instruction to the user's Store |
+| `forget` | `consult` | Delete a standing instruction from the Store |
+| `github_connection_status` | `repository`, `analyze` | Check the user's GitHub authorisation and saved repo/branch |
+| `list_github_repositories` | `repository`, `analyze` | List repos the GitHub App can reach |
+| `list_github_files` | `repository`, `analyze` | List file paths at a branch or commit |
+| `read_github_file` | `repository`, `analyze` | Read one repo file (max 200 KB) |
+| `search_chat_history` | `search` | Search saved chat messages; the loop nudges the agent to call it first |
+| `search_chat_files` | `search` | Find uploaded or generated files across the user's chats |
+| `request_file_delivery` | `search` | Queue a found file to attach to this reply (max 3) |
+| `read_impact_evidence` | `investigate` | Read confirmed evidence only: `uploads`, `history`, `github`, `gitlab`, `dbt`, `snowflake` |
+| `submit_migration_spec` | `analyze` | Return the final `MigrationSpec` (generated from `output_schema`) |
+| `submit_evidence_dossier` | `investigate` | Return the final `EvidenceDossier` (generated from `output_schema`) |
+
+The other LLM steps answer through one structured-output function call instead of a tool loop:
+
+| Function | Node |
+|---|---|
+| `RouteChoice` | `route_intent` |
+| `SafetyVerdict` | `injection_guard` |
+| `AnalysisContinuity` | `grant_judge` |
+| `ModelDraft` | `author` (or one fenced SQL block, since GPT-OSS can't be forced to call it) |
+| `ModelReview` | `review` |
+| `ImpactReport` | `report` |
+
+Tool-loop budgets (`max_rounds`): `analyze` 8, `consult` 6, `repository` 10,
+`search` 6, `investigate` 24.
+
+#### 5. Wire it together
+
+```python
+builder = StateGraph(TurnState, context_schema=TurnContext,
+                     input_schema=TurnInput, output_schema=TurnOutput)
+# ... add_node for each step above, retry_policy=LLM_RETRY on model nodes
+builder.add_edge(START, "screen_input")
+builder.add_edge(["route_intent", "injection_guard", "recall_memories",
+                  "summarize_history"], "policy_gate")           # join
+builder.add_conditional_edges("dispatch", Dispatcher.select, specialists.path_map())
+for name, node in specialists.entries.values():
+    builder.add_node(name, node)
+    builder.add_conditional_edges(name, after_specialist, ["screen_input", "capture_memory"])
+builder.add_edge("capture_memory", "screen_output")
+builder.add_edge("screen_output", END)
+graph = builder.compile(checkpointer=checkpointer, store=store, name="migration_assistant")
+```
+
+`TurnRunner` calls `aget_state` first. A thread paused on `interrupt()` is
+resumed with `Command(resume=...)`, and any other turn starts with
+`TurnInput`. Every run uses `durability="exit"`, `recursion_limit=100` and
+`max_concurrency=MAX_PARALLEL_TASKS` (default 3).
+
+#### Handling errors
+
+| Error type | Who fixes it | How it is handled here |
+|---|---|---|
+| Transient (throttling, timeouts, 5xx) | System | `LLM_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor=2.0, retry_on=is_transient)` on every node that calls the model directly, and on the tool loop's `model` node |
+| LLM-recoverable | The LLM | Error stored in State and looped back: `invoke_structured` returns a parse error to the model (3 tries); `validate`/`review` send `feedback` to `author` (3 author attempts in total); `evidence_gate` sends `investigate` back once for each reason; the tool loop `nudge`s (at most 2) |
+| User-fixable | The user | `interrupt()` in `clarify`, `ask_sources`, `ask_user`; the next message resumes the thread |
+| Recoverable after retries | Developer (`error_handler`) | Not used in this graph |
+| Unexpected | Developer | Bubbles up to the turn handler (for example `StructuredOutputError`) |
+
 ### LangGraph components used
 
 | Component | Where it is used |
@@ -760,15 +1032,15 @@ flowchart LR
     DG -- "requested by id" --> DF["deliver_files"]
     DG -- "asked for, only named" --> LF["locate_file"]
     DG -- "no file wanted" --> E(["END"])
-    LF -- "one match" --> DF
-    LF -- "none or several" --> E
+    LF -- "name matched, newest version" --> DF
+    LF -- "no name or no match" --> E
     DF --> E
 ```
 
 The model often names the file instead of calling the delivery tool, so
 `delivery_gate` spots the request and `locate_file` resolves the name against
-the user's own files. Ambiguity is never guessed at, and the file content never
-enters the model's context.
+the user's own files. When several versions share that name, the newest is
+handed over. The file content never enters the model's context.
 
 **tool loop** — every agent that uses tools (analyst, consultant, repository,
 history search, evidence investigator) is this small compiled graph, run
