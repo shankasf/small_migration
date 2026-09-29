@@ -602,56 +602,57 @@ thread (`thread_id` = chat session id). Code: `services/ai-service/workflow/`
 
 ### Complete flow: input to output
 
-Every box is a LangGraph node. Solid arrows are edges; the labels name the
-LangGraph mechanism that takes the turn there.
+Each box is one step of the turn, with its code name (the LangGraph node) in
+small print underneath. Arrows show where the turn goes next, and each arrow's
+label says why.
 
 ```mermaid
 flowchart TD
-    IN(["INPUT: POST /ai/chat<br/>message · files · history · user"])
-    IN --> RUN["TurnRunner<br/>request goes into Runtime context,<br/>never into checkpointed state"]
-    RUN --> LOAD[("Checkpointer: DynamoDBSaver<br/>aget_state(thread_id)")]
-    LOAD --> Q{"thread paused<br/>on interrupt()?"}
-    Q -- "no: ainvoke(TurnInput)" --> S0
-    Q -- "yes: ainvoke(Command(resume))" --> PAUSED["paused node re-runs<br/>and sets rerun = true"]
+    IN(["User sends a message<br/><small>POST /ai/chat · message, files, history, user</small>"])
+    IN --> RUN["Start the turn<br/><small>TurnRunner · request data kept out of saved state</small>"]
+    RUN --> LOAD[("Load this chat's saved progress<br/><small>DynamoDB checkpoint · one thread per chat</small>")]
+    LOAD --> Q{"Was the chat waiting<br/>for the user's answer?"}
+    Q -- "no: start a new turn" --> S0
+    Q -- "yes: pick up where it stopped" --> PAUSED["Paused step runs again<br/>with the user's answer<br/><small>Command(resume) · sets rerun</small>"]
 
-    subgraph TURN["StateGraph migration_assistant · state TurnState"]
-        S0(["START"]) --> SI["screen_input<br/>guardrails in"]
-        SI -- "Command(goto=END) · blocked" --> E0(["END"])
-        SI -- "Command(goto=[4 nodes]) · parallel" --> RT["route_intent<br/>Router · LLM"]
-        SI --> IG["injection_guard<br/>LLM"]
-        SI --> RM["recall_memories<br/>Store search"]
-        SI --> SUM["summarize_history<br/>LLM"]
-        RT --> PG{"policy_gate<br/>join of all 4"}
+    subgraph TURN["One chat turn · migration_assistant graph"]
+        S0(["Start"]) --> SI["Check the incoming message<br/><small>screen_input · guardrails</small>"]
+        SI -- "unsafe: stop here" --> E0(["Finish"])
+        SI -- "safe: run these 4 at the same time" --> RT["Work out what the user wants<br/><small>route_intent · LLM</small>"]
+        SI --> IG["Look for prompt injection<br/><small>injection_guard · LLM</small>"]
+        SI --> RM["Recall what we know about this user<br/><small>recall_memories · long-term memory</small>"]
+        SI --> SUM["Shorten a long chat history<br/><small>summarize_history · LLM</small>"]
+        RT --> PG{"Wait for all 4,<br/>then apply the rules<br/><small>policy_gate</small>"}
         IG --> PG
         RM --> PG
         SUM --> PG
-        PG -- "Command(goto=END) · flagged" --> E0
-        PG -- "impact on a confirmed grant" --> GJ["grant_judge<br/>LLM"]
-        PG --> DI{"dispatch<br/>conditional edge on route"}
+        PG -- "injection found: stop" --> E0
+        PG -- "impact follow-up on sources<br/>the user already approved" --> GJ["Is this still the same<br/>approved analysis?<br/><small>grant_judge · LLM</small>"]
+        PG --> DI{"Send to the right specialist<br/><small>dispatch</small>"}
         GJ --> DI
-        DI -- generate --> GEN[["generate<br/>subgraph"]]
-        DI -- impact --> IMP[["impact<br/>subgraph"]]
-        DI -- history --> HIS[["history<br/>subgraph"]]
-        DI -- consult --> CON["consult<br/>tool loop"]
-        DI -- repository --> REP["repository<br/>tool loop"]
-        DI -- out_of_scope --> SG["scope_guard<br/>no LLM"]
-        GEN --> AS{"after_specialist"}
+        DI -- "write dbt / SQL models" --> GEN[["Generate models<br/><small>generate · subgraph</small>"]]
+        DI -- "what breaks if this changes?" --> IMP[["Impact analysis<br/><small>impact · subgraph</small>"]]
+        DI -- "find an earlier chat or file" --> HIS[["Chat history search<br/><small>history · subgraph</small>"]]
+        DI -- "migration question" --> CON["Answer as a consultant<br/><small>consult · tool loop</small>"]
+        DI -- "GitHub repo question" --> REP["Read the GitHub repo<br/><small>repository · tool loop</small>"]
+        DI -- "off-topic" --> SG["Politely decline<br/><small>scope_guard · no LLM</small>"]
+        GEN --> AS{"Anything left to do?<br/><small>after_specialist</small>"}
         IMP --> AS
         HIS --> AS
         CON --> AS
         REP --> AS
         SG --> AS
-        AS -- "rerun: a question was answered" --> SI
-        AS --> CM["capture_memory<br/>Store put"]
-        CM --> SO["screen_output<br/>guardrails out"]
+        AS -- "user just answered a question:<br/>check and route it again" --> SI
+        AS -- "done" --> CM["Save anything worth remembering<br/><small>capture_memory · long-term memory</small>"]
+        CM --> SO["Check the reply before sending<br/><small>screen_output · removes secrets and PII</small>"]
         SO --> E0
     end
 
     PAUSED --> AS
-    GEN -. "interrupt(): ask the user" .-> SAVE
-    IMP -. "interrupt(): ask the user" .-> SAVE
-    E0 --> SAVE[("Checkpoint written once<br/>durability = exit")]
-    SAVE --> OUT(["OUTPUT: TurnResult<br/>reply · files · usage · paused?"])
+    GEN -. "needs info: pause and ask the user" .-> SAVE
+    IMP -. "needs info: pause and ask the user" .-> SAVE
+    E0 --> SAVE[("Save the chat's progress once<br/><small>checkpoint · durability = exit</small>")]
+    SAVE --> OUT(["Reply to the user<br/><small>TurnResult · reply, files, token usage, paused?</small>"])
 
     classDef llm fill:#dbeafe,stroke:#2563eb,color:#0f172a
     classDef code fill:#dcfce7,stroke:#16a34a,color:#0f172a
@@ -661,15 +662,15 @@ flowchart TD
     class GEN,IMP,HIS sub
 ```
 
-Blue nodes call the model, green nodes are plain code, amber nodes are compiled
-subgraphs (below). No model decides whether a guardrail applies, whose files are
-read, or what reaches the user.
+Blue boxes ask the AI model, green boxes are plain code, and amber boxes are
+multi-step sub-flows (shown below). The AI model never decides whether a safety
+rule applies, whose files get read, or what reaches the user. Plain code does.
 
-When a specialist needs an answer from the user (a missing base model, which
-evidence sources to use), it calls `interrupt()`. The run stops, the checkpoint
-is saved, and the question is the reply. The user's next message resumes the
-thread with `Command(resume=...)`, then goes back through `screen_input` so it is
-screened and routed like any other message.
+When a specialist needs something from the user, such as a missing base model or
+which evidence sources to use, it pauses the chat with `interrupt()`. The progress
+is saved and the question becomes the reply. The user's next message picks the
+chat up where it stopped (`Command(resume=...)`) and is then checked and routed
+like any other message.
 
 ### LangGraph components used
 
