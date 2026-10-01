@@ -60,7 +60,10 @@ async function purgeFixtures() {
 }
 
 async function main() {
-  const user = await prisma.user.findUniqueOrThrow({where: {email: 'sagar@callsphere.ai'}});
+  // Memory-erasure checks must never run under a real user's identity.
+  const user = await prisma.user.create({data: {
+    email: `memory-check-${crypto.randomUUID()}@example.test`, role: 'admin',
+  }});
   assert.equal(user.status, 'active');
   assert.equal(user.role, 'admin');
   userId = user.id;
@@ -121,6 +124,7 @@ main().catch(error => {
   try {
     if (userId && token) await purgeFixtures();
     if (keyId) await prisma.apiKey.update({where: {id: keyId}, data: {revokedAt: new Date()}});
+    if (userId) await prisma.user.delete({where: {id: userId}});
   } catch { console.error('Memory check cleanup failed; the key expires automatically'); process.exitCode = 1; }
   await prisma.$disconnect();
 });
