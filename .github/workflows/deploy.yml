@@ -282,8 +282,7 @@ jobs:
             aws ecs update-service --cluster circini-demo --service "$s" \
               --force-new-deployment >/dev/null
           done
-          aws ecs wait services-stable --cluster circini-demo \
-            --services backend ai-service frontend
+          python3 scripts/wait-production-stable.py
 
       - name: Smoke test
         run: |

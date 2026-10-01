@@ -7,6 +7,10 @@ on:
         description: Apply the reviewed Signify domain and certificate migration
         type: boolean
         default: false
+      verify_release:
+        description: Run production regression checks without rebuilding or restarting services
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-production
@@ -22,6 +26,9 @@ jobs:
     environment: production
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      EXPECTED_LLM_MODEL: ${{ vars.LLM_PROVIDER == 'bedrock' && (vars.BEDROCK_MODEL || 'openai.gpt-oss-120b-1:0') || (vars.OPENAI_MODEL || 'gpt-6-astra') }}
+      EXPECTED_LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'openai' }}
+      APP_DOMAIN: ${{ vars.APP_DOMAIN || 'migration-agent.uat.signify.net.nz' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Configure AWS deployment identity
@@ -29,8 +36,8 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Hold scheduled shutdown during domain migration
-        if: ${{ inputs.configure_signify_domain }}
+      - name: Hold scheduled shutdown during maintenance or verification
+        if: ${{ inputs.configure_signify_domain || inputs.verify_release }}
         run: python3 scripts/manage-business-hours.py hold --owner "${{ github.run_id }}" --optional --wait
       - name: Configure Signify HTTPS domain
         if: ${{ inputs.configure_signify_domain }}
@@ -44,6 +51,10 @@ jobs:
           name: signify-domain-evidence
           path: domain-evidence/
           retention-days: 30
+      - name: Wait for completed service rollouts
+        if: ${{ inputs.verify_release }}
+        run: python3 scripts/wait-production-stable.py
+
       - name: Inspect stack and service rollout status
         run: |
           set -euo pipefail
@@ -58,6 +69,18 @@ jobs:
             aws ecs describe-tasks --cluster circini-demo --tasks $TASKS \
               --query 'tasks[].{Task:taskArn,Definition:taskDefinitionArn,Status:lastStatus,Health:healthStatus,Containers:containers[].{Name:name,Status:lastStatus,Health:healthStatus,Exit:exitCode,Reason:reason,Image:image}}'
           fi
-      - name: Release domain migration maintenance hold
-        if: ${{ always() && inputs.configure_signify_domain }}
+      - name: Verify production APIs and agent workflows
+        if: ${{ inputs.verify_release }}
+        run: |
+          bash deploy/smoke-test.sh "https://$APP_DOMAIN"
+          python3 scripts/verify-github-production.py
+          python3 scripts/verify-capabilities-production.py
+          python3 scripts/verify-chat-search-production.py
+          python3 scripts/verify-feedback-production.py
+          python3 scripts/verify-impact-agent-production.py
+          python3 scripts/verify-agent-graph-production.py
+          python3 scripts/verify-memory-production.py
+
+      - name: Release maintenance hold
+        if: ${{ always() && (inputs.configure_signify_domain || inputs.verify_release) }}
         run: python3 scripts/manage-business-hours.py release --owner "${{ github.run_id }}" --optional
