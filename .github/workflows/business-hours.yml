@@ -15,6 +15,10 @@ on:
         description: 'Optional ISO timestamp for read-only plan (include UTC offset)'
         type: string
         required: false
+      release_owner:
+        description: 'For release only: the run ID of a cancelled deployment whose maintenance lease needs cleanup'
+        type: string
+        required: false
 permissions:
   contents: read
   id-token: write
@@ -39,13 +43,20 @@ jobs:
           HOURS_MINUTES: ${{ inputs.minutes }}
           HOURS_AT: ${{ inputs.at }}
           HOURS_OWNER: manual-${{ github.actor }}
+          HOURS_RELEASE_OWNER: ${{ inputs.release_owner }}
         run: |
           python3 - <<'PY'
           import os, subprocess
           operation = os.environ['HOURS_OPERATION']
+          owner = os.environ['HOURS_OWNER']
+          release_owner = os.environ.get('HOURS_RELEASE_OWNER', '')
+          if release_owner:
+              if operation != 'release' or not release_owner.isdecimal() or len(release_owner) > 20:
+                  raise ValueError('release_owner requires release and a numeric deployment run ID')
+              owner = release_owner
           args = ['python3', 'scripts/manage-business-hours.py', operation]
           if operation in ['hold', 'release']:
-              args += ['--owner', os.environ['HOURS_OWNER']]
+              args += ['--owner', owner]
           if operation == 'hold':
               args += ['--minutes', os.environ['HOURS_MINUTES'], '--wait', '--pending-ok']
           if operation == 'plan' and os.environ.get('HOURS_AT'):
