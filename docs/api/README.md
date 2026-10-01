@@ -2,14 +2,12 @@
 
 [OpenAPI definition](./openapi.yaml) · [Swagger UI source](./index.html)
 
-This definition documents **22 operations** for API-key management, identity,
-sessions, chat, uploads, generated downloads and the cross-chat file library.
-It describes the current Express routes; the application release used for the
-initial contract is `6db2702`.
+This definition documents **28 operations**, including chat, all agents and pipelines,
+the 12 reusable agent tools, key management, uploads and downloads.
 
-GitHub stores the definition and viewer source. A repository file view does not
-run the interactive Swagger UI. No GitHub Pages site or new AWS endpoint is
-created by these documentation files.
+The deployed interactive viewer is available at
+**https://migration-agent.uat.signify.net.nz/api-docs/**. Select **Current application**
+and authorize with an API key. Browser requests use the same origin as the app.
 
 ## Open Swagger UI
 
@@ -27,9 +25,8 @@ You can also import `openapi.yaml` into your own Swagger UI or Postman.
 
 For browser **Try it out** against a local backend, start that backend with
 `CORS_ORIGIN=http://127.0.0.1:8085`, then select **Local backend** in Swagger's
-Servers menu. For production, a browser-based viewer must use an origin allowed
-by the production backend. This local preview does not change production CORS;
-use curl or Postman for production requests from your computer. Browser CORS
+Servers menu. For production, use the hosted viewer above, or curl/Postman.
+A local preview does not change production CORS. Browser CORS
 failures do not mean an API key is invalid.
 
 ## API-key authentication
@@ -116,6 +113,39 @@ UploadedFile or GeneratedOutput IDs. Preview through
 `GET /api/files/library/{assetId}/content` before choosing among versions.
 Chat requests wait for the AI turn to finish. If a response is lost, inspect the
 saved messages before retrying, since a turn may already have been processed.
+
+## Agents and direct tools
+
+- `GET /api/agents`: all agents and pipelines, their responsibilities and tool names.
+- `GET /api/tools`: all reusable tools, their JSON argument schemas, agent mappings and prerequisites.
+- `GET /api/agents/{agentId}/tools`: one agent's tools.
+- `POST /api/tools/{toolName}/execute`: run that actual tool without a model call.
+
+Create a session with `POST /api/sessions`, then use its ID:
+
+```json
+{"sessionId":"<your-session-id>","arguments":{}}
+```
+
+Send this to `/api/tools/list_files/execute`. Use the exact returned file label in
+`arguments.file_name` for `get_file_content`. Both accept optional `fileRefs`
+from the file library. To search past chats, call
+`/api/tools/search_chat_history/execute` with
+`arguments: {"query":"mapping","scope":"all","offset":0}`.
+
+Tools cover attached files, saved-chat/file search, file delivery, GitHub reads,
+confirmed impact evidence and user memory. GitHub reads require the caller's
+connection. Impact evidence requires source confirmation through chat first.
+`remember` and `forget` require `confirm: true` and change only the caller's
+standing instructions. File delivery returns an authenticated `downloadUrl`;
+it does not create a chat message. Direct calls never append chat history.
+Check `ok` even after HTTP 200, since tool errors return `ok: false`.
+
+Execution requires an active admin/analyst and an owned session, including for
+admins. Runtime identity and source grants cannot be supplied by callers.
+The catalogue is capability discovery, not proof that a particular integration
+is connected. SQL authoring/review, generated-output publishing and structured
+model responses remain coordinated by the chat workflow.
 
 ## Source and format references
 

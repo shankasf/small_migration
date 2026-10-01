@@ -1,13 +1,14 @@
 openapi: 3.0.3
 info:
-  title: Circini API — API keys, chats and files
-  version: 1.0.0
+  title: Circini API — chat, agents, tools and files
+  version: 1.1.0
   description: API-key access to the migration application. Paste only the cmk_ secret in Swagger Authorize;
     HTTP bearer authentication adds the Bearer prefix. API keys act as their admin owner and are not scoped
     read-only tokens. Key-management operations instead require an admin signed-in session. This specification
-    covers key management and the primary chat/file workflow. Source verified against application release
-    6db2702.
+    covers chat, agent discovery, direct agent-tool execution, key management and files.
 servers:
+- url: /
+  description: Current application (hosted Swagger)
 - url: https://migration-agent.uat.signify.net.nz
   description: Production AWS application
 - url: http://localhost:3001
@@ -17,11 +18,170 @@ tags:
 - name: API keys
 - name: Sessions
 - name: Chat
+- name: Agents
+- name: Tools
 - name: Files
 - name: File library
 security:
 - ApiKeyBearer: []
 paths:
+  /api/agents:
+    get:
+      tags: [Agents]
+      operationId: listAgents
+      summary: List all agent and pipeline capabilities
+      description: Returns stable IDs, descriptions, kinds and directly callable tool names. Agents run through the chat endpoint; pipeline steps and structured model outputs are not standalone tools.
+      responses:
+        '200':
+          description: Agent catalogue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents]
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentCapability'
+        '401':
+          $ref: '#/components/responses/401'
+        '503':
+          $ref: '#/components/responses/503'
+  /api/agents/{agentId}/tools:
+    get:
+      tags: [Agents]
+      operationId: listAgentTools
+      summary: List one agent's directly callable tools and argument schemas
+      parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: {type: string}
+        example: repository
+      responses:
+        '200':
+          description: Agent ID and tools
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agentId, tools]
+                properties:
+                  agentId: {type: string}
+                  tools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ToolCapability'
+        '401':
+          $ref: '#/components/responses/401'
+        '404':
+          $ref: '#/components/responses/404'
+        '503':
+          $ref: '#/components/responses/503'
+  /api/tools:
+    get:
+      tags: [Tools]
+      operationId: listTools
+      summary: Discover the agent tools, input schemas and prerequisites
+      responses:
+        '200':
+          description: Tool catalogue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tools]
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ToolCapability'
+        '401':
+          $ref: '#/components/responses/401'
+        '503':
+          $ref: '#/components/responses/503'
+  /api/tools/{toolName}/execute:
+    post:
+      tags: [Tools]
+      operationId: executeTool
+      summary: Execute an agent tool directly, without a model call
+      description: >-
+        Requires an active admin or analyst and a session owned by the caller, including for admins.
+        Uses the actual agent tools and data policy. Unknown arguments and caller-supplied identity or grants are rejected.
+        Consult GET /api/tools for each inputSchema. list_files/get_file_content use this session's uploads and optional
+        owned fileRefs (exact labels come from list_files). GitHub reads use the caller's connection.
+        read_impact_evidence requires source confirmation through chat first; direct calls cannot grant consent.
+        remember/forget require confirm=true and change only the caller's memory.
+        request_file_delivery returns owned file metadata and a downloadUrl requiring the same bearer credential;
+        it does not append a message or generate a new file. No direct tool call appends chat history.
+        An HTTP 200 response can contain ok=false for a tool-level error. Check ok and result.
+        A timeout does not prove a memory mutation failed; inspect memory before retrying.
+      parameters:
+      - name: toolName
+        in: path
+        required: true
+        schema: {type: string}
+        example: list_files
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId]
+              properties:
+                sessionId: {type: string, format: uuid}
+                arguments:
+                  type: object
+                  additionalProperties: true
+                  default: {}
+                  description: Tool-specific values matching its inputSchema; at most 16000 serialized characters.
+                fileRefs:
+                  type: array
+                  maxItems: 10
+                  items: {type: string, format: uuid}
+                  description: Owned library asset IDs for list_files/get_file_content only.
+                confirm:
+                  type: boolean
+                  default: false
+                  description: Explicit consent to the requested remember/forget operation.
+            examples:
+              listFiles:
+                value: {sessionId: '00000000-0000-4000-8000-000000000001', arguments: {}}
+              searchHistory:
+                value: {sessionId: '00000000-0000-4000-8000-000000000001', arguments: {query: 'mapping', scope: all, offset: 0}}
+      responses:
+        '200':
+          description: Tool result (inspect ok), execution ID and data-policy verdict
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [executionId, tool, sessionId, ok, result, guardrail]
+                properties:
+                  executionId: {type: string, format: uuid}
+                  tool: {type: string}
+                  sessionId: {type: string, format: uuid}
+                  ok: {type: boolean}
+                  result:
+                    description: Tool-specific object or text. On failure contains the tool error.
+                  guardrail:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '503':
+          $ref: '#/components/responses/503'
   /api/health:
     get:
       tags:
@@ -1005,6 +1165,35 @@ components:
       description: Admin signed-in session token. Required only for key management; a cmk_ API key cannot
         manage keys. Production uses its configured SSO login, not local password login.
   schemas:
+    AgentCapability:
+      type: object
+      required: [id, name, description, kind, tools, invocation]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        kind: {type: string, enum: [orchestration, safety, specialist, pipeline, support]}
+        tools:
+          type: array
+          items: {type: string}
+        invocation: {type: string, enum: [chat]}
+    ToolCapability:
+      type: object
+      required: [name, description, inputSchema, agents, readOnly, requirements]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        inputSchema:
+          type: object
+          additionalProperties: true
+          description: JSON Schema generated from the actual tool callable; server-injected runtime is excluded.
+        agents:
+          type: array
+          items: {type: string}
+        readOnly: {type: boolean}
+        requirements:
+          type: array
+          items: {type: string}
     Error:
       type: object
       properties:

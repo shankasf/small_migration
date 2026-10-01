@@ -22,6 +22,7 @@ from llm import configure_llm, security_status
 from routes import migration
 from routes.file_search import router as file_search_router
 from routes.stt import router as stt_router
+from routes.capabilities import router as capabilities_router
 from telemetry import init_telemetry
 from workflow.assembly import build_runtime
 
@@ -90,6 +91,7 @@ init_telemetry(app)
 app.include_router(migration.router, prefix="/ai", tags=["AI"])
 app.include_router(stt_router, prefix="/ai", tags=["STT"])
 app.include_router(file_search_router, prefix="/ai", tags=["Files"])
+app.include_router(capabilities_router, prefix="/ai", tags=["Capabilities"])
 
 @app.get("/")
 async def root():

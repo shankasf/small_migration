@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/prepare-api-docs.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/prepare-api-docs.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint ."
@@ -12,7 +14,7 @@
   "dependencies": {
     "@types/qrcode": "^1.5.6",
     "amazon-cognito-identity-js": "^6.3.20",
-    "axios": "^1.6.5",
+    "axios": "^1.20.0",
     "lucide-react": "^0.312.0",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
