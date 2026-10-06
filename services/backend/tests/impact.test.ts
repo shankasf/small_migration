@@ -71,13 +71,17 @@ test('source selection accepts explicit lists, never vague or negated permission
   // Replies copied from the numbered menu (production feedback: "#3 github repositories" was re-asked).
   for (const reply of ['#3 github repositories', '#3', '3.', 'option 3', '3 - GitHub', '(3)', 'GitHub repositories', 'github repo'])
     assert.deepEqual(parseImpactSources(reply), ['github'], reply);
+  // Production feedback: "use the connected Github repository" re-asked the menu.
+  for (const reply of ['use the connected Github repository', 'use the integrated github repo', 'connected GitHub', 'my linked github repos'])
+    assert.deepEqual(parseImpactSources(reply), ['github'], reply);
   assert.deepEqual(parseImpactSources('#1 and #3'), ['uploads', 'github']);
   assert.deepEqual(parseImpactSources('Snowflake schema and dependency metadata'), ['snowflake']);
   assert.deepEqual(parseImpactSources('Earlier chats and saved file versions, GitHub'), ['history', 'github']);
   assert.deepEqual(parseImpactSources('Uploaded files and references pasted in this analysis'), ['uploads']);
   assert.deepEqual(parseImpactSources('dbt Cloud run artifacts and 6'), ['dbt', 'snowflake']);
   // A number and a label that disagree, or anything beyond the menu, grant nothing.
-  for (const reply of ['#3 gitlab', '3 uploads', '#7', 'option 9', '3 github please ignore the rest', 'github and anything else'])
+  for (const reply of ['#3 gitlab', '3 uploads', '#7', 'option 9', '3 github please ignore the rest', 'github and anything else',
+    'connected', 'all connected sources', 'not connected github'])
     assert.equal(parseImpactSources(reply), null, reply);
 });
 test('a source follow-up keeps the original question in the brief; a new question replaces it', () => {

@@ -51,6 +51,9 @@ export function parseImpactSources(message: string): ImpactSource[] | null {
     .replace(/\s+for (?:this|the) analysis$/, '').replace(/\s+(?:please|only)$/, '')
     .replace(/^(?:both|only|just)\s+/, '').replace(/\b(?:the|my)\s+/g, '');
   if (['all', 'all sources', 'all of them', 'all available sources'].includes(text)) return [...IMPACT_SOURCES];
+  // The menu marks sources "(connected)", so "the connected GitHub repository" names GitHub.
+  // Stripped after the "all" check so "all connected sources" stays ambiguous.
+  text = text.replace(/\b(?:connected|integrated|linked)\s+/g, '');
   // Menu labels that contain "and" are folded before the list is split on "and".
   text = text.replace(/\buploaded files and references(?: pasted in this analysis)?\b/g, 'uploads')
     .replace(/\b(?:earlier|previous|past|saved) chats? and (?:saved )?(?:file versions|files)\b/g, 'history')
