@@ -600,6 +600,87 @@ thread (`thread_id` = chat session id). Code: `services/ai-service/workflow/`
 (`orchestrator.py` builds the graph, `runner.py` runs it). Design notes:
 [docs/LangGraph_Agent_Architecture.md](docs/LangGraph_Agent_Architecture.md).
 
+### At a glance
+
+A simplified view of the whole graph. Every box is a real node name from
+`services/ai-service/workflow/`; the detailed diagrams further down show every
+edge, State key and subgraph. Read top to bottom: guard the input, decide what
+the user wants, run one specialist, remember, guard the output.
+
+```mermaid
+flowchart TD
+    subgraph GUARD["1 · Guard and understand"]
+        screen_input["screen_input<br/>input guardrails"]
+        screen_input --> route_intent["route_intent<br/>Router Agent"]
+        screen_input --> injection_guard["injection_guard<br/>Injection Guard Agent"]
+        screen_input --> recall_memories["recall_memories<br/>user memory from Store"]
+        screen_input --> summarize_history["summarize_history<br/>Summarizer Agent"]
+        route_intent --> policy_gate
+        injection_guard --> policy_gate
+        recall_memories --> policy_gate
+        summarize_history --> policy_gate
+        policy_gate{"policy_gate<br/>apply the rules"}
+    end
+
+    IN(["User message<br/>POST /ai/chat"]) --> screen_input
+
+    screen_input -. "blocked" .-> E([END])
+    policy_gate -. "injection found" .-> E
+    policy_gate --> dispatch{"dispatch<br/>pick one specialist by route"}
+
+    subgraph SPEC["2 · One specialist runs"]
+        GEN["generate subgraph<br/>analyze → plan_builds → build_model → publish<br/>build_model = author → validate → review"]
+        IMP["impact subgraph<br/>plan_sources → investigate → evidence_gate → report"]
+        HIS["history subgraph<br/>search → delivery_gate → deliver_files"]
+        consult["consult<br/>Migration Consultant Agent"]
+        repository["repository<br/>Repository Agent"]
+        scope_guard["scope_guard<br/>decline off-topic"]
+    end
+
+    dispatch -- "generate" --> GEN
+    dispatch -- "impact" --> IMP
+    dispatch -- "history" --> HIS
+    dispatch -- "consult" --> consult
+    dispatch -- "repository" --> repository
+    dispatch -- "out_of_scope" --> scope_guard
+
+    GEN -. "interrupt(): ask the user,<br/>resume next message" .-> PAUSE[("checkpoint saved<br/>turn paused")]
+    IMP -. "interrupt(): ask the user,<br/>resume next message" .-> PAUSE
+    PAUSE -. "user answers · rerun" .-> screen_input
+
+    GEN --> AS{"after_specialist"}
+    IMP --> AS
+    HIS --> AS
+    consult --> AS
+    repository --> AS
+    scope_guard --> AS
+
+    subgraph FIN["3 · Remember and guard the output"]
+        capture_memory["capture_memory<br/>write to Store"]
+        capture_memory --> screen_output["screen_output<br/>output guardrails, PII and secrets"]
+    end
+
+    AS --> capture_memory
+    screen_output --> E
+    E --> OUT(["Reply, files, usage"])
+
+    classDef llm fill:#E5F4FF,stroke:#006DDD,stroke-width:2px,color:#030710
+    classDef code fill:#E6F7EC,stroke:#16A34A,stroke-width:2px,color:#030710
+    classDef sub fill:#FFF4E5,stroke:#D97706,stroke-width:2px,color:#030710
+    classDef routing fill:#F1F5F9,stroke:#64748B,stroke-width:2px,color:#030710
+    class route_intent,injection_guard,summarize_history,consult,repository llm
+    class screen_input,recall_memories,scope_guard,capture_memory,screen_output code
+    class GEN,IMP,HIS sub
+    class policy_gate,dispatch,AS routing
+```
+
+| Colour | Meaning |
+|---|---|
+| Blue | Calls the LLM |
+| Green | Plain code, no LLM |
+| Amber | A subgraph: its own small graph, used as one node |
+| Grey | Routing only: chooses the next node from State |
+
 ### Complete flow: input to output
 
 One chat message is one run of the turn graph. Each box names what it is
