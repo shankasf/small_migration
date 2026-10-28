@@ -359,6 +359,13 @@ Resources:
         - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
         - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
       Policies:
+        - PolicyName: invite-circini-users
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cognito-idp:AdminCreateUser
+                Resource: !Join ['', [!Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/', !ImportValue circini-UserPoolId]]
         - PolicyName: append-audit-only
           PolicyDocument:
             Version: '2012-10-17'

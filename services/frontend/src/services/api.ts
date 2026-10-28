@@ -272,7 +272,7 @@ export async function adminCreateUser(data: {
   email: string;
   name?: string;
   role?: string;
-  password: string;
+  password?: string;
   dailyTokenLimit?: number | null;
   monthlyTokenLimit?: number | null;
 }): Promise<AdminUser> {

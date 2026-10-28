@@ -7,6 +7,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { getToken } from '../services/auth';
+import { fetchAuthConfig } from '../services/oidc';
 import {
   adminGetUsers, adminGetUsageSummary, adminGetAudit, adminGetSecuritySummary,
   adminGetAiLogs, adminGetAiLogFacets, adminCreateUser, adminUpdateUser, adminGetFeedback,
@@ -359,6 +360,7 @@ function UserEditModal({ user, currentUser, onClose, onSaved }: {
 }
 
 function CreateUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [authMode, setAuthMode] = useState<'local' | 'oidc' | null>(null);
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [role, setRole] = useState('analyst');
@@ -366,11 +368,18 @@ function CreateUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetchAuthConfig().then(config => { if (!cancelled) setAuthMode(config.mode); })
+      .catch(() => { if (!cancelled) setError('Could not load sign-in settings. Close this window and try again.'); });
+    return () => { cancelled = true; };
+  }, []);
+
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
-      await adminCreateUser({ email, name: name || undefined, role, password });
+      await adminCreateUser({ email, name: name || undefined, role, ...(authMode === 'local' ? { password } : {}) });
       onSaved();
       onClose();
     } catch (err) {
@@ -398,12 +407,13 @@ function CreateUserModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
             </select>
           </Field>
         </div>
-        <Field label="Initial password" help="Minimum 10 characters" required>
+        {authMode === 'oidc' && <p className="text-sm text-muted">An invitation will be emailed to this user. They will set their password and configure MFA when they sign in.</p>}
+        {authMode === 'local' && <Field label="Initial password" help="Minimum 10 characters" required>
           <input type="text" value={password} onChange={e => setPassword(e.target.value)} className="field" />
-        </Field>
+        </Field>}
         {error && <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>}
-        <Button variant="brass" loading={busy} disabled={!email || password.length < 10} onClick={save} className="w-full">
-          Create user
+        <Button variant="brass" loading={busy} disabled={!authMode || !email || (authMode === 'local' && password.length < 10)} onClick={save} className="w-full">
+          {authMode === 'oidc' ? 'Create user and send invitation' : 'Create user'}
         </Button>
       </div>
     </Modal>

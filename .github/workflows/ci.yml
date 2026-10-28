@@ -14,6 +14,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# Retry registry fetches after transient hosted-runner connection resets.
+env:
+  NPM_CONFIG_FETCH_RETRIES: '4'
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: '10000'
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '60000'
+
 concurrency:
   # github.workflow differs when this is called by deploy.yml, so the standalone
   # CI run and the deploy-invoked one land in separate groups. Sharing a group
@@ -43,7 +49,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: GitHub integration security tests
-        run: npx tsx --test tests/github.test.ts tests/githubAgent.test.ts tests/impact.test.ts tests/capabilities.test.ts
+        run: npx tsx --test tests/github.test.ts tests/githubAgent.test.ts tests/impact.test.ts tests/capabilities.test.ts tests/userInvitations.test.ts
 
   backend-security:
     name: Backend security integration tests
@@ -57,11 +63,14 @@ jobs:
           POSTGRES_DB: migration_security_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+          --health-cmd "pg_isready -U postgres -d migration_security_test" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: '22' }
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/backend/package-lock.json
       - run: npm ci
         working-directory: services/backend
       - run: npx prisma generate

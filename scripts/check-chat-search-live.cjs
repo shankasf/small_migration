@@ -5,7 +5,8 @@ const { PrismaClient } = require(process.cwd() + '/node_modules/@prisma/client')
 const { generateApiKey } = require(process.cwd() + '/dist/services/apiKeys.js');
 const prisma = new PrismaClient();
 const base = new URL(process.env.PUBLIC_APP_URL || process.env.CORS_ORIGIN).origin;
-let token, keyId, phase = 'initialize';
+let token, keyId, userId, phase = 'initialize';
+const createdSessions = [];
 const evidence = {};
 // Assertion messages written in this file are safe to log; a generated one
 // quotes the compared values, which may be chat content, so report only a code.
@@ -22,35 +23,21 @@ async function api(path, body, expected = 200, internal = false) {
   return response.json();
 }
 const FIXTURE_PREFIX = 'E2E chat search ';
-// Each run used to leave its synthetic chats behind, and the paraphrase check
-// below searches for words the saved message never contains ("mapping sheet"),
-// so it is ranked purely semantically. Earlier runs' recall QUESTIONS — "the
-// mapping sheet filename for the synthetic cedar <nonce> migration" — are a
-// near-exact match for that query and outrank this run's saved message, which
-// only ever says "crosswalk workbook". Every deploy added two more of them, so
-// the target eventually fell past the LIMIT 10 and the gate began failing on a
-// ranking artefact of its own debris. The check now clears its own fixtures
-// first. Deletes cascade to messages, chunks, file assets and outputs; usage
-// and audit records denormalise sessionId and are kept.
-// A prefix alone does not find them: a session is renamed to the first 50
-// characters of its first message (routes/chat.ts:272), so the recall session
-// — the one holding the question that outranks the target — has dropped the
-// prefix by the time the run ends. Sweep on the invented project phrase too,
-// which nothing but this fixture ever writes.
-const FIXTURE_PHRASE = 'synthetic cedar ';
-async function purgeFixtures(ownerUserId) {
-  const stale = await prisma.session.findMany({
-    where: { ownerUserId, OR: [
-      { name: { startsWith: FIXTURE_PREFIX } },
-      { messages: { some: { content: { contains: FIXTURE_PHRASE } } } },
-    ] }, select: { id: true } });
-  for (const session of stale) await prisma.session.delete({ where: { id: session.id } });
-  return stale.length;
+// Keep this gate independent of real accounts, saved memories and earlier runs.
+// Delete only the sessions and identity created by this invocation.
+async function cleanupFixtures() {
+  for (const id of createdSessions) {
+    const response = token && await fetch(`${base}/api/sessions/${id}`, {
+      method: 'DELETE', headers: {Authorization: `Bearer ${token}`}, signal: AbortSignal.timeout(30000),
+    });
+    if (!response || !response.ok) await prisma.session.deleteMany({where: {id, ownerUserId: userId}});
+  }
+  createdSessions.length = 0;
 }
 async function main() {
-  const user = await prisma.user.findUnique({ where: { email: 'sagar@callsphere.ai' } });
+  const user = await prisma.user.create({data: {email: `chat-search-check-${crypto.randomUUID()}@example.test`, role: 'admin'}});
+  userId = user.id;
   assert.equal(user?.role, 'admin'); assert.equal(user.status, 'active');
-  evidence.purgedFixtures = await purgeFixtures(user.id);
   const minted = generateApiKey(); token = minted.key;
   const key = await prisma.apiKey.create({ data: { userId: user.id, name: 'E2E chat history search', prefix: minted.prefix,
     keyHash: minted.keyHash, expiresAt: new Date(Date.now() + 1800000) } }); keyId = key.id;
@@ -58,7 +45,9 @@ async function main() {
   const filename = `crosswalk_${nonce}.csv`;
   const project = `synthetic cedar ${nonce}`;
   const source = await api('/api/sessions', { name: `${FIXTURE_PREFIX}${nonce} source` }, 201);
+  createdSessions.push(source.id);
   const target = await api('/api/sessions', { name: `${FIXTURE_PREFIX}${nonce} recall` }, 201);
+  createdSessions.push(target.id);
   evidence.sourceSessionId = source.id; evidence.targetSessionId = target.id;
   mark('prepare synthetic earlier chat');
   const form = new FormData();
@@ -116,6 +105,7 @@ async function main() {
   assert.equal(download.status, 200, 'Attached file did not download');
   assert.ok((await download.text()).includes('legacy_code'), 'Delivered file did not carry the earlier chat file content');
   evidence.fileDelivery = 'passed';
+  await cleanupFixtures();
   await prisma.apiKey.update({ where: { id: keyId }, data: { revokedAt: new Date() } });
   assert.equal((await fetch(base + '/api/sessions', { headers: { Authorization: `Bearer ${token}` } })).status, 401);
   keyId = undefined; token = undefined;
@@ -123,7 +113,11 @@ async function main() {
 }
 main().catch(error => { console.error(JSON.stringify({ chatSearchProductionCheck: 'failed', phase, reason: failureReason(error) })); process.exitCode = 1; })
   .finally(async () => {
-    try { if (keyId) await prisma.apiKey.update({ where: { id: keyId }, data: { revokedAt: new Date() } }); }
+    try {
+      await cleanupFixtures();
+      if (keyId) await prisma.apiKey.update({ where: { id: keyId }, data: { revokedAt: new Date() } });
+      if (userId) await prisma.user.delete({where: {id: userId}});
+    }
     catch { console.error('Chat search test key revocation failed; key expires automatically'); process.exitCode = 1; }
     await prisma.$disconnect();
   });

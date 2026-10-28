@@ -6,6 +6,7 @@ import { retentionPolicy } from '../services/retention.js';
 import { securityStatus, cancelUserRuns, userMemory, forgetUserMemory } from '../services/aiService.js';
 import { recordAudit } from '../services/audit.js';
 import { FEEDBACK_RATINGS, isRubricScore } from '../services/feedback.js';
+import { invitationPool, inviteUser } from '../services/userInvitations.js';
 
 const router = Router();
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
@@ -71,7 +72,17 @@ router.post('/users', requireRole('admin'), async (req: AuthedRequest, res: Resp
     const prisma = getPrisma(req);
     const { email, name, role, password, dailyTokenLimit, monthlyTokenLimit } = req.body || {};
 
-    if (!email || !password || String(password).length < 10) {
+    const authMode = (process.env.AUTH_MODE || 'local').toLowerCase();
+    const useInvitations = authMode === 'oidc';
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({ error: 'A valid email address is required' });
+    }
+    if (authMode === 'entra') {
+      return res.status(400).json({ error: 'Create the sign-in account in your identity provider first' });
+    }
+    if (useInvitations) invitationPool(); // Validate before creating a database-only account.
+    if (!useInvitations && (!password || String(password).length < 10)) {
       return res.status(400).json({ error: 'Email and a password of at least 10 characters are required' });
     }
     if (role && !VALID_ROLES.includes(role)) {
@@ -80,14 +91,30 @@ router.post('/users', requireRole('admin'), async (req: AuthedRequest, res: Resp
 
     const user = await prisma.user.create({
       data: {
-        email: String(email).toLowerCase(),
+        email: normalizedEmail,
         name: name || null,
         role: role || 'analyst',
-        passwordHash: await bcrypt.hash(String(password), 12),
+        passwordHash: useInvitations ? null : await bcrypt.hash(String(password), 12),
+        roleManagedLocally: useInvitations,
         dailyTokenLimit: dailyTokenLimit ?? null,
         monthlyTokenLimit: monthlyTokenLimit ?? null,
       },
     });
+
+    if (useInvitations) {
+      try {
+        await inviteUser(user.email, user.name);
+      } catch (error: any) {
+        // Do not leave another database-only account when Cognito rejects provisioning.
+        // A duplicate request cannot delete an existing user: only this request's new ID.
+        await prisma.user.delete({ where: { id: user.id } });
+        console.error('User invitation failed:', error?.name || 'unknown');
+        if (error?.name === 'UsernameExistsException') {
+          return res.status(409).json({ error: 'A sign-in account already exists for this email. Ask an administrator to check its invitation status.' });
+        }
+        return res.status(502).json({ error: 'Could not send the sign-in invitation. The user was not added. Please retry or contact an administrator.' });
+      }
+    }
 
     await recordAudit(prisma, {
       userId: req.user!.id,
