@@ -35,7 +35,7 @@ before(async () => {
 });
 beforeEach(() => {
   process.env.AUTH_MODE = 'oidc';
-  process.env.OIDC_ISSUER = 'https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_test';
+  process.env.OIDC_ISSUER = 'https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_TestPool';
   created = []; sent = []; deleted = []; role = 'admin'; failure = null; dbFailure = false;
 });
 after(() => { server.close(); mock.restoreAll(); });
@@ -49,7 +49,7 @@ test('SSO create sends an email invitation without an admin-chosen password and 
   assert.equal(created[0].passwordHash, null);
   assert.equal(created[0].role, 'auditor');
   assert.equal(created[0].roleManagedLocally, true);
-  assert.deepEqual(sent[0], { UserPoolId: 'ap-southeast-2_test', Username: 'new.user@example.invalid',
+  assert.deepEqual(sent[0], { UserPoolId: 'ap-southeast-2_TestPool', Username: 'new.user@example.invalid',
     UserAttributes: [{ Name: 'email', Value: 'new.user@example.invalid' }, { Name: 'email_verified', Value: 'true' },
       { Name: 'name', Value: 'New User' }], DesiredDeliveryMediums: ['EMAIL'] });
   assert.equal('passwordHash' in await response.json(), false);

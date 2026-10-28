@@ -2,7 +2,7 @@ import { AdminCreateUserCommand, CognitoIdentityProviderClient } from '@aws-sdk/
 
 // Use the same pool as sign-in; never accept a pool or invitation destination from the request.
 export function invitationPool() {
-  const match = /^https:\/\/cognito-idp\.([a-z0-9-]+)\.amazonaws\.com\/([a-z0-9_-]+)\/?$/.exec(process.env.OIDC_ISSUER || '');
+  const match = /^https:\/\/cognito-idp\.([a-z0-9-]+)\.amazonaws\.com\/([A-Za-z0-9_-]+)\/?$/.exec(process.env.OIDC_ISSUER || '');
   if (!match) throw new Error('Cognito invitations are not configured');
   return { region: match[1], userPoolId: match[2] };
 }
