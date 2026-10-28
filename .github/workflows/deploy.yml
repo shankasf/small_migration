@@ -49,6 +49,7 @@ jobs:
       image_tag: ${{ steps.tag.outputs.tag }}
       registry: ${{ steps.login-ecr.outputs.registry }}
     strategy:
+      fail-fast: false
       matrix:
         service: [ai-service, backend, frontend]
     steps:

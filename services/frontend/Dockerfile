@@ -4,7 +4,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 RUN npm run build
@@ -12,6 +12,10 @@ RUN npm run build
 # Production stage. The unprivileged nginx image runs as uid 101 and keeps its
 # pid/temp paths under /tmp, so no root is required to serve the built assets.
 FROM nginxinc/nginx-unprivileged:alpine
+
+# Apply security fixes released after the nginx base image was published.
+USER root
+RUN apk upgrade --no-cache
 
 # Copy nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
