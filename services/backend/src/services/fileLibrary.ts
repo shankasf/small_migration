@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { FileAsset, Prisma, PrismaClient } from '@prisma/client';
-import { embedSearchTexts, screenPayload } from './aiService.js';
+import { embedSearchTexts, PolicyError, screenPayload } from './aiService.js';
 
 export function fileSummary(filename: string, content: string): string {
   const heading = content.split('\n').map(line => line.trim()).filter(Boolean).slice(0, 3).join(' ');
@@ -51,8 +51,9 @@ export async function backfillFiles(prisma: PrismaClient): Promise<number> {
 export async function indexNextFile(prisma: PrismaClient): Promise<boolean> {
   const claimed = await prisma.$queryRaw<FileAsset[]>`
     UPDATE "FileAsset" SET "indexStatus"='indexing', "retryAt"=NOW()+INTERVAL '10 minutes', attempts=attempts+1
-    WHERE id=(SELECT id FROM "FileAsset" WHERE "indexStatus" IN ('pending','retry','indexing') AND "retryAt"<=NOW()
-      ORDER BY "createdAt", id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`;
+    WHERE id=(SELECT id FROM "FileAsset" WHERE ("indexStatus" IN ('pending','retry','indexing') AND "retryAt"<=NOW())
+      OR ("indexStatus"='ready' AND "titanIndexedAt" IS NULL)
+      ORDER BY ("indexStatus"='ready'), "createdAt", id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`;
   const asset = claimed[0];
   if (!asset) return false;
   try {
@@ -63,12 +64,12 @@ export async function indexNextFile(prisma: PrismaClient): Promise<boolean> {
       const batch = chunks.slice(i, i + 16);
       const embeddings = await embedSearchTexts(batch.map(c => `${asset.filename.slice(0, 240)}\n${asset.summary}\n${c.content}`));
       await prisma.$transaction(batch.map((c, n) => prisma.$executeRaw`
-        UPDATE "FileChunk" SET embedding=${JSON.stringify(embeddings[n])}::vector WHERE id=${c.id}`));
+        UPDATE "FileChunk" SET "embeddingTitan"=${JSON.stringify(embeddings[n])}::vector WHERE id=${c.id}`));
     }
-    await prisma.fileAsset.update({ where: { id: asset.id }, data: { indexStatus: 'ready', indexedAt: new Date() } });
-  } catch {
+    await prisma.fileAsset.update({ where: { id: asset.id }, data: { indexStatus: 'ready', indexedAt: new Date(), titanIndexedAt: new Date() } });
+  } catch (error) {
     await prisma.fileAsset.updateMany({ where: { id: asset.id }, data: {
-      indexStatus: 'retry', retryAt: new Date(Date.now() + Math.min(3600000, 30000 * 2 ** Math.min(asset.attempts, 7))),
+      indexStatus: error instanceof PolicyError ? 'blocked' : 'retry', retryAt: new Date(Date.now() + Math.min(3600000, 30000 * 2 ** Math.min(asset.attempts, 7))),
     } });
     console.warn('[FILE_INDEX] Indexing deferred; keyword search remains available');
   }
@@ -143,9 +144,9 @@ export async function searchFiles(prisma: PrismaClient, userId: string, opts: { 
       SELECT id, row_number() OVER (ORDER BY name_match DESC, score DESC, "createdAt" DESC) AS rank FROM lexical_scores
     ), semantic AS (
       SELECT id, row_number() OVER (ORDER BY distance, "createdAt" DESC) AS rank FROM (
-        SELECT a.id, a."createdAt", MIN(c.embedding <=> ${vector}::vector) AS distance
+        SELECT a.id, a."createdAt", MIN(c."embeddingTitan" <=> ${vector}::vector) AS distance
         FROM allowed a JOIN "FileChunk" c ON c."assetId"=a.id
-        WHERE ${vector}::vector IS NOT NULL AND a."indexStatus"='ready' AND c.embedding IS NOT NULL
+        WHERE ${vector}::vector IS NOT NULL AND a."indexStatus"='ready' AND a."titanIndexedAt" IS NOT NULL AND c."embeddingTitan" IS NOT NULL
         GROUP BY a.id, a."createdAt"
       ) distances WHERE distance < 0.85
     )
@@ -154,7 +155,7 @@ export async function searchFiles(prisma: PrismaClient, userId: string, opts: { 
       COALESCE((SELECT substring(c.content, greatest(1, strpos(lower(c.content), lower(${q})) - 80), 420)
         FROM "FileChunk" c WHERE c."assetId"=a.id ORDER BY
         CASE WHEN ${q}<>'' AND to_tsvector('simple',c.content) @@ websearch_to_tsquery('simple',${q}) THEN 0 ELSE 1 END,
-        c.embedding <=> ${vector}::vector, c.ordinal LIMIT 1),'') AS excerpt
+        c."embeddingTitan" <=> ${vector}::vector, c.ordinal LIMIT 1),'') AS excerpt
     FROM allowed a LEFT JOIN lexical l ON l.id=a.id LEFT JOIN semantic v ON v.id=a.id
     WHERE ${q}='' OR l.id IS NOT NULL OR v.id IS NOT NULL
     ORDER BY COALESCE(2.0/(60+l.rank),0)+COALESCE(1.0/(60+v.rank),0) DESC, a."createdAt" DESC, a.id

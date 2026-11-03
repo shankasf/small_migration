@@ -17,13 +17,14 @@ export async function backfillChatChunks(prisma: PrismaClient): Promise<number> 
 export async function indexNextChatChunk(prisma: PrismaClient): Promise<boolean> {
   const [chunk] = await prisma.$queryRaw<Array<{ id: string; content: string; attempts: number }>>`
     UPDATE "MessageSearchChunk" SET "indexStatus"='indexing', "retryAt"=NOW()+INTERVAL '10 minutes', attempts=attempts+1
-    WHERE id=(SELECT id FROM "MessageSearchChunk" WHERE "indexStatus" IN ('pending','retry','indexing') AND "retryAt"<=NOW()
-      ORDER BY "retryAt", id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id, content, attempts`;
+    WHERE id=(SELECT id FROM "MessageSearchChunk" WHERE ("indexStatus" IN ('pending','retry','indexing') AND "retryAt"<=NOW())
+      OR ("indexStatus"='ready' AND "embeddingTitan" IS NULL)
+      ORDER BY ("indexStatus"='ready'), "retryAt", id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id, content, attempts`;
   if (!chunk) return false;
   try {
     const screened = await screenPayload('', { 'chat.txt': chunk.content });
     const vector = (await embedSearchTexts([screened.files['chat.txt']]))[0];
-    await prisma.$executeRaw`UPDATE "MessageSearchChunk" SET embedding=${JSON.stringify(vector)}::vector,
+    await prisma.$executeRaw`UPDATE "MessageSearchChunk" SET "embeddingTitan"=${JSON.stringify(vector)}::vector,
       "indexStatus"='ready' WHERE id=${chunk.id}`;
   } catch (error) {
     await prisma.messageSearchChunk.updateMany({ where: { id: chunk.id }, data: {
@@ -84,7 +85,7 @@ export async function searchChatHistory(prisma: PrismaClient, userId: string, se
       SELECT m.*, s.name AS "sourceSessionName" FROM "Message" m JOIN "Session" s ON s.id=m."sessionId"
       WHERE s."ownerUserId"=${userId} ${opts.scope === 'current' ? Prisma.sql`AND s.id=${sessionId}` : Prisma.empty}
     ), chunks AS (
-      SELECT m.id, c.ordinal, c.content, c.embedding FROM allowed m JOIN "MessageSearchChunk" c ON c."messageId"=m.id
+      SELECT m.id, c.ordinal, c.content, c."embeddingTitan" AS embedding FROM allowed m JOIN "MessageSearchChunk" c ON c."messageId"=m.id
       UNION ALL
       -- Older and newly saved messages are searchable before the background index catches up.
       SELECT m.id, p.ordinal, substring(m.content FROM p.ordinal*1040+1 FOR 1200), NULL::vector
@@ -118,11 +119,13 @@ export async function searchChatHistory(prisma: PrismaClient, userId: string, se
     LIMIT 11 OFFSET ${opts.offset || 0}`);
   const page = rows.slice(0, 10);
   const files = await chatFileEvidence(prisma, userId, page.map(r => r.messageId));
-  const pending = await prisma.message.count({ where: { session: { ownerUserId: userId },
-    ...(opts.scope === 'current' ? { sessionId } : {}),
-    OR: [{ searchChunks: { none: {} } }, { searchChunks: { some: { indexStatus: { not: 'ready' } } } }],
-  } });
+  const [{ pending }] = await prisma.$queryRaw<Array<{ pending: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) AS pending FROM "Message" m JOIN "Session" s ON s.id=m."sessionId"
+    WHERE s."ownerUserId"=${userId} ${opts.scope === 'current' ? Prisma.sql`AND s.id=${sessionId}` : Prisma.empty}
+    AND (NOT EXISTS (SELECT 1 FROM "MessageSearchChunk" c WHERE c."messageId"=m.id)
+      OR EXISTS (SELECT 1 FROM "MessageSearchChunk" c WHERE c."messageId"=m.id
+        AND (c."indexStatus"<>'ready' OR c."embeddingTitan" IS NULL)))`);
   return { matches: page.map(row => ({ ...row, files: files.filter(f => f.messageId === row.messageId) })),
     hasMore: rows.length > 10, nextOffset: rows.length > 10 ? (opts.offset || 0) + 10 : null,
-    semanticAvailable: vector !== null, semanticIndexComplete: pending === 0, scope: opts.scope };
+    semanticAvailable: vector !== null, semanticIndexComplete: pending === 0n, scope: opts.scope };
 }

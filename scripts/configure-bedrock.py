@@ -50,11 +50,11 @@ def main():
     result = call(messages)
     assert 'OK' in result['choices'][0]['message']['content'] and result['usage']['total_tokens'] > 0
 
-    # Keep the existing embedding space: do not replace its OpenAI credential.
-    embedding_key = aws('secretsmanager', 'get-secret-value', '--secret-id', 'circini/openai-api-key')['SecretString']
-    response = post('api.openai.com', '/v1/embeddings', embedding_key,
-                    {'model': 'text-embedding-3-small', 'input': ['readiness check'], 'dimensions': 1536})
-    assert len(response['data'][0]['embedding']) == 1536
+    # Exercise the exact regional Titan API used by search and long-term memory.
+    assert region == 'ap-southeast-2', 'Titan embeddings are approved in Sydney'
+    response = post(host, '/model/amazon.titan-embed-text-v2:0/invoke', key,
+                    {'inputText': 'readiness check', 'dimensions': 1024, 'normalize': True})
+    assert len(response['embedding']) == 1024
     if bootstrap:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'key'
@@ -63,7 +63,7 @@ def main():
             aws('secretsmanager', 'put-secret-value', '--secret-id', 'circini/bedrock-api-key',
                 '--secret-string', f'file://{path}')
     print(json.dumps({'bedrockPreflight': 'passed', 'model': model, 'region': region,
-                      'toolRoundtrip': 'passed', 'existingEmbeddings': 'passed'}))
+                      'toolRoundtrip': 'passed', 'titanEmbeddings': 'passed'}))
 
 
 if __name__ == '__main__':

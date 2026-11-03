@@ -149,8 +149,9 @@ export async function embedSearchTexts(texts: string[]): Promise<number[][]> {
   const { data } = await axios.post(`${AI_SERVICE_URL}/ai/files/embed`, { texts }, {
     headers: { 'x-internal-key': process.env.INTERNAL_API_KEY }, timeout: 60000,
   });
-  if (!Array.isArray(data.embeddings) || data.embeddings.length !== texts.length ||
-      data.embeddings.some((v: unknown) => !Array.isArray(v) || v.length !== 1536 || v.some(n => !Number.isFinite(n)))) {
+  if (data.model !== 'amazon.titan-embed-text-v2:0' || data.dimensions !== 1024 ||
+      data.region !== 'ap-southeast-2' || !Array.isArray(data.embeddings) || data.embeddings.length !== texts.length ||
+      data.embeddings.some((v: unknown) => !Array.isArray(v) || v.length !== 1024 || v.some(n => !Number.isFinite(n)))) {
     throw new Error('Invalid search embedding response');
   }
   return data.embeddings;

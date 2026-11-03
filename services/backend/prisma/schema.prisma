@@ -298,6 +298,7 @@ model FileAsset {
   summary     String
   indexStatus String @default("pending")
   indexedAt   DateTime?
+  titanIndexedAt DateTime?
   retryAt     DateTime @default(now())
   attempts    Int @default(0)
   createdAt   DateTime @default(now())
@@ -315,7 +316,9 @@ model FileChunk {
   asset     FileAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   ordinal   Int
   content   String @db.Text
+  // Legacy OpenAI vector retained for rollback; new search uses Titan only.
   embedding Unsupported("vector(1536)")?
+  embeddingTitan Unsupported("vector(1024)")?
   @@unique([assetId, ordinal])
 }
 
@@ -341,7 +344,9 @@ model MessageSearchChunk {
   message     Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
   ordinal     Int
   content     String @db.Text
+  // Legacy OpenAI vector retained for rollback; new search uses Titan only.
   embedding   Unsupported("vector(1536)")?
+  embeddingTitan Unsupported("vector(1024)")?
   indexStatus String @default("pending")
   retryAt     DateTime @default(now())
   attempts    Int @default(0)

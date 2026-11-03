@@ -1,14 +1,21 @@
-"""Embeddings use the same approved provider boundary as chat, after screening."""
-import os
+"""Regional Titan embeddings, after the same content screening used by chat."""
+import asyncio
+import math
+from concurrent.futures import ThreadPoolExecutor
+
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from openai import AsyncOpenAI, AsyncAzureOpenAI, AzureOpenAI, OpenAI
 from config import settings
 import guardrails
 
 router = APIRouter()
-
-EMBEDDING_DIMENSIONS = 1536
+EMBEDDING_MODEL = 'amazon.titan-embed-text-v2:0'
+EMBEDDING_DIMENSIONS = 1024
+EMBEDDING_REGION = 'ap-southeast-2'
+EMBEDDING_HOST = f'bedrock-runtime.{EMBEDDING_REGION}.amazonaws.com'
+# Shared across requests and long-term memory; bound provider concurrency.
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='titan-embedding')
 
 
 class EmbeddingRequest(BaseModel):
@@ -16,55 +23,61 @@ class EmbeddingRequest(BaseModel):
 
 
 class EmbeddingUnavailable(RuntimeError):
-    """This deployment has no approved embedding provider configured."""
+    """This deployment has no approved Titan embedding provider configured."""
 
 
 def embedding_provider() -> tuple[str, str]:
-    """(provider, model) for the approved embedding host, or raise."""
-    provider = settings.EMBEDDING_PROVIDER or settings.LLM_PROVIDER
-    host = settings.APPROVED_EMBEDDING_HOST or settings.APPROVED_LLM_HOST
-    if provider == 'openai' and host == 'api.openai.com':
-        return 'openai', 'text-embedding-3-small'
-    if provider == 'azure' and settings.LLM_PROVIDER == 'azure' and os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT'):
-        # configure_llm validates this endpoint during startup.
-        return 'azure', os.environ['AZURE_OPENAI_EMBEDDING_DEPLOYMENT']
-    raise EmbeddingUnavailable('Semantic search is not configured for this provider')
+    if (settings.EMBEDDING_PROVIDER != 'bedrock'
+            or settings.APPROVED_EMBEDDING_HOST != EMBEDDING_HOST
+            or settings.BEDROCK_REGION != EMBEDDING_REGION
+            or not settings.AWS_BEARER_TOKEN_BEDROCK):
+        raise EmbeddingUnavailable('Titan embeddings require the approved Sydney Bedrock endpoint and credential')
+    return 'bedrock', EMBEDDING_MODEL
 
 
-def embed_texts_sync(texts: list[str]) -> list[list[float]]:
-    """Blocking embedding call, for callers that already run off the event loop.
-
-    The LangGraph store runs every operation in an executor, so its embedding
-    callable must be synchronous; this shares the route's provider boundary.
-    """
-    provider, model = embedding_provider()
-    client = (OpenAI(api_key=settings.OPENAI_API_KEY, base_url='https://api.openai.com/v1', timeout=45)
-              if provider == 'openai' else
-              AzureOpenAI(api_key=settings.AZURE_OPENAI_API_KEY, azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-                          api_version=settings.AZURE_OPENAI_API_VERSION, timeout=45))
-    with client:
-        response = client.embeddings.create(model=model, input=texts, dimensions=EMBEDDING_DIMENSIONS)
-    return [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
-
-
-@router.post('/files/embed')
-async def embed_files(request: EmbeddingRequest):
-    texts = []
-    for text in request.texts:
+def _screen_texts(texts: list[str]) -> list[str]:
+    screened = []
+    for text in texts:
         if not text.strip() or len(text) > 7000:
             raise HTTPException(400, 'Invalid search text size')
         checked = guardrails.screen_payload('', {'search.txt': text})
         if checked['guardrail']['decision'] == 'blocked':
             raise HTTPException(422, 'Search content blocked by policy')
-        texts.append(checked['files']['search.txt'])
+        screened.append(checked['files']['search.txt'])
+    return screened
+
+
+def _embed_one(text: str) -> list[float]:
+    # Do not follow redirects with the credential. A failed request is retried
+    # by the durable index worker, rather than silently switching providers.
+    with httpx.Client(timeout=45, follow_redirects=False) as client:
+        response = client.post(
+            f'https://{EMBEDDING_HOST}/model/{EMBEDDING_MODEL}/invoke',
+            headers={'Authorization': 'Bearer ' + settings.AWS_BEARER_TOKEN_BEDROCK},
+            json={'inputText': text, 'dimensions': EMBEDDING_DIMENSIONS, 'normalize': True})
+        response.raise_for_status()
+        vector = response.json().get('embedding')
+    if (not isinstance(vector, list) or len(vector) != EMBEDDING_DIMENSIONS
+            or any(isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) for n in vector)):
+        raise ValueError('Invalid Titan embedding response')
+    return vector
+
+
+def embed_texts_sync(texts: list[str]) -> list[list[float]]:
+    """Shared by search and LangGraph memory; preserve input order."""
+    embedding_provider()
+    screened = _screen_texts(texts)
+    return list(_executor.map(_embed_one, screened))
+
+
+@router.post('/files/embed')
+async def embed_files(request: EmbeddingRequest):
     try:
-        provider, model = embedding_provider()
+        embeddings = await asyncio.to_thread(embed_texts_sync, request.texts)
     except EmbeddingUnavailable as error:
-        raise HTTPException(503, str(error))
-    client = (AsyncOpenAI(api_key=settings.OPENAI_API_KEY, base_url='https://api.openai.com/v1', timeout=45)
-              if provider == 'openai' else
-              AsyncAzureOpenAI(api_key=settings.AZURE_OPENAI_API_KEY, azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-                               api_version=settings.AZURE_OPENAI_API_VERSION, timeout=45))
-    async with client:
-        response = await client.embeddings.create(model=model, input=texts, dimensions=EMBEDDING_DIMENSIONS)
-    return {'embeddings': [item.embedding for item in sorted(response.data, key=lambda item: item.index)]}
+        raise HTTPException(503, str(error)) from None
+    except (httpx.HTTPError, ValueError):
+        # Provider errors can include input text or credential details.
+        raise HTTPException(502, 'Titan embedding request failed') from None
+    return {'embeddings': embeddings, 'model': EMBEDDING_MODEL,
+            'dimensions': EMBEDDING_DIMENSIONS, 'region': EMBEDDING_REGION}

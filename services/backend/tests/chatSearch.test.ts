@@ -18,7 +18,7 @@ let owner: string, other: string, current: string, older: string, foreign: strin
 let available = true, blocked = false;
 const embedded: string[] = [];
 function vector(text: string) {
-  const v = Array<number>(1536).fill(0);
+  const v = Array<number>(1024).fill(0);
   v[/mapping|crosswalk/i.test(text) ? 0 : 1] = 1;
   return v;
 }
@@ -30,7 +30,7 @@ before(async () => {
     if (req.url === '/ai/files/embed') {
       if (!available) { res.writeHead(503); res.end('{}'); return; }
       embedded.push(...data.texts);
-      res.end(JSON.stringify({ embeddings: data.texts.map(vector) }));
+      res.end(JSON.stringify({ embeddings: data.texts.map(vector), model: 'amazon.titan-embed-text-v2:0', dimensions: 1024, region: 'ap-southeast-2' }));
     } else {
       res.end(JSON.stringify({ ...data, files: Object.fromEntries(Object.entries(data.files || {}).map(([k,v]) => [k, String(v).replaceAll('SENSITIVE_MARKER', '[REDACTED]')])),
         history: [], guardrail: { decision: blocked ? 'blocked' : 'allow' } }));
@@ -163,4 +163,17 @@ after(async () => {
   await prisma.user.deleteMany({ where: { id: { in: [owner, other].filter(Boolean) } } });
   await prisma.$disconnect();
   for (const s of [server, policy]) { s?.closeAllConnections(); await new Promise<void>(r => s?.close(() => r())); }
+});
+
+
+test('legacy ready chat chunks stay incomplete until their Titan vector is stored', async () => {
+  const m = await message('Use the customer crosswalk for mapping.');
+  const c = await prisma.messageSearchChunk.create({ data: { messageId: m.id, ordinal: 0, content: m.content, indexStatus: 'ready' } });
+  const legacy = JSON.stringify([1, ...Array<number>(1535).fill(0)]);
+  await prisma.$executeRaw`UPDATE "MessageSearchChunk" SET embedding=${legacy}::vector WHERE id=${c.id}`;
+  assert.equal((await searchChatHistory(prisma, owner, current, { q: 'mapping', scope: 'all' })).semanticIndexComplete, false);
+  await drain();
+  const [row] = await prisma.$queryRaw<Array<{ old: number; current: number }>>`
+    SELECT vector_dims(embedding) AS old, vector_dims("embeddingTitan") AS current FROM "MessageSearchChunk" WHERE id=${c.id}`;
+  assert.deepEqual(row, { old: 1536, current: 1024 });
 });

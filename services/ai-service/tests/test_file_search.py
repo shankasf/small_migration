@@ -1,10 +1,9 @@
-"""Embedding boundary tests: no provider traffic is performed by this suite."""
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+"""Titan embedding boundary: all HTTP traffic is mocked."""
+from unittest.mock import Mock
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
-
 from config import settings
 from main import app
 from routes import file_search
@@ -12,25 +11,26 @@ from routes import file_search
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(settings, 'INTERNAL_API_KEY', 'test-file-search-internal')
-    monkeypatch.setattr(settings, 'LLM_PROVIDER', 'openai')
-    monkeypatch.setattr(settings, 'APPROVED_LLM_HOST', 'api.openai.com')
-    # Avoid lifespan startup configuration; the actual middleware/router still run.
+    for key, value in {'INTERNAL_API_KEY': 'test-file-search-internal',
+                       'EMBEDDING_PROVIDER': 'bedrock', 'BEDROCK_REGION': 'ap-southeast-2',
+                       'APPROVED_EMBEDDING_HOST': file_search.EMBEDDING_HOST,
+                       'AWS_BEARER_TOKEN_BEDROCK': 'synthetic-bedrock-key'}.items():
+        monkeypatch.setattr(settings, key, value)
     return TestClient(app)
 
 
 @pytest.fixture
 def provider(monkeypatch):
-    response = SimpleNamespace(data=[
-        SimpleNamespace(index=1, embedding=[0.0, 1.0] + [0.0] * 1534),
-        SimpleNamespace(index=0, embedding=[1.0] + [0.0] * 1535),
-    ])
-    sdk = AsyncMock()
-    sdk.__aenter__.return_value = sdk
-    sdk.embeddings.create = AsyncMock(return_value=response)
+    sdk = Mock()
+    sdk.__enter__ = Mock(return_value=sdk)
+    sdk.__exit__ = Mock(return_value=False)
+    def response(*args, **kwargs):
+        vector = [0.0] * 1024
+        vector[0 if 'SELECT' in kwargs['json']['inputText'] else 1] = 1.0
+        return httpx.Response(200, json={'embedding': vector}, request=httpx.Request('POST', args[0]))
+    sdk.post.side_effect = response
     factory = Mock(return_value=sdk)
-    monkeypatch.setattr(file_search, 'AsyncOpenAI', factory)
-    monkeypatch.setattr(file_search, 'AsyncAzureOpenAI', factory)
+    monkeypatch.setattr(file_search.httpx, 'Client', factory)
     return factory, sdk
 
 
@@ -62,41 +62,54 @@ def test_blocked_file_content_never_leaves_service(client, provider, text):
     provider[0].assert_not_called()
 
 
-def test_approved_openai_request_uses_screened_text_and_restores_vector_order(client, provider):
+def test_titan_uses_regional_host_screened_text_and_preserves_order(client, provider):
     response = post(client, ['SELECT client_id FROM clients;', 'contact private@example.com'])
     assert response.status_code == 200
-    vectors = response.json()['embeddings']
-    assert len(vectors) == 2 and all(len(vector) == 1536 for vector in vectors)
-    assert vectors[0][0] == 1 and vectors[1][1] == 1
+    data = response.json()
+    assert data['model'] == 'amazon.titan-embed-text-v2:0'
+    assert data['dimensions'] == 1024 and data['region'] == 'ap-southeast-2'
+    assert data['embeddings'][0][0] == 1 and data['embeddings'][1][1] == 1
     factory, sdk = provider
-    assert factory.call_args.kwargs['base_url'] == 'https://api.openai.com/v1'
-    call = sdk.embeddings.create.call_args.kwargs
-    assert call['model'] == 'text-embedding-3-small'
-    assert call['dimensions'] == 1536
-    assert call['input'][0] == 'SELECT client_id FROM clients;'
-    assert 'private@example.com' not in call['input'][1]
+    assert factory.call_args.kwargs['follow_redirects'] is False
+    inputs = []
+    for call in sdk.post.call_args_list:
+        assert call.args[0] == 'https://bedrock-runtime.ap-southeast-2.amazonaws.com/model/amazon.titan-embed-text-v2:0/invoke'
+        assert call.kwargs['headers']['Authorization'] == 'Bearer synthetic-bedrock-key'
+        assert call.kwargs['json']['dimensions'] == 1024
+        assert call.kwargs['json']['normalize'] is True
+        inputs.append(call.kwargs['json']['inputText'])
+    assert 'SELECT client_id FROM clients;' in inputs
+    assert all('private@example.com' not in text for text in inputs)
 
 
-def test_azure_without_embedding_deployment_stays_unavailable(client, provider, monkeypatch):
-    monkeypatch.setattr(settings, 'LLM_PROVIDER', 'azure')
-    monkeypatch.delenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT', raising=False)
+@pytest.mark.parametrize('setting,value', [('EMBEDDING_PROVIDER', 'openai'),
+    ('APPROVED_EMBEDDING_HOST', 'unapproved.example.test'), ('BEDROCK_REGION', 'us-east-1'),
+    ('AWS_BEARER_TOKEN_BEDROCK', '')])
+def test_unapproved_provider_or_missing_credential_never_calls_provider(client, provider, monkeypatch, setting, value):
+    monkeypatch.setattr(settings, setting, value)
     assert post(client, ['SELECT 1;']).status_code == 503
     provider[0].assert_not_called()
 
 
-def test_unapproved_openai_host_never_calls_provider(client, provider, monkeypatch):
-    monkeypatch.setattr(settings, 'APPROVED_LLM_HOST', 'unapproved.example.test')
-    assert post(client, ['SELECT 1;']).status_code == 503
-    provider[0].assert_not_called()
+def test_memory_sync_path_also_screens_and_uses_titan(client, provider):
+    assert len(file_search.embed_texts_sync(['Remember the target schema.'])[0]) == 1024
+    provider[1].post.reset_mock()
+    with pytest.raises(Exception):
+        file_search.embed_texts_sync(['Patient ZAC5678 needs their record migrated'])
+    provider[1].post.assert_not_called()
 
 
-def test_bedrock_keeps_explicitly_configured_existing_embedding_space(client, provider, monkeypatch):
-    monkeypatch.setattr(settings, 'LLM_PROVIDER', 'bedrock')
-    monkeypatch.setattr(settings, 'APPROVED_LLM_HOST', 'bedrock-runtime.ap-southeast-2.amazonaws.com')
-    assert post(client, ['SELECT 1;']).status_code == 503
-    provider[0].assert_not_called()
-    monkeypatch.setattr(settings, 'EMBEDDING_PROVIDER', 'openai')
-    monkeypatch.setattr(settings, 'APPROVED_EMBEDDING_HOST', 'api.openai.com')
-    assert post(client, ['SELECT 1;']).status_code == 200
-    assert provider[0].call_args.kwargs['api_key'] == settings.OPENAI_API_KEY
-    assert provider[1].embeddings.create.call_args.kwargs['dimensions'] == 1536
+@pytest.mark.parametrize('vector', [[0.0] * 1536, [float('nan')] * 1024, [True] * 1024])
+def test_wrong_or_invalid_vectors_are_never_returned(client, provider, vector):
+    response = Mock()
+    response.json.return_value = {'embedding': vector}
+    provider[1].post.side_effect = None
+    provider[1].post.return_value = response
+    assert post(client, ['SELECT 1;']).status_code == 502
+
+
+def test_provider_failure_is_sanitized_without_fallback(client, provider):
+    provider[1].post.side_effect = httpx.ConnectError('synthetic-private-provider-details')
+    response = post(client, ['SELECT 1;'])
+    assert response.status_code == 502
+    assert 'private-provider-details' not in response.text

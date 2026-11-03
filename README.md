@@ -34,7 +34,7 @@ flowchart LR
 | DynamoDB `circini-agent-checkpoints` | LangGraph thread state per chat (TTL 30 days); items over 350 KB offload to S3 |
 | DynamoDB `circini-agent-memory` | LangGraph store: each user's standing instructions (no expiry) |
 | AWS Bedrock (ap-southeast-2) | GPT-OSS 120B through the Converse API |
-| OpenAI embeddings | Vectors for file and chat search |
+| Amazon Titan Text Embeddings V2 | 1,024-dimension file, chat and memory vectors in ap-southeast-2 |
 | Secrets Manager `circini/*` | Injected into the tasks at start |
 | ADOT sidecars · LangSmith (US) | Traces and metrics to X-Ray/CloudWatch · anonymised traces and eval runs |
 
@@ -176,7 +176,7 @@ Socket.IO. The graph itself is shown step by step in
 ### Secrets
 
 `DATABASE_URL`, `JWT_SECRET`, `INTERNAL_API_KEY`, `INTEGRATION_ENCRYPTION_KEY`,
-`AWS_BEARER_TOKEN_BEDROCK`, `OPENAI_API_KEY` (embeddings), `LANGSMITH_API_KEY`,
+`AWS_BEARER_TOKEN_BEDROCK` (chat and Titan embeddings), `LANGSMITH_API_KEY`,
 the GitHub App and GitLab OAuth credentials, `SEED_ADMIN_EMAIL` and
 `SEED_ADMIN_PASSWORD` live in AWS Secrets Manager under `circini/*` and are
 injected into the ECS task definitions — never baked into images. The AI
@@ -248,14 +248,16 @@ region and model are the approved ones. Switching hosts is an environment change
 | Host | Status |
 |---|---|
 | AWS Bedrock (`ap-southeast-2`) | ✅ In use live — GPT-OSS 120B through the Converse API (`ChatBedrockConverse`) |
-| OpenAI (direct) | ✅ Implemented, selectable with `LLM_PROVIDER=openai`; embeddings still use OpenAI |
+| OpenAI (direct) | ✅ Implemented, selectable with `LLM_PROVIDER=openai`; embeddings use regional Titan V2 |
 | Azure OpenAI / AI Foundry | ⚠️ Implemented (`AzureChatOpenAI`), never exercised against a real tenant |
 | Google Vertex AI | ❌ Not built |
 | Org model registry | ❌ Not built — the model is an approved env value, not a registry lookup |
 
-Search embeddings still go to OpenAI (`text-embedding-3-small`) to keep the
-existing vector space, so the live deployment is not yet an all-Bedrock data
-boundary.
+Search and long-term-memory embeddings use Amazon Titan Text Embeddings V2
+(`amazon.titan-embed-text-v2:0`, 1,024 dimensions, normalized) in `ap-southeast-2`.
+The release adds separate Titan vector columns and rebuilds existing file/chat
+indexes without mixing them with legacy OpenAI vectors. Legacy columns are kept
+for rollback; active search reads and writes only the Titan columns.
 
 ### 3. OTEL — instrumented but not exporting
 
@@ -469,7 +471,8 @@ BEDROCK_MODEL=openai.gpt-oss-120b-1:0
 APPROVED_LLM_HOST=bedrock-runtime.ap-southeast-2.amazonaws.com
 PROCESSING_REGION=ap-southeast-2
 AWS_BEARER_TOKEN_BEDROCK=
-OPENAI_API_KEY=                 # search and long-term memory embeddings
+EMBEDDING_PROVIDER=bedrock
+APPROVED_EMBEDDING_HOST=bedrock-runtime.ap-southeast-2.amazonaws.com
 INTERNAL_API_KEY=               # shared with the backend
 CHECKPOINT_BACKEND=memory       # dynamodb in AWS — this chat, 30-day TTL
 MEMORY_BACKEND=memory           # dynamodb in AWS — this user, no expiry

@@ -176,7 +176,7 @@ async function main() {
     return indexed === expectedAssets.length;
   });
   const embedded = await prisma.$queryRaw`SELECT COUNT(*)::int AS count FROM "FileChunk"
-    WHERE "assetId" IN (${first.id},${second.id},${output.id},${legacy?.id || output.id}) AND embedding IS NOT NULL`;
+    WHERE "assetId" IN (${first.id},${second.id},${output.id},${legacy?.id || output.id}) AND "embeddingTitan" IS NOT NULL`;
   assert.ok(embedded[0].count >= expectedAssets.length, 'Vector chunks missing');
   const semantic = await search('daily refund ledger settlement date');
   assert.equal(semantic.semanticAvailable, true, 'Semantic provider unavailable');

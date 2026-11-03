@@ -27,9 +27,8 @@ from langgraph.store.memory import InMemoryStore
 
 from config import settings
 
-# text-embedding-3-small through the service's approved embedding host, the
-# same boundary and dimensions as chat-history search.
-EMBEDDING_DIMENSIONS = 1536
+# Use the same Titan model and dimensions as file/chat search.
+from routes.file_search import EMBEDDING_DIMENSIONS
 # One subject, one memory: "target warehouse" restated is an update, not a new row.
 SUBJECT = re.compile(r"[^a-z0-9]+")
 

@@ -20,7 +20,7 @@ let embeddingsAvailable = true;
 
 // Orthogonal topic vectors provide deterministic retrieval behavior without calling a provider.
 function embedding(text: string): number[] {
-  const vector = Array<number>(1536).fill(0);
+  const vector = Array<number>(1024).fill(0);
   if (/customer|client/i.test(text)) vector[0] = 1;
   if (/invoice|billing/i.test(text)) vector[1] = 1;
   if (!vector[0] && !vector[1]) vector[2] = 1;
@@ -36,7 +36,7 @@ before(async () => {
     assert.equal(req.headers['x-internal-key'], process.env.INTERNAL_API_KEY);
     if (req.url === '/ai/files/embed') {
       if (!embeddingsAvailable) { res.writeHead(503); res.end('{}'); return; }
-      res.end(JSON.stringify({ embeddings: body.texts.map(embedding) }));
+      res.end(JSON.stringify({ embeddings: body.texts.map(embedding), model: 'amazon.titan-embed-text-v2:0', dimensions: 1024, region: 'ap-southeast-2' }));
     } else if (req.url === '/ai/policy/check') {
       res.end(JSON.stringify({ ...body, history: body.history || [], guardrail: { decision: 'allow', reasons: [] } }));
     } else { res.writeHead(404); res.end('{}'); }
@@ -90,8 +90,8 @@ test('hybrid search finds meaning and late exact code, deduplicates chunks, and 
   for (const file of [customer, lateCode, hidden]) {
     assert.equal((await prisma.fileAsset.findUniqueOrThrow({ where: { id: file.id } })).indexStatus, 'ready');
   }
-  const vectors = await prisma.$queryRaw<Array<{ dimensions: number }>>`SELECT vector_dims(embedding) AS dimensions FROM "FileChunk" WHERE "assetId"=${customer.id}`;
-  assert.ok(vectors.length > 0 && vectors.every(row => row.dimensions === 1536));
+  const vectors = await prisma.$queryRaw<Array<{ dimensions: number }>>`SELECT vector_dims("embeddingTitan") AS dimensions FROM "FileChunk" WHERE "assetId"=${customer.id}`;
+  assert.ok(vectors.length > 0 && vectors.every(row => row.dimensions === 1024));
   const semantic = await searchFiles(prisma, ownerId, { q: 'customer' });
   assert.equal(semantic.semanticAvailable, true);
   assert.ok(semantic.files.some(file => file.id === customer.id), 'customer matches client by deterministic semantic vector');
@@ -212,4 +212,17 @@ after(async () => {
   await prisma.$disconnect();
   server?.closeAllConnections();
   await new Promise<void>(resolve => server?.close(() => resolve()));
+});
+
+
+test('legacy OpenAI vectors are preserved while ready files are reindexed with Titan', async () => {
+  const file = await snapshot('legacy_client.sql', 'SELECT client_id FROM clients;');
+  const legacy = JSON.stringify([1, ...Array<number>(1535).fill(0)]);
+  await prisma.$executeRaw`UPDATE "FileChunk" SET embedding=${legacy}::vector WHERE "assetId"=${file.id}`;
+  await prisma.fileAsset.update({ where: { id: file.id }, data: { indexStatus: 'ready', indexedAt: new Date() } });
+  for (let n=0; n<100 && await indexNextFile(prisma); n++) {}
+  const [row] = await prisma.$queryRaw<Array<{ old: number; current: number }>>`
+    SELECT vector_dims(embedding) AS old, vector_dims("embeddingTitan") AS current FROM "FileChunk" WHERE "assetId"=${file.id}`;
+  assert.deepEqual(row, { old: 1536, current: 1024 });
+  assert.ok((await prisma.fileAsset.findUniqueOrThrow({ where: { id: file.id } })).titanIndexedAt);
 });

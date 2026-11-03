@@ -293,6 +293,9 @@ jobs:
           curl -fsS "$BASE/api/health" | grep -q '"status":"ok"'
           echo "smoke test passed"
 
+      - name: Reindex and verify Titan embeddings
+        run: python3 scripts/verify-titan-production.py
+
       - name: Verify live GitHub integration
         run: python3 scripts/verify-github-production.py
 

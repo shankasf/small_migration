@@ -11,7 +11,7 @@ langchain-core>=1.6.4,<2
 langchain-aws>=1.7.9,<2
 langgraph-checkpoint-aws>=1.2.3,<2
 # OpenAI/Azure chat providers stay available behind LLM_PROVIDER; the openai
-# SDK it brings is also what the embedding route uses.
+# SDK it brings is used only by chat; embeddings use the regional Titan API.
 langchain-openai>=1.6.3,<2
 langsmith>=0.14.0,<1
 

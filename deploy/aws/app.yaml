@@ -661,8 +661,8 @@ Resources:
             - { Name: LLM_PROVIDER, Value: !Ref LlmProvider }
             - { Name: BEDROCK_REGION, Value: !Ref BedrockRegion }
             - { Name: BEDROCK_MODEL, Value: !Ref BedrockModel }
-            - { Name: EMBEDDING_PROVIDER, Value: !If [UseBedrock, openai, ''] }
-            - { Name: APPROVED_EMBEDDING_HOST, Value: !If [UseBedrock, api.openai.com, ''] }
+            - { Name: EMBEDDING_PROVIDER, Value: bedrock }
+            - { Name: APPROVED_EMBEDDING_HOST, Value: bedrock-runtime.ap-southeast-2.amazonaws.com }
             - { Name: APPROVED_LLM_HOST, Value: !Ref ApprovedLlmHost }
             - { Name: PROCESSING_REGION, Value: !Ref ProcessingRegion }
             - { Name: PROVIDER_APPROVAL_REFERENCE, Value: !Ref ProviderApprovalReference }
@@ -694,11 +694,12 @@ Resources:
             - !If
               - UseAzure
               - { Name: AZURE_OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretAzureOpenAi }
-              - { Name: OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretOpenAi }
-            - !If
-              - UseBedrock
-              - { Name: AWS_BEARER_TOKEN_BEDROCK, ValueFrom: !ImportValue circini-SecretBedrock }
-              - !Ref AWS::NoValue
+              - !If
+                - UseBedrock
+                - !Ref AWS::NoValue
+                - { Name: OPENAI_API_KEY, ValueFrom: !ImportValue circini-SecretOpenAi }
+            # Titan embeddings use this regional credential independently of chat.
+            - { Name: AWS_BEARER_TOKEN_BEDROCK, ValueFrom: !ImportValue circini-SecretBedrock }
             - { Name: INTERNAL_API_KEY, ValueFrom: !ImportValue circini-SecretInternalApiKey }
             - !If
               - HasLangSmith

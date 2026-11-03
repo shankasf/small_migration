@@ -22,9 +22,9 @@ class Settings:
     BEDROCK_REGION: str = os.getenv("BEDROCK_REGION", "ap-southeast-2")
     BEDROCK_MODEL: str = os.getenv("BEDROCK_MODEL", "openai.gpt-oss-120b-1:0")
     AWS_BEARER_TOKEN_BEDROCK: str = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "")
-    # Preserve the existing vector space when chat uses a text-only model.
-    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "")
-    APPROVED_EMBEDDING_HOST: str = os.getenv("APPROVED_EMBEDDING_HOST", "")
+    # Embeddings are independent of the chat model and stay in Sydney.
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "bedrock")
+    APPROVED_EMBEDDING_HOST: str = os.getenv("APPROVED_EMBEDDING_HOST", "bedrock-runtime.ap-southeast-2.amazonaws.com")
 
     # OpenAI (LLM_PROVIDER=openai)
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
