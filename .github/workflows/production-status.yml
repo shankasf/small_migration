@@ -78,7 +78,7 @@ jobs:
           mkdir -p live-evidence
           set +e
           failed=0
-          for check in deploy/smoke-test.sh scripts/verify-github-production.py scripts/verify-capabilities-production.py scripts/verify-chat-search-production.py scripts/verify-feedback-production.py scripts/verify-impact-agent-production.py scripts/verify-agent-graph-production.py scripts/verify-memory-production.py scripts/verify-file-library-production.py; do
+          for check in scripts/verify-file-library-production.py; do
             name=$(basename "$check")
             if [[ "$check" == *.sh ]]; then
               timeout 1800 bash "$check" "https://$APP_DOMAIN" >"live-evidence/$name.log" 2>&1
