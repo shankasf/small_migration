@@ -14,6 +14,10 @@ for service,prefix in [('backend','otel-backend/'),('ai-service','otel-ai/')]:
  r=call('runtime:'+service,'ecs','list-tasks','--cluster','circini-demo','--service-name',service)
  for arn in r.get('taskArns',[]):
   call('collector:'+service,'logs','get-log-events','--log-group-name','/ecs/circini','--log-stream-name',prefix+'otel-collector/'+arn.rsplit('/',1)[-1],'--limit','20')
+call('clusterServices','ecs','list-services','--cluster','circini-demo')
+call('scheduleStatus','lambda','invoke','--function-name','circini-business-hours','--cli-binary-format','raw-in-base64-out','--payload','{"operation":"status"}','/tmp/circini-final-status.json')
+try:out['checks']['scheduleState']=json.loads(pathlib.Path('/tmp/circini-final-status.json').read_text())
+except Exception:pass
 pathlib.Path('live-evidence').mkdir(exist_ok=True)
 pathlib.Path('live-evidence/progress.json').write_text(json.dumps(out,indent=2,default=str))
 print(json.dumps({'checks':len(out['checks'])}))
