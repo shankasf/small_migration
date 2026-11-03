@@ -103,7 +103,7 @@ def register_fonts():
 class ArchDiagram(Flowable):
     """The AWS topology, drawn natively so the PDF needs no mermaid toolchain."""
 
-    def __init__(self, width=CONTENT_W, height=420):
+    def __init__(self, width=CONTENT_W, height=465):
         Flowable.__init__(self)
         self.width = width
         self.height = height
@@ -193,87 +193,40 @@ class ArchDiagram(Flowable):
             c.drawString(x, self._y(y), text)
 
     def draw(self):
-        c = self.canv
-        W = self.width
-
-        # --- client -------------------------------------------------------
-        self._box((W - 190) / 2, 0, 190, 28, "Browser", "5 demo users · HTTPS 443", C_EXT)
-
-        # --- VPC ----------------------------------------------------------
+        c, W = self.canv, self.width
+        self._box(25, 0, 190, 30, "Browser", "HTTPS to application; OIDC sign-in", C_EXT)
+        self._box(285, 0, 160, 30, "Amazon Cognito", "Managed identity; TOTP MFA", C_SEC)
+        self._arrow([(215, 15), (285, 15)], label="OIDC")
         c.setStrokeColor(MUTED)
         c.setLineWidth(1.2)
         c.setDash(5, 3)
-        c.roundRect(0, self._y(322), W, 274, 5, stroke=1, fill=0)
+        c.roundRect(0, self._y(313), W, 266, 5, stroke=1, fill=0)
         c.setDash()
-        self._caption(10, 60, "VPC  ·  ap-southeast-2", 7.4, bold=True, centred=False)
-
-        band_x, band_w = 12, W - 64  # right gutter carries the egress path
-        gutter = W - 27
-
-        # Public subnets -- edge and egress
-        self._band(band_x, 70, band_w, 56, "PUBLIC SUBNETS")
-        alb_x, alb_w = 26, 190
-        nat_x, nat_w = 239, 190
-        self._box(alb_x, 84, alb_w, 36, "Application Load Balancer",
-                  "TLS (ACM) · idle timeout 660s", C_NET)
-        self._box(nat_x, 84, nat_w, 36, "NAT Gateway", "single egress path", C_NET)
-        self._arrow([(W / 2, 28), (alb_x + alb_w / 2, 84)])
-
-        # Private app subnets -- four Fargate tasks
-        self._band(band_x, 138, band_w, 90, "PRIVATE APP SUBNETS  ·  ECS Fargate")
-        svc_w, svc_y, svc_h = 92, 154, 58
-        fe_x, be_x, ai_x, kc_x = 26, 129, 232, 335
-        self._box(fe_x, svc_y, svc_w, svc_h, "frontend",
-                  ["nginx · React SPA", "0.25 vCPU / 0.5 GB"], C_COMPUTE)
-        self._box(be_x, svc_y, svc_w, svc_h, "backend",
-                  ["verifies OIDC JWT", "0.5 vCPU / 1 GB"], C_COMPUTE)
-        self._box(ai_x, svc_y, svc_w, svc_h, "ai-service",
-                  ["FastAPI agent", "0.5 vCPU / 1 GB"], C_COMPUTE)
-        self._box(kc_x, svc_y, svc_w, svc_h, "Keycloak",
-                  ["OIDC · MFA · roles", "1 vCPU / 2 GB"], C_SEC)
-
-        alb_cx = alb_x + alb_w / 2
-        for cx, label in ((fe_x + svc_w / 2, "/"), (be_x + svc_w / 2, "/api"),
-                          (kc_x + svc_w / 2, "/auth")):
-            self._arrow([(alb_cx, 120), (cx, svc_y)])
-            self._caption((alb_cx + cx) / 2, 134, label, 6.4, bold=True)
-
-        self._arrow([(be_x + svc_w, 183), (ai_x, 183)])
-        self._arrow([(ai_x + svc_w / 2, svc_y), (ai_x + svc_w / 2, 120)], dashed=True)
-
-        # Private data subnets
-        self._band(band_x, 240, band_w, 70, "PRIVATE DATA SUBNETS")
-        self._box(110, 258, 235, 40, "RDS PostgreSQL",
-                  "app + keycloak databases · KMS · backups", C_DATA)
-        self._arrow([(be_x + svc_w / 2, svc_y + svc_h), (200, 258)])
-        self._arrow([(kc_x + svc_w / 2, svc_y + svc_h), (300, 258)])
-
-        # --- outside the VPC ----------------------------------------------
-        self._box(0, 330, 232, 36, "Secrets Manager · KMS",
-                  "ECR · CloudWatch Logs", C_SEC)
-        self._box(263, 330, 232, 36, "LLM API",
-                  "OpenAI or Azure OpenAI", C_EXT)
-        self._arrow([(nat_x + nat_w, 102), (gutter, 102), (gutter, 330)], dashed=True)
-
-        # --- legend -------------------------------------------------------
-        legend = [("Edge / network", C_NET), ("Compute", C_COMPUTE), ("Data", C_DATA),
-                  ("Security / identity", C_SEC), ("External", C_EXT)]
-        lx = 0
-        for label, (fill, stroke) in legend:
-            c.setFillColor(fill)
-            c.setStrokeColor(stroke)
-            c.setLineWidth(1)
-            c.rect(lx, self._y(390), 14, 9, stroke=1, fill=1)
-            c.setFillColor(MUTED)
-            c.setFont(FONT, 7)
-            c.drawString(lx + 19, self._y(389), label)
-            lx += 20 + pdfmetrics.stringWidth(label, FONT, 7) + 18
-
-        c.setFillColor(MUTED)
-        c.setFont(FONT, 6.6)
-        c.drawString(0, self._y(410),
-                     "Solid: request paths.  Dashed: outbound LLM egress.  "
-                     "The ALB publishes /, /api and /auth only — the AI service has no listener rule.")
+        self._caption(12, 59, "VPC 10.20.0.0/16  |  ap-southeast-2  |  two AZs", 7.3, True, False)
+        self._band(12, 68, W - 24, 65, "PUBLIC SUBNETS")
+        self._box(25, 85, 190, 35, "Application Load Balancer", "ACM TLS; idle timeout 660 seconds", C_NET)
+        self._box(300, 85, 145, 35, "NAT Gateway", "Single outbound gateway", C_NET)
+        self._arrow([(120, 30), (120, 85)])
+        self._band(12, 143, W - 24, 91, "PRIVATE APPLICATION SUBNETS  |  ECS Fargate")
+        self._box(25, 166, 115, 54, "frontend", ["React / nginx", "0.25 vCPU / 512 MiB"], C_COMPUTE)
+        self._box(165, 166, 125, 54, "backend", ["OIDC; Socket.IO; audit", "0.5 vCPU / 2048 MiB"], C_COMPUTE)
+        self._box(320, 166, 125, 54, "ai-service", ["LangGraph / FastAPI", "0.5 vCPU / 2048 MiB"], C_COMPUTE)
+        self._arrow([(100, 120), (82, 166)], label="/")
+        self._arrow([(170, 120), (227, 166)], label="/api; /socket.io")
+        self._arrow([(290, 192), (320, 192)])
+        self._caption(305, 181, "key", 6.2)
+        self._arrow([(382, 166), (372, 120)], dashed=True)
+        self._band(12, 244, W - 24, 59, "PRIVATE DATA SUBNETS")
+        self._box(145, 261, 165, 34, "RDS PostgreSQL 16.13", "Private; single-AZ; 7-day backups", C_DATA)
+        self._arrow([(227, 220), (227, 261)])
+        self._box(0, 335, 220, 40, "DynamoDB and S3", ["Agent state / memory / checkpoints", "Audit archive with Object Lock"], C_DATA)
+        self._box(250, 335, 205, 40, "AWS Bedrock (Sydney)", "GPT-OSS 120B inference", C_SEC)
+        self._box(0, 390, 220, 40, "Supporting AWS services", ["Secrets Manager / ECR", "CloudWatch / ADOT collectors"], C_SEC)
+        self._box(250, 390, 205, 40, "External destinations", ["api.openai.com: embeddings", "api.smith.langchain.com: traces ON"], C_EXT)
+        self._arrow([(445, 102), (W - 5, 102), (W - 5, 322), (360, 322), (360, 335)], dashed=True)
+        self._arrow([(W - 5, 322), (W - 5, 382), (360, 382), (360, 390)], dashed=True)
+        self._caption(0, 448, "Solid: application requests. Dashed: outbound model, embedding and trace access via NAT.", 6.6, centred=False)
+        self._caption(0, 460, "The AI service has no public ALB rule. Managed stores are shown outside the VPC boundary.", 6.6, centred=False)
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +517,7 @@ def render(blocks, styles):
             if len(story) >= 2 and isinstance(story[-1], HRFlowable) and isinstance(story[-2], Paragraph):
                 lead = [story.pop(-2), story.pop(-1)]
             story.append(KeepTogether(lead + [
-                Paragraph("Figure 1 — Target AWS topology", styles["h3"]),
+                Paragraph("Figure 1 — Verified reference topology (November 3, 2026)", styles["h3"]),
                 Spacer(1, 6),
                 ArchDiagram(),
             ]))
@@ -584,7 +537,7 @@ def decorate(canvas, doc):
     canvas.setFont(FONT, 7.4)
     canvas.setFillColor(MUTED)
     canvas.drawString(MARGIN_L, MARGIN_B - 23,
-                      "Circini Migration Agent — AWS Deployment Architecture")
+                      "Circini Migration Agent — AWS Deployment Guide")
     canvas.drawRightString(PAGE_W - MARGIN_R, MARGIN_B - 23, str(doc.page))
     canvas.restoreState()
 
@@ -595,14 +548,16 @@ def main():
 
     register_fonts()
     styles = build_styles()
+    for name in ("h1", "h2", "h3", "h4"):
+        styles[name].keepWithNext = True
     blocks = parse_markdown(INPUT_PATH.read_text(encoding="utf-8"))
 
     doc = BaseDocTemplate(
         str(OUTPUT_PATH), pagesize=A4,
         leftMargin=MARGIN_L, rightMargin=MARGIN_R,
         topMargin=MARGIN_T, bottomMargin=MARGIN_B,
-        title="Circini Migration Agent — AWS Deployment Architecture",
-        author="Circini", subject="AWS infrastructure requirements",
+        title="Circini Migration Agent — AWS Deployment Guide",
+        author="Circini", subject="Verified deployment configuration and AWS deployment instructions",
     )
     frame = Frame(MARGIN_L, MARGIN_B, CONTENT_W, PAGE_H - MARGIN_T - MARGIN_B, id="body")
     doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=decorate)])
