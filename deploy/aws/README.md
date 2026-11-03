@@ -41,11 +41,13 @@ aws ecs run-task --cluster circini-demo --launch-type FARGATE \
 
 ## Secrets
 
-All under `circini/*` in Secrets Manager; generated at stack creation except
-`circini/openai-api-key`, which is set manually:
+Application secrets live under `circini/*` in Secrets Manager. Most are generated
+at stack creation. Populate `circini/bedrock-api-key` with a credential authorized
+for GPT-OSS 120B and Titan Text Embeddings V2 in `ap-southeast-2`:
 
 ```bash
-aws secretsmanager put-secret-value --secret-id circini/openai-api-key --secret-string 'sk-...'
+aws secretsmanager put-secret-value --secret-id circini/bedrock-api-key \
+  --secret-string file:///secure/bedrock-key.txt
 ```
 
 `circini/database-url` embeds the RDS endpoint + master password (resolved at
@@ -117,12 +119,104 @@ gh variable set AWS_DEPLOY_ROLE_ARN --body "$ROLE"
 gh variable set AWS_REGION        --body ap-southeast-2
 gh variable set APP_DOMAIN        --body migration-agent.uat.signify.net.nz
 gh variable set AUTH_MODE         --body oidc
-gh variable set OPENAI_MODEL      --body gpt-6-astra
+gh variable set LLM_PROVIDER      --body bedrock
+gh variable set BEDROCK_REGION    --body ap-southeast-2
+gh variable set BEDROCK_MODEL     --body openai.gpt-oss-120b-1:0
+gh variable set APPROVED_LLM_HOST --body bedrock-runtime.ap-southeast-2.amazonaws.com
+gh variable set PROCESSING_REGION --body ap-southeast-2
 gh variable set CERTIFICATE_ARN   --body <acm-cert-arn>   # from `aws acm list-certificates`
 ```
 
-The OpenAI API key is **not** a repo secret — it lives in Secrets Manager
-(`circini/openai-api-key`) and is rotated with `put-secret-value`.
+The Bedrock credential lives in Secrets Manager and is rotated with
+`put-secret-value`. The Bedrock deployment does not inject an OpenAI API key.
+Embeddings use `amazon.titan-embed-text-v2:0`, normalized, at 1,024 dimensions
+in Sydney. The release adds separate Titan columns and rebuilds file/chat
+indexes; existing OpenAI columns remain available for rollback.
+
+## Fresh environment: complete order
+
+This repository currently targets one named environment per AWS account/region.
+For a new AWS account in `ap-southeast-2`, keep the `circini-*` names. For a second
+environment in the same account, first parameterize resource names, CloudFormation
+exports/imports, IAM policies, repository workflow targets, verification scripts,
+and business-hours controller. Changing only a stack name is insufficient.
+
+1. **Prepare the repository and account.** Clone the current `main`; install AWS
+   CLI v2 and GitHub CLI, then authenticate to the target account and repository.
+   Initial bootstrap requires permission to create IAM roles. Use a separate
+   repository or parameterized workflows so changing deployment variables cannot
+   redirect the existing production repository to a new account accidentally.
+2. **Create a domain certificate.** Request an ACM certificate in `ap-southeast-2`
+   for the new hostname and complete its DNS validation. Record the issued ARN.
+3. **Bootstrap OIDC.** Deploy `github-oidc.yaml` using the setup commands above.
+   For a different repository, pass `GitHubOrg` and `GitHubRepo`; if an account
+   already has GitHub's OIDC provider, pass `ExistingProviderArn`. Set the returned
+   `DeployRoleArn` as `AWS_DEPLOY_ROLE_ARN` in the target repository.
+4. **Create base infrastructure before the first pipeline.** From the repository
+   root, run:
+
+   ```bash
+   export AWS_DEFAULT_REGION=ap-southeast-2
+   aws cloudformation deploy --stack-name circini-network --template-file deploy/aws/network.yaml
+   aws cloudformation deploy --stack-name circini-data --template-file deploy/aws/data.yaml
+   aws cloudformation deploy --stack-name circini-cognito --template-file deploy/aws/cognito.yaml \
+     --parameter-overrides AppUrl=https://YOUR_DOMAIN
+   ```
+
+   This provisions the private PostgreSQL database, generated application secrets,
+   Cognito user pool, and networking. Choose subnet CIDRs before creating the VPC;
+   subnet CIDRs are currently fixed in `network.yaml`.
+5. **Create the image repositories before building.** For each of
+   `circini-frontend`, `circini-backend`, and `circini-ai-service`, create an ECR
+   repository with immutable tags and scan-on-push enabled. Example:
+
+   ```bash
+   aws ecr create-repository --repository-name circini-backend \
+     --image-tag-mutability IMMUTABLE --image-scanning-configuration scanOnPush=true
+   ```
+6. **Populate and verify Bedrock credentials.** Confirm the account can invoke
+   `openai.gpt-oss-120b-1:0` and `amazon.titan-embed-text-v2:0` in Sydney, then
+   populate `circini/bedrock-api-key` as above. Do this before launching CI:
+   agent evaluations load this secret before the deployment job runs.
+7. **Configure the GitHub App.** Use the Public GitHub App section above, replacing
+   its URLs with the new hostname. Supply all six fields through the AWS secret
+   or `CIRCINI_GITHUB_APP_BOOTSTRAP_JSON` repository secret. This is required by
+   the current pipeline even if users do not immediately connect repositories.
+   GitLab credentials are optional. `LANGSMITH_API_KEY` is optional for trace and
+   evaluation-report export; local evaluation gates still run without it.
+8. **Set repository configuration.** Set the variables in the OIDC setup section
+   using the new domain, issued certificate ARN, target deploy role, and Bedrock
+   values. Create the GitHub environment named `production` used by the workflow.
+   Record the operator's provider approval reference where applicable.
+9. **Prepare first-login and verification identities.** With `AUTH_MODE=oidc`,
+   create an administrator in Cognito and add it to the `admin` group. The
+   `SEED_ADMIN_*` secret only seeds users in local authentication mode. The admin
+   must sign in after schema creation to create its application record. Before
+   the first release, adapt the live verification scripts' existing account
+   references (including `sagar@callsphere.ai`) to your verification identities,
+   and add a first-deploy bootstrap/pause before account-dependent checks. The
+   current workflow assumes those application users already exist.
+10. **Run the pipeline.** Push to `main` or run
+    `gh workflow run deploy.yml --ref main`. CI, agent evaluations, image builds,
+    and vulnerability scans precede deployment. CloudFormation then creates the
+    app stack: ALB, ECS services, DynamoDB memory/checkpoints, S3 storage, and logs.
+    The schema-sync task creates PostgreSQL tables and pgvector columns.
+11. **Connect DNS and complete first login.** As soon as the ALB is available,
+    point the hostname to it (CNAME, or your DNS provider's alias equivalent).
+    Complete the Cognito admin's first login and TOTP enrollment. DNS and initial
+    application identities must be ready before the public verification gates.
+12. **Require successful verification.** The workflow waits for ECS stability,
+    rebuilds Titan indexes, and exercises integration, chat, agent, feedback,
+    and memory checks. Also run
+    `bash deploy/smoke-test.sh https://YOUR_DOMAIN` and verify a new upload and
+    semantic search. New installations have no old vectors to migrate.
+13. **Choose operating hours.** The workflow installs the Auckland business-hours
+    controller. Review its policy in `business-hours.yaml` and
+    `scripts/business_hours_controller.py` before using the new environment;
+    configure the desired availability instead of assuming it runs 24/7.
+
+Do not reuse the current production database, credentials, or DNS record for a
+fresh environment. Later releases use the same pipeline; bootstrap is one-time.
 
 ## Status
 
