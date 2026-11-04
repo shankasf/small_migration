@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Add backward-compatible columns using the existing schema task BEFORE new app tasks start."""
+import base64
+import gzip
 import json
 from pathlib import Path
 import subprocess
@@ -28,8 +30,14 @@ sql.extend(statement.strip() for statement in Path('services/backend/prisma/sql/
 # Fixed statements only; no user input is interpolated into SQL or shell code.
 script = "const {PrismaClient}=require('@prisma/client');const p=new PrismaClient();(async()=>{for(const q of " + json.dumps(sql) + ") await p.$executeRawUnsafe(q)})().catch(()=>{console.error('Additive schema preflight failed');process.exitCode=1}).finally(()=>p.$disconnect())"
 network = {'awsvpcConfiguration': {'subnets': exports['circini-AppSubnets'].split(','), 'securityGroups':[exports['circini-SgApp']], 'assignPublicIp':'DISABLED'}}
-override = {'containerOverrides': [{'name':'schema-sync', 'command':['node','-e',script]}]}
-result = aws('ecs','run-task','--cluster','circini-demo','--launch-type','FARGATE','--task-definition',existing['taskDefinitionArns'][0], '--network-configuration',json.dumps(network), '--overrides',json.dumps(override))
+# ECS limits all container overrides to 8192 bytes. Compress the reviewed source
+# exactly as the other production checks do; do not drop any migration SQL.
+encoded = base64.b64encode(gzip.compress(script.encode(), mtime=0)).decode()
+command = "require('node:fs').writeFileSync('/tmp/schema-preflight.cjs',require('node:zlib').gunzipSync(Buffer.from('" + encoded + "','base64')));require('/tmp/schema-preflight.cjs')"
+override = {'containerOverrides': [{'name':'schema-sync', 'command':['node','-e',command]}]}
+serialized = json.dumps(override, separators=(',', ':'))
+assert len(serialized.encode()) <= 8192, 'Additive schema override exceeds the ECS limit'
+result = aws('ecs','run-task','--cluster','circini-demo','--launch-type','FARGATE','--task-definition',existing['taskDefinitionArns'][0], '--network-configuration',json.dumps(network), '--overrides',serialized)
 if result.get('failures') or not result.get('tasks'):
     raise RuntimeError('Could not start additive schema preflight')
 arn = result['tasks'][0]['taskArn']
