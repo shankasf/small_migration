@@ -147,6 +147,40 @@ def test_tool_results_are_redacted_and_capped_before_the_model_reads_them():
     assert len(message.content) < TOOL_RESULT_MAX_CHARS + 200 and "truncated" in message.content
 
 
+def test_plain_name_reads_the_selected_immutable_attachment():
+    context = turn_context(FakeRegistry())
+    context.workspace.files = {"model.sql [v1; aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa]": "select 731"}
+    result = run_tool(FILE_TOOLS, context, "get_file_content", file_name="model.sql")
+    assert result.content == "select 731"
+
+
+def test_multiple_attached_versions_require_an_exact_label():
+    context = turn_context(FakeRegistry())
+    old = "model.sql [v1; aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa]"
+    new = "model.sql [v2; bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb]"
+    context.workspace.files = {old: "select 731", new: "select 842"}
+    result = run_tool(FILE_TOOLS, context, "get_file_content", file_name="model.sql")
+    assert "Multiple attached versions" in result.content
+    assert old in result.content and new in result.content
+    assert "select 731" not in result.content and "select 842" not in result.content
+    assert run_tool(FILE_TOOLS, context, "get_file_content", file_name=old).content == "select 731"
+
+
+def test_unknown_version_and_other_files_do_not_fall_back_to_an_attachment():
+    context = turn_context(FakeRegistry())
+    context.workspace.files = {"model.sql [v1; aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa]": "select 731"}
+    for name in ("other.sql", "model.sql [v2; bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb]", "../model.sql"):
+        result = run_tool(FILE_TOOLS, context, "get_file_content", file_name=name)
+        assert "not found" in result.content and "select 731" not in result.content
+
+
+def test_plain_name_alias_keeps_outbound_redaction():
+    context = turn_context(FakeRegistry())
+    context.workspace.files = {"model.sql [v1; aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa]": "select 731 -- someone@example.com"}
+    result = run_tool(FILE_TOOLS, context, "get_file_content", file_name="model.sql")
+    assert "select 731" in result.content and "someone@example.com" not in result.content
+
+
 def test_invalid_tool_arguments_come_back_to_the_model_as_an_error():
     message = run_tool(EVIDENCE_TOOLS, turn_context(FakeRegistry()), "read_impact_evidence",
                        source="warehouse", operation="read")
