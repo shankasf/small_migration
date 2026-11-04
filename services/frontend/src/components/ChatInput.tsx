@@ -14,7 +14,7 @@ interface ChatInputProps {
   placeholder?: string;
   /** Prefill the composer from an external action (e.g. a starter card).
    *  nonce forces re-application even when the same text is picked twice. */
-  prefill?: { text: string; nonce: number };
+  prefill?: { text: string; nonce: number; file?: File };
   integrations?: Integration[];
   onOpenIntegrations?: (provider?: IntegrationProvider) => void;
 }
@@ -110,6 +110,13 @@ export default function ChatInput({
   useEffect(() => {
     if (!prefill || !prefill.text) return;
     setMessage(prefill.text);
+    if (prefill.file) {
+      const sampleFile = prefill.file;
+      const existing = filesRef.current.filter(file => file.name !== sampleFile.name);
+      const updated = [...existing.slice(0, MAX_FILES - 1), sampleFile];
+      filesRef.current = updated;
+      setSelectedFiles(updated);
+    }
     const ta = textareaRef.current;
     if (ta) {
       ta.focus();
@@ -286,7 +293,7 @@ export default function ChatInput({
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".csv,.xlsx,.xls,.txt,.sql,.json,.xml,.md,.py,.js,.ts,.yaml,.yml,.log"
+            accept=".csv,.tsv,.xlsx,.xls,.txt,.sql,.ddl,.json,.xml,.md,.py,.js,.ts,.yaml,.yml,.log"
             onChange={handleFileSelect}
             className="hidden"
             disabled={disabled || sending}
@@ -298,18 +305,19 @@ export default function ChatInput({
               type="button"
               onClick={() => !disabled && !sending && setPlusMenuOpen(open => !open)}
               disabled={disabled || sending}
-              className={`flex h-10 w-10 items-center justify-center rounded-full border transition-all ${
+              className={`flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-600 transition-all ${
                 disabled
                   ? 'cursor-not-allowed border-hairline bg-elevated text-faint'
                   : plusMenuOpen
                     ? 'border-brass/50 bg-brass/10 text-brass'
                     : 'border-hairline bg-elevated text-ink hover:border-brass/50 hover:text-brass'
               }`}
-              title="Add files or connect a service"
-              aria-label="Add files or connect a service"
+              title="Attach metadata or connect a service"
+              aria-label="Attach metadata or connect a service"
               aria-expanded={plusMenuOpen}
             >
-              <Plus className={`h-5 w-5 transition-transform ${plusMenuOpen ? 'rotate-45' : ''}`} />
+              <Plus className={`h-4 w-4 transition-transform ${plusMenuOpen ? 'rotate-45' : ''}`} />
+              <span>Attach Metadata</span>
             </button>
 
             {plusMenuOpen && (
@@ -334,7 +342,7 @@ export default function ChatInput({
                     className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-elevated"
                   >
                     <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brass/10 text-brass"><FilePlus2 className="h-4 w-4" /></span>
-                    <span className="min-w-0 flex-1"><span className="block text-sm font-500 text-ink">Add files</span><span className="block text-[11px] text-faint">SQL, CSV, Excel, YAML and more</span></span>
+                    <span className="min-w-0 flex-1"><span className="block text-sm font-500 text-ink">Upload metadata</span><span className="block text-[11px] text-faint">Mappings (CSV/Excel), schemas/DDL, SQL and more</span></span>
                     <span className="font-mono text-[10px] text-faint">{selectedFiles.length}/{MAX_FILES}</span>
                   </button>
                 </div>

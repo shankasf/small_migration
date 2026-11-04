@@ -1,0 +1,6 @@
+Target Column,Source Table,Source Column,Target Type,Transformation,Notes
+customer_id,legacy_customers,cust_id,NUMBER(38,0),Direct,Required unique customer key
+full_name,legacy_customers,cust_name,VARCHAR(200),TRIM(cust_name),Remove surrounding spaces
+email_address,legacy_customers,email,VARCHAR(255),LOWER(TRIM(email)),Email may be blank
+signup_date,legacy_customers,created_dt,DATE,TO_DATE(created_dt),Confirm source date format
+account_status,legacy_customers,status_code,VARCHAR(20),"CASE WHEN status_code = 'A' THEN 'Active' WHEN status_code = 'I' THEN 'Inactive' ELSE 'Unknown' END",Review unexpected status codes

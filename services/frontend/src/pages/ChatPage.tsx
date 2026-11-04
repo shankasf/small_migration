@@ -10,19 +10,19 @@ import { CirciniMark } from '../components/Brand';
 // run is a click away instead of a blank page.
 const STARTERS: { label: string; hint: string; prompt: string }[] = [
   {
-    label: 'Generate a migration script',
-    hint: 'from a mapping file',
-    prompt: 'Generate a migration script from the mapping file I upload.',
-  },
-  {
-    label: 'Explain a script',
-    hint: 'walk through the logic',
-    prompt: 'Explain what this migration script does, step by step.',
-  },
-  {
     label: 'Validate a mapping',
-    hint: 'check schema coverage',
+    hint: 'find gaps and type mismatches',
     prompt: 'Review my source-to-target mapping and flag any gaps or type mismatches.',
+  },
+  {
+    label: 'Generate SQL',
+    hint: 'from an agreed mapping',
+    prompt: 'Generate a SQL migration script from the attached mapping. Ask me about any missing requirements before generating it.',
+  },
+  {
+    label: 'Review and refine SQL',
+    hint: 'explain and improve the draft',
+    prompt: 'Review the generated SQL, explain its logic, and suggest any corrections before I test it.',
   },
 ];
 
@@ -48,9 +48,15 @@ interface ChatPageProps {
 function WelcomeHero({
   subtitle,
   onPick,
+  onSample,
+  sampleLoading,
+  sampleError,
 }: {
   subtitle: string;
   onPick?: (prompt: string) => void;
+  onSample?: () => void;
+  sampleLoading?: boolean;
+  sampleError?: string;
 }) {
   return (
     <div className="flex w-full flex-col items-center text-center animate-fade-up">
@@ -63,6 +69,7 @@ function WelcomeHero({
       <p className="mb-8 max-w-sm text-sm text-muted">{subtitle}</p>
 
       {onPick && (
+        <>
         <div className="grid w-full max-w-xl gap-2.5 sm:grid-cols-3">
           {STARTERS.map(s => (
             <button
@@ -79,6 +86,13 @@ function WelcomeHero({
             </button>
           ))}
         </div>
+        {onSample && (
+          <button type="button" onClick={onSample} disabled={sampleLoading} className="mt-4 text-sm font-500 text-brass hover:text-brass-bright disabled:opacity-60">
+            {sampleLoading ? 'Loading sample mapping…' : 'Try a sample mapping →'}
+          </button>
+        )}
+        {sampleError && <p role="alert" className="mt-2 text-xs text-danger">{sampleError}</p>}
+        </>
       )}
     </div>
   );
@@ -102,8 +116,25 @@ const ChatPage = memo(function ChatPage({
   integrations = [],
   onOpenIntegrations,
 }: ChatPageProps) {
-  const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: '', nonce: 0 });
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number; file?: File }>({ text: '', nonce: 0 });
+  const [sampleLoading, setSampleLoading] = useState(false);
+  const [sampleError, setSampleError] = useState('');
   const pick = (prompt: string) => setPrefill({ text: prompt, nonce: Date.now() });
+  const loadSample = async () => {
+    setSampleLoading(true);
+    setSampleError('');
+    try {
+      const response = await fetch('/samples/sample-mapping.csv');
+      if (!response.ok) throw new Error('Sample mapping is unavailable. Please try again.');
+      const content = await response.text();
+      const file = new File([content], 'sample-mapping.csv', { type: 'text/csv' });
+      setPrefill({ text: STARTERS[0].prompt, nonce: Date.now(), file });
+    } catch {
+      setSampleError('Could not load the sample mapping. Please try again.');
+    } finally {
+      setSampleLoading(false);
+    }
+  };
 
   // Welcome screen when no session
   if (!session) {
@@ -112,8 +143,11 @@ const ChatPage = memo(function ChatPage({
         <div className="console-grid pointer-events-none absolute inset-0 opacity-60" />
         <div className="relative flex-1 flex flex-col items-center justify-center gap-8 px-4">
           <WelcomeHero
-            subtitle="Upload migration files or ask a question to get started."
+            subtitle="Attach mapping spreadsheets, schemas/DDL, or SQL scripts, or ask a question. Spreadsheet layouts can vary."
             onPick={pick}
+            onSample={loadSample}
+            sampleLoading={sampleLoading}
+            sampleError={sampleError}
           />
           <div className="w-full max-w-xl">
             <ChatInput onSend={onSend} disabled={false} placeholder="Ask anything..." prefill={prefill} integrations={integrations} onOpenIntegrations={onOpenIntegrations} />
@@ -142,7 +176,7 @@ const ChatPage = memo(function ChatPage({
         <div className="relative flex-1 flex flex-col items-center justify-center px-4">
           <div className="console-grid pointer-events-none absolute inset-0 opacity-60" />
           <div className="relative w-full max-w-xl">
-            <WelcomeHero subtitle="Upload files or pick a starting point below." onPick={pick} />
+            <WelcomeHero subtitle="Attach mapping spreadsheets, schemas/DDL, or SQL scripts, or ask a question. Spreadsheet layouts can vary." onPick={pick} onSample={loadSample} sampleLoading={sampleLoading} sampleError={sampleError} />
           </div>
         </div>
       ) : (
