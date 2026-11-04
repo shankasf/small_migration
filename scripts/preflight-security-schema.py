@@ -28,7 +28,7 @@ sql.extend(statement.strip() for statement in Path('services/backend/prisma/sql/
 sql.extend(statement.strip() for statement in Path('services/backend/prisma/sql/titan-embeddings.sql').read_text().split(';') if statement.strip())
 sql.extend(statement.strip() for statement in Path('services/backend/prisma/sql/message-feedback.sql').read_text().split(';') if statement.strip())
 # Fixed statements only; no user input is interpolated into SQL or shell code.
-script = "const {PrismaClient}=require('@prisma/client');const p=new PrismaClient();(async()=>{for(const q of " + json.dumps(sql) + ") await p.$executeRawUnsafe(q)})().catch(()=>{console.error('Additive schema preflight failed');process.exitCode=1}).finally(()=>p.$disconnect())"
+script = "const {PrismaClient}=require(process.cwd()+'/node_modules/@prisma/client');const p=new PrismaClient();(async()=>{for(const q of " + json.dumps(sql) + ") await p.$executeRawUnsafe(q)})().catch(()=>{console.error('Additive schema preflight failed');process.exitCode=1}).finally(()=>p.$disconnect())"
 network = {'awsvpcConfiguration': {'subnets': exports['circini-AppSubnets'].split(','), 'securityGroups':[exports['circini-SgApp']], 'assignPublicIp':'DISABLED'}}
 # ECS limits all container overrides to 8192 bytes. Compress the reviewed source
 # exactly as the other production checks do; do not drop any migration SQL.

@@ -40,5 +40,6 @@ class SchemaPreflightTest(unittest.TestCase):
             for statement in Path(f'services/backend/prisma/sql/{filename}.sql').read_text().split(';'):
                 if statement.strip():
                     self.assertIn(json.dumps(statement.strip()), source)
+        self.assertIn("require(process.cwd()+'/node_modules/@prisma/client')", source)
         self.assertIn('tokensValidAfter', source)
         self.assertIn('impactState', source)
