@@ -204,9 +204,12 @@ async function main() {
       expiresAt: browserKey.expiresAt, user: { id: user.id, email: user.email, name: user.name, role: user.role, status: user.status } } }));
   }
 }
-main().catch(() => {
+main().catch(error => {
   // Do not print response bodies, file contents, credentials, or provider errors.
-  console.error(JSON.stringify({ fileLibraryProductionCheck: 'failed', phase }));
+  // Only our explicit assertion messages are safe; generated messages include values.
+  const reason = error instanceof assert.AssertionError && error.generatedMessage === false
+    ? error.message.split('\n')[0] : (error?.code || error?.name || 'unknown');
+  console.error(JSON.stringify({ fileLibraryProductionCheck: 'failed', phase, reason }));
   process.exitCode = 1;
 }).finally(async () => {
   try { if (keyId) await prisma.apiKey.update({ where: { id: keyId }, data: { revokedAt: new Date() } }); }
