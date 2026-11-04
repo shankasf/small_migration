@@ -194,8 +194,19 @@ and business-hours controller. Changing only a stack name is insufficient.
    must sign in after schema creation to create its application record. Before
    the first release, adapt the live verification scripts' existing account
    references (including `sagar@callsphere.ai`) to your verification identities,
-   and add a first-deploy bootstrap/pause before account-dependent checks. The
-   current workflow assumes those application users already exist.
+   because the current workflow assumes those application users already exist.
+   Create the Cognito administrator using the new environment's pool ID:
+
+   ```bash
+   POOL_ID=$(aws cloudformation describe-stacks --stack-name circini-cognito \
+     --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
+   aws cognito-idp admin-create-user --user-pool-id "$POOL_ID" \
+     --username YOUR_ADMIN_EMAIL \
+     --user-attributes Name=email,Value=YOUR_ADMIN_EMAIL Name=email_verified,Value=true \
+     --desired-delivery-mediums EMAIL
+   aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL_ID" \
+     --username YOUR_ADMIN_EMAIL --group-name admin
+   ```
 10. **Run the pipeline.** Push to `main` or run
     `gh workflow run deploy.yml --ref main`. CI, agent evaluations, image builds,
     and vulnerability scans precede deployment. CloudFormation then creates the
@@ -205,6 +216,10 @@ and business-hours controller. Changing only a stack name is insufficient.
     point the hostname to it (CNAME, or your DNS provider's alias equivalent).
     Complete the Cognito admin's first login and TOTP enrollment. DNS and initial
     application identities must be ready before the public verification gates.
+    On a first installation, the pipeline may stop at those gates while this
+    setup is incomplete. Complete DNS and login, resolve the reported failure,
+    then rerun only the failed job with `gh run rerun RUN_ID --failed`; it reuses
+    the already built image tag. Do not bypass the verification checks.
 12. **Require successful verification.** The workflow waits for ECS stability,
     rebuilds Titan indexes, and exercises integration, chat, agent, feedback,
     and memory checks. Also run
