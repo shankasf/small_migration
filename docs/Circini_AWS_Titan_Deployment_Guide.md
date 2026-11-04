@@ -1,8 +1,8 @@
 # Circini Migration Agent — AWS Deployment Guide
 
-Prepared for Healthcare New Zealand · November 4, 2026 · AWS Titan edition
+Prepared for Healthcare New Zealand · November 4, 2026
 
-Deploy a fresh Circini environment using Amazon Bedrock for chat inference and Amazon Titan Text Embeddings V2 for semantic search. This edition uses the Titan implementation introduced in commit 92921ec and the subsequent deployment fixes on main.
+Deploy a fresh Circini environment using Amazon Bedrock for chat inference and Amazon Titan Text Embeddings V2 for semantic search.
 
 ## Deployment profile
 
@@ -18,7 +18,7 @@ Deploy a fresh Circini environment using Amazon Bedrock for chat inference and A
 | Application telemetry | CloudWatch and the deployed AWS observability components |
 | Agent trace export | Disabled in this new-environment profile |
 
-The flowchart describes this target configuration. Both inference and embeddings use Amazon Bedrock. The former external-destinations box has been removed. This document does not change or certify the trace-export settings of the existing reference deployment.
+The flowchart describes this target configuration. Both inference and embeddings use Amazon Bedrock. This document does not change or certify the trace-export settings of the existing reference deployment.
 
 Use approved non-clinical migration material. Technical deployment alone does not establish approval to process patient data.
 

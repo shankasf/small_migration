@@ -20,7 +20,7 @@ CW=W-2*M
 INK=colors.HexColor('#242423')
 GRAY=colors.HexColor('#f5f4f0')
 RULE=colors.HexColor('#dcd9d2')
-TITLE='Circini Migration Agent — AWS Deployment Guide · Titan edition'
+TITLE='Circini Migration Agent — AWS Deployment Guide'
 
 
 def fonts():
@@ -169,7 +169,7 @@ def main():
                 story.append(ListFlowable(items,bulletType='bullet' if kind=='ul' else '1',bulletFontName='HNZSans',bulletFontSize=7,leftIndent=14,bulletDedent=7,spaceAfter=7))
             elif kind=='quote':
                 for t in payload: story.append(Paragraph(inline(t),ss['p']))
-    doc=BaseDocTemplate(str(OUTPUT),pagesize=A4,title=TITLE,author='Circini',subject='AWS Titan deployment and operations; November 4, 2026',leftMargin=M,rightMargin=M,topMargin=51,bottomMargin=40)
+    doc=BaseDocTemplate(str(OUTPUT),pagesize=A4,title=TITLE,author='Circini',subject='AWS deployment and operations; November 4, 2026',leftMargin=M,rightMargin=M,topMargin=51,bottomMargin=40)
     frame=Frame(M,40,CW,H-91,leftPadding=0,rightPadding=0,topPadding=0,bottomPadding=0)
     doc.addPageTemplates(PageTemplate(id='hnz',frames=[frame],onPage=header))
     doc.build(story,canvasmaker=NumberedCanvas)
