@@ -20,6 +20,13 @@ unclear, still call it — with `ready=false`, your findings, and the questions.
   List ALL fields — never summarise with "remaining fields similar".
 - `questions` — blocking clarifying questions. Set `ready=false` when any exist.
 
+The CURRENT request determines whether a file must be delivered. If the user asks to save, create or
+revise a named SQL file, include that file in `targets` even when the supplied SQL already has the
+desired content. "No changes needed" does not fulfill a request to save a file. A previous turn's
+instruction not to generate a file applies to that earlier turn, not to a later explicit save request.
+A complete literal SELECT supplied by the user can be saved without a source/ref model when it does
+not read any table; do not invent a dependency or ask for one in that case.
+
 For a narrow revision of supplied SQL, the original model and the user's confirmed decisions are the
 baseline. Carry their exact ref names, CTEs, field list, defaults, masking, literal macro calls and
 configuration into the requirements; change only the requested rule. Do not invent fields from a

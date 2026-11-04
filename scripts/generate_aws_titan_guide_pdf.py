@@ -2,7 +2,7 @@
 """Render the AWS Titan guide with the established HNZ typography and layout."""
 from pathlib import Path
 import re
-from xml.sax.saxutils import escape
+from html import escape
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
@@ -32,7 +32,7 @@ def fonts():
 
 
 def inline(text):
-    text=escape(text)
+    text=escape(text, quote=False)
     text=re.sub(r'`([^`]+)`',lambda m:'<font face="HNZMono" size="9.6" backColor="#f2f1ed">'+m[1]+'</font>',text)
     text=re.sub(r'\*\*([^*]+)\*\*',r'<b>\1</b>',text)
     return re.sub(r'\[([^\]]+)\]\(([^)]+)\)',lambda m:'<link href="'+m[2]+'" color="#245c80">'+m[1]+'</link>',text)

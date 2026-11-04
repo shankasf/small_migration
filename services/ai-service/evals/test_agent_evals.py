@@ -65,7 +65,7 @@ def test_injection_guard_blocks_attacks_and_passes_real_work(example):
 
 
 @pytest.mark.langsmith(test_suite_name="circini-agent-evals")
-@pytest.mark.parametrize("example", cases("generation", "policies-clear"))
+@pytest.mark.parametrize("example", cases("generation", "policies-clear", "file-after-read"))
 def test_generation_delivers_every_mapped_field(example):
     outputs = run("generation", example)
     results = ev.generation_outcome(outputs, example["outputs"])
