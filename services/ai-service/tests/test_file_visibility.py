@@ -186,3 +186,10 @@ def test_list_files_labels_are_exact_and_unparsed_reads_are_refused():
 def test_unloadable_files_take_no_share_of_the_budget():
     block = files_block({"book.xlsx": "PK\x03\x04" + "x" * 5000, "notes.md": "n" * 900}, budget=1_000)
     assert "n" * 900 in block and "Only partly loaded" not in block
+
+
+def test_consultant_prompt_checks_false_premises_and_hides_internal_markers():
+    from workflow.prompts import prompt
+    text = prompt("consultant", "migration_scope", "dbt_rules")
+    assert "wrong premise" in text and "Never invent a defect" in text
+    assert "never mention markers" in text
