@@ -51,6 +51,11 @@ def number_file_lines(result: str) -> str:
     if not isinstance(start, int) or start < 1:
         return result
     lines = data["content"].split("\n")
-    data["content"] = "\n".join(f"L{number}| {line}" for number, line in enumerate(lines, start))
+    # A page cut at a line boundary ends with "\n"; the empty remainder is not a line of its
+    # own (the next page starts with that line number), so it is not labelled.
+    tail = "\n" if data.get("partial") and len(lines) > 1 and lines[-1] == "" else ""
+    if tail:
+        lines.pop()
+    data["content"] = "\n".join(f"L{number}| {line}" for number, line in enumerate(lines, start)) + tail
     data["lineNumbers"] = LINE_NUMBER_NOTE
     return json.dumps(data, ensure_ascii=False)

@@ -33,13 +33,24 @@ NHI_PATTERN = re.compile(
     rf"\b{_NHI_ALPHA}{{3}}(?:\d{{4}}|\d{{2}}{_NHI_ALPHA}{{2}})\b"
 )
 
+# Digit-group separators: ASCII space/hyphen plus exactly the code points NFKC
+# folds to them (NBSP, U+2000-U+200A, narrow NBSP, U+205F, ideographic space,
+# small and fullwidth hyphen-minus). Locales and spreadsheets insert these
+# between digit groups. The original-text pass must recognise them, or the
+# NFKC detection pass finds a number the original pass missed and an ordinary
+# formatted value is hard-blocked as "encoded" instead of being redacted like
+# its ASCII twin. Dashes NFKC leaves alone (U+2010-U+2015, minus) are not
+# separators in either pass, so values such as "AB‑1234‑CD" stay untouched.
+_SEP = r"[ \-  -   　﹣－]"
+_SEP_WS = r"[\s\-﹣－]"
+
 # NZ IRD number written with separators (8-9 digits: XX-XXX-XXX / XXX-XXX-XXX)
-IRD_PATTERN = re.compile(r"\b\d{2,3}[- ]\d{3}[- ]\d{3}\b")
+IRD_PATTERN = re.compile(rf"\b\d{{2,3}}{_SEP}\d{{3}}{_SEP}\d{{3}}\b")
 
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
 # NZ phone numbers (+64 or 0-prefixed, allowing spaces/dashes)
-PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?64[\s-]?|\(?0\d?\)?[\s-]?)[2-9](?:[\s-]?\d){6,8}(?!\d)")
+PHONE_PATTERN = re.compile(rf"(?<!\d)(?:\+?64{_SEP_WS}?|\(?0\d?\)?{_SEP_WS}?)[2-9](?:{_SEP_WS}?\d){{6,8}}(?!\d)")
 
 # Dates only when near a DOB/birth marker (avoids flagging ordinary dates)
 DOB_PATTERN = re.compile(
@@ -90,6 +101,10 @@ class GuardrailResult:
     reasons: List[str] = field(default_factory=list)
     findings: Dict[str, int] = field(default_factory=dict)
     data_class: str = "metadata"  # metadata | health-pii
+    # Original length when the text was cut at MAX_INPUT_CHARS; 0 when whole.
+    # Callers disclose it (truncation_note) — the text itself is not marked,
+    # because generated SQL must stay valid.
+    truncated_from: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -246,7 +261,30 @@ def check_outbound(text: str) -> GuardrailResult:
         result.decision = "redacted"
         result.reasons.append("output_filtered")
         result.findings = findings
+    if len(text) > settings.MAX_INPUT_CHARS:
+        # _sanitize cut it. Never silently: record it so the caller can say so.
+        result.truncated_from = len(text)
+        result.decision = "redacted"
+        result.reasons.append("content_truncated")
     return result
+
+
+def truncation_note(result: GuardrailResult, what: str = "This reply") -> str:
+    """User-facing sentence for a check_outbound cut, or '' when nothing was cut."""
+    if not result.truncated_from:
+        return ""
+    return (f"[Note: {what} was cut by the security size limit: only the first "
+            f"{settings.MAX_INPUT_CHARS:,} of {result.truncated_from:,} characters are included.]")
+
+
+def disclose_truncation(text: str, result: GuardrailResult, what: str = "This reply") -> str:
+    """Append the truncation note, cutting the body so text + note stays within
+    MAX_INPUT_CHARS — a reply crosses check_outbound twice, and a note pushed
+    past the limit would be cut off (silently) by the second pass."""
+    note = truncation_note(result, what)
+    if not note:
+        return text
+    return text[: settings.MAX_INPUT_CHARS - len(note) - 2] + "\n\n" + note
 
 
 BLOCK_MESSAGES = {
@@ -268,26 +306,86 @@ def block_message(reasons: List[str]) -> str:
     return f"⚠️ Request blocked by guardrails: {detail}. This decision has been logged."
 
 
-def screen_payload(message: str, files=None, history=None) -> dict:
-    """Single policy boundary used before persistence and before model egress."""
-    result = check_inbound(message, files)
-    safe_history = []
-    for item in history or []:
-        if item.get("role") not in ("user", "assistant"):
-            result.decision = "blocked"
-            result.reasons.append("invalid_history_role")
-            break
-        previous = check_inbound(item.get("content", ""))
+# Room left under MAX_INPUT_CHARS for the clip note (and for redaction markers
+# that are longer than what they replace), so a clipped history message stays
+# within the limit when the AI service screens it a second time.
+_HISTORY_CLIP_HEADROOM = 2_000
+HISTORY_OMITTED_TEXT = ("[Earlier {role} message left out of the assistant's context: the security filter "
+                        "flagged it. The rest of the conversation is unaffected.]")
+
+
+def _history_clip_note(original_chars: int) -> str:
+    return (f"\n[Note: this earlier message was {original_chars:,} characters long; only the first "
+            f"{settings.MAX_INPUT_CHARS - _HISTORY_CLIP_HEADROOM:,} are kept in the assistant's context.]")
+
+
+def screen_history(history) -> Tuple[List[dict], List[dict], Optional[str]]:
+    """Screen earlier turns without letting one bad turn poison the chat.
+
+    The current message is screened strictly by check_inbound. History is
+    different: every entry was already accepted once (user turns were screened
+    before they were saved, replies crossed check_outbound), so an entry that
+    fails now — a later rule change, an assistant reply that quotes an injection
+    phrase or percent-encoded address, file-reference metadata pushing it over
+    the size limit — must not block every later turn for ever. Such an entry is
+    replaced IN PLACE by a placeholder (an oversized one is clipped first and
+    re-screened), so the list keeps its length and order (callers index it
+    against the saved messages) and its content never reaches the model.
+
+    Returns (history, notices, blocking_reason). Only a forged role still blocks:
+    that is tampering with the request structure, not content.
+    """
+    safe: List[dict] = []
+    notices: List[dict] = []
+    for index, item in enumerate(history or []):
+        role = item.get("role")
+        if role not in ("user", "assistant"):
+            return [], [], "invalid_history_role"
+        content = item.get("content") or ""
+        clipped_from = 0
+        if len(content) > settings.MAX_INPUT_CHARS:
+            clipped_from = len(content)
+            content = content[: settings.MAX_INPUT_CHARS - _HISTORY_CLIP_HEADROOM]
+        previous = check_inbound(content)
         if previous.decision == "blocked":
-            result.decision = "blocked"
-            result.reasons.append("unsafe_conversation_history")
-            break
-        if previous.decision == "redacted" and result.decision == "allow":
-            result.decision = "redacted"
-        safe_history.append({"role": item["role"], "content": previous.text})
+            if "security_configuration_invalid" in previous.reasons:
+                return [], [], "security_configuration_invalid"
+            safe.append({"role": role, "content": HISTORY_OMITTED_TEXT.format(role=role)})
+            notices.append({"index": index, "role": role, "action": "omitted",
+                            "reasons": list(dict.fromkeys(previous.reasons))})
+            continue
+        text = previous.text
+        if clipped_from:
+            text += _history_clip_note(clipped_from)
+            notices.append({"index": index, "role": role, "action": "clipped",
+                            "reasons": ["history_message_too_large"], "original_chars": clipped_from})
+        safe.append({"role": role, "content": text, **({"redacted": True} if previous.findings else {})})
+    return safe, notices, None
+
+
+def screen_payload(message: str, files=None, history=None) -> dict:
+    """Single policy boundary used before persistence and before model egress.
+
+    The current message and files are screened strictly; earlier turns go
+    through screen_history, which drops or clips an offending entry with a
+    visible placeholder instead of blocking the whole chat.
+    """
+    result = check_inbound(message, files)
+    safe_history, notices, history_block = screen_history(history)
+    if history_block:
+        result.decision = "blocked"
+        result.reasons.append(history_block)
+    if result.decision == "allow" and any(item.pop("redacted", False) for item in safe_history):
+        result.decision = "redacted"
+    for item in safe_history:
+        item.pop("redacted", None)
+    if notices and result.decision != "blocked":
+        result.reasons.append("history_message_omitted" if any(n["action"] == "omitted" for n in notices)
+                              else "history_message_clipped")
     blocked = result.decision == "blocked"
     return {"message": "" if blocked else result.text,
             "files": {} if blocked else getattr(result, "redacted_files", {}),
             "history": [] if blocked else safe_history,
+            "history_notices": [] if blocked else notices,
             "guardrail": result.as_dict(),
             "error": block_message(result.reasons) if blocked else None}

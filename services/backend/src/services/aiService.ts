@@ -88,6 +88,8 @@ export interface ScreenedPayload {
   message: string;
   files: Record<string, string>;
   history: Array<{role: string; content: string}>;
+  /** Earlier turns replaced by a placeholder (or clipped) instead of blocking the chat. */
+  history_notices?: Array<{index: number; role?: string; action: 'omitted' | 'clipped'; reasons?: string[]; original_chars?: number}>;
   guardrail: NonNullable<ChatResponse['guardrail']>;
   error?: string;
 }

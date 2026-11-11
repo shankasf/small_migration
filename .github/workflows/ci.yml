@@ -49,7 +49,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: GitHub integration security tests
-        run: npx tsx --test tests/github.test.ts tests/githubAgent.test.ts tests/impact.test.ts tests/capabilities.test.ts tests/userInvitations.test.ts tests/fileContext.test.ts
+        run: npx tsx --test tests/github.test.ts tests/githubAgent.test.ts tests/impact.test.ts tests/capabilities.test.ts tests/userInvitations.test.ts tests/fileContext.test.ts tests/historyScreen.test.ts tests/impactCarry.test.ts
 
   backend-security:
     name: Backend security integration tests

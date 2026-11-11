@@ -11,7 +11,8 @@ import { beginTurn } from '../services/aiLog.js';
 import { attachLibraryRefs, referenceData, resolveFileRefs, snapshotFile } from '../services/fileLibrary.js';
 import { impactBrief, impactState, parseImpactSources, requestImpactSources } from '../services/impactState.js';
 import { ownFeedback } from '../services/feedback.js';
-import { buildContextFiles, carriedAssetIds, supersedeCarried } from '../services/fileContext.js';
+import { historyNoticeText, markHistoryNoticesAnnounced, unannouncedHistoryNotices } from '../services/historyScreen.js';
+import { accessibleCarried, buildContextFiles, carriedAssetIds, supersedeCarried } from '../services/fileContext.js';
 
 
 const router = Router();
@@ -81,10 +82,12 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       include: {libraryRefs: {where: {assetId: {not: null}}, orderBy: {createdAt: 'asc'}}},
     });
     const carriedIds = carriedAssetIds([previousTurn?.libraryRefs || [], ...laterUserTurns.map(m => m.libraryRefs)]);
-    const carriedFound = await prisma.fileAsset.findMany({where: {
-      id: {in: carriedIds}, session: {ownerUserId: user.id},
-    }});
-    const previousAssets = carriedIds.map(id => carriedFound.find(a => a.id === id)).filter((a): a is NonNullable<typeof a> => Boolean(a));
+    // Same access rule as opening the source chat: admins keep carried files when
+    // continuing another user's chat; files from chats the user cannot open are dropped.
+    const carriedFound = await prisma.fileAsset.findMany({
+      where: {id: {in: carriedIds}}, include: {session: {select: {ownerUserId: true}}},
+    });
+    const previousAssets = accessibleCarried(carriedIds, carriedFound, source => canAccessSession(user, source));
     // A newer pick of the same file (this turn, or a later failed turn) replaces the older one.
     const carried = supersedeCarried(selected, previousAssets);
     const assets = [...selected, ...carried];
@@ -94,6 +97,9 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
       contextFiles,
       await historyWithFileEvidence(prisma, user.id, session.messages));
     message = screened.message;
+    // An earlier turn the filter now rejects is left out (placeholder), not a
+    // reason to block this one; the user is told once per message.
+    const historyNotices = await unannouncedHistoryNotices(prisma, session.messages, screened.history_notices);
 
     // Save only screened content. A rejected request never becomes history.
     // Save user message
@@ -238,14 +244,16 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
     });
 
     // Save assistant message
+    const historyNote = aiResponse.guardrail?.decision === 'blocked' ? '' : historyNoticeText(historyNotices);
     const assistantMessage = await prisma.message.create({
       data: {
         sessionId,
         role: 'assistant',
-        content: aiResponse.response,
+        content: historyNote ? `${aiResponse.response}\n\n${historyNote}` : aiResponse.response,
         libraryRefs: {create: referenceData(assets)},
       }
     });
+    if (historyNote) await markHistoryNoticesAnnounced(prisma, user.id, sessionId, historyNotices, req.ip);
 
     // Save generated files if any. Each generation is a new immutable version
     // linked to the assistant message that produced it — revisions of the same

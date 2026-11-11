@@ -67,6 +67,12 @@ async def screen_input(state: TurnState, runtime: Runtime[TurnContext]) -> Comma
         return Command(update={**turn, "response": guardrails.block_message(inbound.reasons)}, goto=END)
     if inbound.decision == "redacted" and context.logger:
         await context.logger.guardrail("inbound", "redacted", inbound.reasons, findings)
+    if screened.get("history_notices") and context.logger:
+        # An earlier turn was left out or clipped (not the current one): the
+        # turn proceeds, but the decision is recorded rather than silent.
+        await context.logger.log(step="guardrail.history", message=(
+            f"{len(screened['history_notices'])} earlier message(s) left out of or clipped in context"),
+            data={"notices": screened["history_notices"]})
 
     workspace = context.workspace
     workspace.message = inbound.text
@@ -199,6 +205,7 @@ async def screen_output(state: TurnState, runtime: Runtime[TurnContext]) -> dict
     """
     context = runtime.context
     outbound = guardrails.check_outbound(state.get("response") or "")
+    outbound.text = guardrails.disclose_truncation(outbound.text, outbound)
     hardened = harden_reply(outbound.text)
     if hardened.reasons:
         outbound.decision, outbound.text = "redacted", hardened.text

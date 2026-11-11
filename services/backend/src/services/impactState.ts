@@ -68,9 +68,43 @@ export function parseImpactSources(message: string): ImpactSource[] | null {
 // brief. A new question starts a new brief. Earlier consent is never carried either way.
 const SOURCE_FOLLOW_UP = /\b(?:sources?|instead|switch|github|gitlab|dbt cloud|snowflake|uploads?|uploaded|repo|repos|repository|repositories)\b/i;
 
+// A complaint or question about the assistant itself ("are you not able to read the file?",
+// "why can't you trace it?") is never an analysis request, even when it names an action.
+const ASSISTANT_COMPLAINT = /\b(?:(?:can't|cannot|won't)\s+you|(?:are|were|can|could|do|did|will|would|have|has)(?:n't|\s+not)\s+you|(?:are|were|can|could|do|did|will|would)\s+you\s+not|why\s+(?:can't|cannot|won't|(?:can|could|did|do|does|is|are|were|was|will|would|have|has)(?:n't|\s+not)|won't|not))\b|\byou(?:'re|\s+are|\s+were)?\s+(?:not|unable|didn't|did\s+not|don't|do\s+not|can't|cannot|couldn't|still|never|failed|keep)\b|\b(?:not\s+able|unable)\s+to\b|\b(?:not\s+working|doesn't\s+work|didn't\s+work|that's\s+wrong|try\s+again)\b/i;
+// A new analysis names what to analyse: a what-if question, a change to a named object, or an
+// impact/lineage word together with an identifier (stg_orders, mart.customers, `col`).
+// Topic words alone ("just do the impact analysis") are not a new request.
+const WHAT_IF = /\bwhat\s+(?:if|breaks|happens|would\s+(?:break|happen|change))\b/i;
+const CHANGE = /\b(?:drop|dropping|rename|renaming|remove|removing|delete|deleting|alter|altering|change|changing|add|adding|replace|replacing|migrate|migrating|deprecate|deprecating|retire|retiring)\s+(?!(?:it|this|that|them|your|the\s+answer|more|some|anything|something)\b)(?:the\s+|a\s+|an\s+|column\s+|table\s+|model\s+)?[\w$`"'.]+/i;
+const TOPIC = /\b(?:impact|trace|lineage|downstream|upstream|depend(?:s|encies|ency|ent|ents)?|affect(?:s|ed|ing)?|uses?|reads?|references?)\b/i;
+const IDENTIFIER = /(?:\b[A-Za-z][\w$]*(?:[._][\w$]+)+\b|`[^`\n]+`|"[^"\n]+")/;
+
+const normalise = (message: string) => message.trim().replace(/[‘’ʼ]/g, "'");
+
+/** True when a message reads as a fresh analysis request rather than a complaint or aside. */
+export function isNewAnalysisRequest(message: string): boolean {
+  const text = normalise(message);
+  return !ASSISTANT_COMPLAINT.test(text) &&
+    (WHAT_IF.test(text) || CHANGE.test(text) || (TOPIC.test(text) && IDENTIFIER.test(text)));
+}
+
+/**
+ * The analysis request stored when the source question is (re-)asked.
+ * - A source reply or follow-up refines the pending request.
+ * - A genuinely new analysis request replaces it.
+ * - A complaint about the assistant ("are you not able to read the file?") keeps the original
+ *   request exactly, so it never becomes the analysis brief.
+ * - Anything else unclassified while sources are pending is kept as a follow-up to the
+ *   original request, so neither the original nor the new message is silently dropped.
+ */
 export function impactBrief(previous: ImpactState | null, message: string): string {
-  return previous && (parseImpactSources(message) || SOURCE_FOLLOW_UP.test(message))
-    ? `${previous.request}\n\nFollow-up: ${message}` : message;
+  if (!previous) return message;
+  if (parseImpactSources(message) || SOURCE_FOLLOW_UP.test(message)) return `${previous.request}\n\nFollow-up: ${message}`;
+  if (isNewAnalysisRequest(message)) return message;
+  if (ASSISTANT_COMPLAINT.test(normalise(message))) return previous.request;
+  // A confirmed analysis has already answered; any other new question starts over.
+  if (previous.phase === 'confirmed') return message;
+  return `${previous.request}\n\nFollow-up: ${message}`;
 }
 
 export function requestImpactSources(userId: string, request: string, startedAt: Date): ImpactState {

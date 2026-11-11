@@ -191,6 +191,7 @@ async def _chat(request: ChatRequest) -> ChatResponse:
         # The graph filters completed replies; a paused question is model text too,
         # so the final reply always crosses the outbound filter here as well.
         outbound = guardrails.check_outbound(result.response)
+        outbound.text = guardrails.disclose_truncation(outbound.text, outbound)
         hardened = harden_reply(outbound.text)
         if hardened.reasons:
             outbound.decision, outbound.text = "redacted", hardened.text

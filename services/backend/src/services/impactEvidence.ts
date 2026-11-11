@@ -117,7 +117,8 @@ export async function readImpactEvidence(prisma: PrismaClient, userId: string, s
   if (source === 'github') {
     if (!['status', 'repositories', 'tree', 'file'].includes(operation)) throw new ImpactReadError(400, 'Read-only GitHub operation required.');
     if (operation === 'file') pathValue(args.path);
-    const result = await readGitHub(prisma, userId, operation, args, 8 * 1024 * 1024);
+    // Full content: artifactPage pages it below, so readGitHub must not page it again.
+    const result = await readGitHub(prisma, userId, operation, args, 8 * 1024 * 1024, null);
     if ('content' in result && typeof result.content === 'string') {
       const {content, ...provenance} = result;
       return {source, ...provenance, ...artifactPage(content, args)};

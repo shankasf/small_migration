@@ -55,16 +55,22 @@ def page_of(label: str, content: str, offset: int = 0, page: int = PAGE_CHARS) -
     if looks_unparsed(content):
         return (f"File '{label}' could not be converted to text when it was uploaded, so its content is "
                 "unavailable. Tell the user, and ask them to re-upload it (for a spreadsheet, as .xlsx or .csv).")
-    content = guardrails.check_outbound(content).text
+    checked = guardrails.check_outbound(content)
+    content = checked.text
+    # A file past the size ceiling is cut by the filter; the last page must say
+    # so, or the model reads the cut point as the real end of the file.
+    cut = (f" The file was cut by the security size limit: the remaining "
+           f"{checked.truncated_from - len(content):,} characters are unavailable — tell the user."
+           if checked.truncated_from else "")
     offset = max(0, int(offset or 0))
-    if offset == 0 and len(content) <= page:
+    if offset == 0 and len(content) <= page and not cut:
         return content
     if offset >= len(content):
-        return f"Offset {offset:,} is past the end of '{label}' ({len(content):,} characters)."
+        return f"Offset {offset:,} is past the end of '{label}' ({len(content):,} characters).{cut}"
     end = min(len(content), offset + page)
     body = content[offset:end]
     more = (f" More follows (truncated here): call get_file_content with offset={end} for the next page."
-            if end < len(content) else " This is the last page.")
+            if end < len(content) else " This is the last page." + cut)
     return f"[{label}: characters {offset:,}–{end:,} of {len(content):,}.{more}]\n{body}"
 
 

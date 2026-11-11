@@ -138,6 +138,19 @@ export function carriedAssetIds(refGroups: Array<Array<{ assetId: string | null 
   return ids;
 }
 
+/**
+ * Carried assets the current user may still read, in carried-id order. Access is
+ * decided by the same rule as opening the source chat (pass canAccessSession), so an
+ * admin continuing another user's chat keeps its carried files, while a file from a
+ * chat the user cannot open is never exposed.
+ */
+export function accessibleCarried<T extends { id: string; session: { ownerUserId: string | null } | null }>(
+  ids: string[], found: T[], canAccess: (session: { ownerUserId: string | null }) => boolean,
+): T[] {
+  return ids.map(id => found.find(a => a.id === id))
+    .filter((a): a is T => Boolean(a && a.session && canAccess(a.session)));
+}
+
 /** Translate multer limit errors into a message the user can act on. */
 export function uploadLimitError(error: unknown): Error {
   const code = (error as { code?: string })?.code;

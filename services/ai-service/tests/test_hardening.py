@@ -11,9 +11,12 @@ from sandbox_validation import run_fixture
 
 
 def test_history_rechecked_and_blocked_content_never_replayed():
+    # A history entry the filter rejects is replaced, never replayed — and no
+    # longer blocks the (clean) current turn (tests/test_history_poisoning.py).
     result = guardrails.screen_payload('continue', history=[{'role': 'user', 'content': 'Patient ZAC5678'}])
-    assert result['guardrail']['decision'] == 'blocked'
-    assert result['history'] == [] and result['message'] == ''
+    assert result['guardrail']['decision'] != 'blocked' and result['message'] == 'continue'
+    assert 'ZAC5678' not in str(result['history']) and len(result['history']) == 1
+    assert result['history_notices'][0]['action'] == 'omitted'
 
 
 def test_history_redacted_and_system_role_rejected():
@@ -57,7 +60,9 @@ def test_unapproved_azure_endpoint_refused(monkeypatch):
         configure_llm()
 
 
-def test_chat_blocks_history_before_any_model(monkeypatch):
+def test_chat_blocks_unsafe_current_message_before_any_model(monkeypatch):
+    # (History is no longer a blocker: a flagged earlier turn is replaced by a
+    # placeholder — see tests/test_history_poisoning.py and test_turn_graph.py.)
     import routes.migration as route
     from langgraph.checkpoint.memory import InMemorySaver
     from fakes import FakeRegistry
@@ -71,7 +76,7 @@ def test_chat_blocks_history_before_any_model(monkeypatch):
     tracer = TraceExporter()
     route.install_runtime(AgentRuntime(runner=TurnRunner(build_turn_graph(InMemorySaver()), models, tracer), tracer=tracer))
     try:
-        result = asyncio.run(chat(ChatRequest(session_id='test-history', message='continue', history=[{'role':'user', 'content':'ZAC5678'}])))
+        result = asyncio.run(chat(ChatRequest(session_id='test-history', message='ZAC5678', history=[{'role':'user', 'content':'hello'}])))
     finally:
         route.install_runtime(None)
     assert result.guardrail.decision == 'blocked'

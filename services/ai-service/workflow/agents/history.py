@@ -71,7 +71,8 @@ def fetched(raw: str) -> dict[str, Any]:
     return data
 
 
-def compose(response: str, attached: list[str], problems: list[str], redacted: list[str] | None = None) -> str:
+def compose(response: str, attached: list[str], problems: list[str], redacted: list[str] | None = None,
+            cut: list[str] | None = None) -> str:
     """State the outcome of the action, because the model wrote its reply before it ran.
 
     The answer typically names the file and says where it lives ("attached to
@@ -86,6 +87,9 @@ def compose(response: str, attached: list[str], problems: list[str], redacted: l
         parts.append("Some values in " + ", ".join(f"`{name}`" for name in redacted)
                      + " were redacted by the security filter, so the attached copy is not byte-for-byte the "
                      "original. The original is unchanged in My Files.")
+    if cut:
+        parts.append("The attached copy of " + ", ".join(cut) + " was cut by the security size limit, so it is "
+                     "incomplete. The original is unchanged in My Files.")
     if problems:
         parts.append("I could not attach " + "; ".join(problems) + ". You can still open it from My Files.")
     return "\n\n".join(parts)
@@ -97,6 +101,7 @@ async def deliver_files(state: HistoryState, runtime: Runtime[TurnContext]) -> d
     outputs: dict[str, str] = {}
     problems: list[str] = []
     redacted: list[str] = []
+    cut: list[str] = []
     for request in (state.get("requested_files") or [])[:MAX_REQUESTED_FILES]:
         label = request.get("filename") or request["id"]
         async with ToolSpan(context.logger, "attach_chat_file",
@@ -110,11 +115,14 @@ async def deliver_files(state: HistoryState, runtime: Runtime[TurnContext]) -> d
             name = data.get("filename") or label
             screened = guardrails.check_outbound(data["content"])
             content = screened.text
-            if screened.decision == "redacted":
+            if screened.findings:
                 redacted.append(name)
+            if screened.truncated_from:
+                # Delivered, but not whole: say so rather than hand over a cut file silently.
+                cut.append(f"`{name}` (only the first {len(content):,} of {screened.truncated_from:,} characters)")
             outputs[name] = content
             span.result = f"File '{name}' attached (version {data.get('version', 1)}, {len(content)} characters)."
-    return {"outputs": outputs, "response": compose(state.get("response", ""), list(outputs), problems, redacted)}
+    return {"outputs": outputs, "response": compose(state.get("response", ""), list(outputs), problems, redacted, cut)}
 
 
 def delivery_gate(state: HistoryState, runtime: Runtime[TurnContext]) -> Command[Literal["locate_file", "deliver_files", "__end__"]]:

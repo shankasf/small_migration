@@ -69,8 +69,20 @@ def test_blocked_input_never_reaches_a_model(harness):
     assert result.input_tokens == 0
 
 
-def test_health_pii_in_history_blocks_before_any_model(harness):
+def test_health_pii_in_history_never_reaches_a_model_and_does_not_block_the_turn(harness):
+    # One flagged earlier turn must not poison the chat: it is replaced by a
+    # placeholder (tests/test_history_poisoning.py), and the turn goes on.
+    harness.models.script("router", route("out_of_scope"))
     result = harness.turn("continue", history=[{"role": "user", "content": "Patient ZAC5678"}])
+    assert result.guardrail["decision"] != "blocked"
+    assert harness.models.total_calls() == 2
+    sent = str([r["messages"] for fake in harness.models.fakes.values() for r in fake.requests])
+    assert "ZAC5678" not in sent
+    assert any(e.get("step") == "guardrail.history" for e in harness.logger.events)
+
+
+def test_health_pii_in_current_message_blocks_before_any_model(harness):
+    result = harness.turn("Patient ZAC5678", history=[{"role": "user", "content": "hello"}])
     assert result.guardrail["decision"] == "blocked"
     assert harness.models.total_calls() == 0
 

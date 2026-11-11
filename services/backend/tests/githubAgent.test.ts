@@ -12,7 +12,7 @@ let server: Server, base: string;
 const originalGet = axios.get;
 const rows = new Map<string, any>();
 let calls: Array<{ url: string; actor: string }> = [];
-let status = 'active', revoked = false, huge = false;
+let status = 'active', revoked = false, huge = false, fileBody = 'select 731 as value';
 const sha = 'a'.repeat(40), treeSha = 'b'.repeat(40);
 let encrypt: (value: Record<string, unknown>) => string;
 const db: any = {
@@ -35,7 +35,7 @@ before(async () => {
     if (url.includes(`/user/installations/${installation}/repositories?`)) return { data: { total_count: 1, repositories: [{ id: repository, full_name: `${actor}/dbt`, private: true, default_branch: 'main' }] } };
     if (url.includes(`/repositories/${repository}/commits/`)) return { data: { sha, commit: { tree: { sha: treeSha } } } };
     if (url.includes(`/repositories/${repository}/git/trees/`)) return { data: { truncated: false, tree: Array.from({ length: 605 }, (_, index) => ({ path: `models/stg_${index}.sql`, type: 'blob', size: 19, sha })) } };
-    if (url.includes(`/repositories/${repository}/contents/`)) return { data: { type: 'file', path: 'models/stg_0.sql', sha, size: huge ? 300000 : 19, encoding: 'base64', content: Buffer.from('select 731 as value').toString('base64') } };
+    if (url.includes(`/repositories/${repository}/contents/`)) return { data: { type: 'file', path: 'models/stg_0.sql', sha, size: huge ? 300000 : Buffer.byteLength(fileBody), encoding: 'base64', content: Buffer.from(fileBody).toString('base64') } };
     throw new Error('Unexpected GitHub request');
   }) as any;
   const app = express(); app.use(express.json()); app.locals.prisma = db; app.use('/internal/github', router);
@@ -43,7 +43,7 @@ before(async () => {
   base = `http://127.0.0.1:${(server.address() as any).port}`;
 });
 beforeEach(() => {
-  status = 'active'; revoked = false; huge = false; calls = []; rows.clear();
+  status = 'active'; revoked = false; huge = false; fileBody = 'select 731 as value'; calls = []; rows.clear();
   for (const actor of ['alice', 'admin']) rows.set(actor, { status: 'connected', encryptedSecrets: encrypt({ accessToken: `token-${actor}` }), metadata: {
     selectedRepository: { id: actor === 'admin' ? 202 : 101, installationId: actor === 'admin' ? 22 : 11, fullName: `${actor}/dbt`, branch: 'Feature-Review' },
   } });
@@ -100,4 +100,50 @@ test('traversal, oversized files and write operations reject', async () => {
   assert.equal((await call('file', { path: '/etc/passwd' })).status, 400);
   huge = true; assert.equal((await call('file', { path: 'models/stg_0.sql' })).status, 413);
   assert.equal((await call('push')).status, 400);
+});
+test('a small file reads whole at offset 0, unchanged in content', async () => {
+  const result = await call('file', { path: 'models/stg_0.sql' });
+  assert.equal(result.data.content, 'select 731 as value'); assert.equal(result.data.partial, false);
+  assert.equal(result.data.nextOffset, null); assert.equal(result.data.startLine, 1);
+});
+test('a file over one page reads completely through nextOffset, each page within the budget', async () => {
+  // Worst case for the tool-result cap: short lines full of characters JSON must escape.
+  fileBody = Array.from({ length: 12000 }, (_, i) => `"c${i}"\t'\'`).join('\n');
+  let offset: number | null = 0, pages = 0, text = '';
+  while (offset !== null) {
+    const result = await call('file', { path: 'models/stg_0.sql', ...(offset ? { offset } : {}) });
+    assert.equal(result.status, 200); pages += 1;
+    const page = result.data;
+    assert.equal(page.offset, offset); assert.equal(page.startLine, text.split('\n').length);
+    const lines = page.content.split('\n').length;
+    const numbered = JSON.stringify(page.content).length - 2 + lines * (3 + String(page.startLine + lines).length);
+    assert.ok(numbered <= 50000, `page ${pages} costs ${numbered}`);
+    if (page.nextOffset !== null) assert.ok(page.content.endsWith('\n'), 'pages end at a line boundary');
+    assert.equal(page.partial, true); text += page.content; offset = page.nextOffset;
+  }
+  assert.equal(text, fileBody); assert.ok(pages > 3);
+});
+test('invalid and past-the-end offsets reject with a clear message', async () => {
+  assert.equal((await call('file', { path: 'models/stg_0.sql', offset: -1 })).status, 400);
+  const past = await call('file', { path: 'models/stg_0.sql', offset: 500 });
+  assert.equal(past.status, 400); assert.match(past.data.error, /past the end/);
+});
+
+test('a PEM-style block is never split across GitHub file pages', async () => {
+  const { githubFilePage } = await import('../src/services/githubAgent');
+  const filler = Array.from({ length: 400 }, (_, i) => `line ${i} ${'x'.repeat(40)}`).join('\n');
+  const block = ['-----BEGIN PRIVATE KEY-----', ...Array.from({ length: 30 }, () => 'A'.repeat(64)), '-----END PRIVATE KEY-----'].join('\n');
+  const content = `${filler}\n${block}\n${filler}\n`;
+  let offset = 0;
+  const pages: string[] = [];
+  for (;;) {
+    const page = githubFilePage(content, offset, 20000);
+    pages.push(page.content);
+    if (page.nextOffset === null) break;
+    offset = page.nextOffset;
+  }
+  assert.equal(pages.join(''), content);
+  const withBegin = pages.filter(p => p.includes('-----BEGIN PRIVATE KEY-----'));
+  assert.equal(withBegin.length, 1);
+  assert.ok(withBegin[0].includes('-----END PRIVATE KEY-----'));
 });

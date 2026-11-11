@@ -37,8 +37,56 @@ function pathValue(value: unknown) {
   return path;
 }
 
-/** Read-only repository operations. Credentials never appear in return values. */
-export async function readGitHub(prisma: PrismaClient, userId: string, operation: string, args: Record<string, unknown>, maxFileBytes = 200000) {
+export const GITHUB_PAGE_CHARS = 50000;
+
+/**
+ * One page of a file read, cut at a line boundary. The budget covers the page as the model
+ * finally sees it (JSON-escaped and prefixed with 'L123| ' line labels), so a page always fits
+ * under the AI service's tool-result limit and nothing between pages is silently clipped.
+ */
+export function githubFilePage(content: string, offset: number, budget = GITHUB_PAGE_CHARS) {
+  if (offset > content.length || (offset === content.length && content.length > 0)) {
+    throw new GitHubReadError(400, `Offset ${offset} is past the end of the file (${content.length} characters).`);
+  }
+  const startLine = content.slice(0, offset).split('\n').length;
+  const cost = (end: number) => {
+    const page = content.slice(offset, end);
+    const lines = page.split('\n').length;
+    return JSON.stringify(page).length - 2 + lines * (3 + String(startLine + lines).length);
+  };
+  let end = Math.min(content.length, offset + budget);
+  for (;;) {
+    if (end < content.length) {
+      const newline = content.lastIndexOf('\n', end - 1);
+      if (newline >= offset) end = newline + 1;
+      else if (end - offset > 1 && content.charCodeAt(end - 1) >= 0xd800 && content.charCodeAt(end - 1) <= 0xdbff) end -= 1; // keep surrogate pairs whole
+    }
+    const size = cost(end);
+    if (size <= budget || end - offset <= 1) break;
+    end = offset + Math.max(1, Math.floor((end - offset) * budget / size) - 1);
+  }
+  // Secret screening runs per page downstream, so never split a PEM-style block
+  // (-----BEGIN ...----- … -----END ...-----) across pages: start the next page at its BEGIN line.
+  if (end < content.length) {
+    const page = content.slice(offset, end);
+    const begin = page.lastIndexOf('-----BEGIN ');
+    if (begin > 0 && page.indexOf('-----END ', begin) === -1) {
+      const lineStart = page.lastIndexOf('\n', begin);
+      if (lineStart >= 0) end = offset + lineStart + 1;
+    }
+  }
+  const nextOffset = end < content.length ? end : null;
+  return { content: content.slice(offset, end), offset, startLine, totalCharacters: content.length,
+    nextOffset, hasMore: nextOffset !== null, partial: offset > 0 || nextOffset !== null };
+}
+
+/**
+ * Read-only repository operations. Credentials never appear in return values.
+ * File reads are paged by args.offset unless pageChars is null (callers that page the
+ * full content themselves, such as impact evidence).
+ */
+export async function readGitHub(prisma: PrismaClient, userId: string, operation: string, args: Record<string, unknown>,
+  maxFileBytes = 200000, pageChars: number | null = GITHUB_PAGE_CHARS) {
   if (!['status', 'repositories', 'tree', 'file'].includes(operation)) throw new GitHubReadError(400, 'Unsupported GitHub read operation.');
   const context = await githubChatContext(prisma, userId);
   if (context.status !== 'connected') {
@@ -93,6 +141,8 @@ export async function readGitHub(prisma: PrismaClient, userId: string, operation
       truncated: Boolean(data.truncated), message: data.truncated ? 'GitHub truncated this tree. The returned file listing is incomplete.' : undefined };
   }
   if (!filePath) throw new GitHubReadError(400, 'Choose a file path from list_github_files.');
+  // Validated before the file is fetched so a bad offset fails fast.
+  const offset = pageChars === null ? 0 : integer(args.offset, 0, maxFileBytes);
   const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
   let data = await readJson(`/repositories/${repositoryId}/contents/${encodedPath}?ref=${commit.sha}`, token);
   if (Array.isArray(data) || data.type !== 'file') throw new GitHubReadError(400, 'This path is not a readable regular file. List files and choose a file path.');
@@ -108,6 +158,8 @@ export async function readGitHub(prisma: PrismaClient, userId: string, operation
   let content: string;
   try { content = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
   catch { throw new GitHubReadError(415, 'Only UTF-8 text files can be read in chat.'); }
-  return { ...provenance, path: data.path, blobSha: data.sha, content, size: bytes.length,
+  const file = { ...provenance, path: data.path, blobSha: data.sha, size: bytes.length,
     url: `https://github.com/${repo.full_name}/blob/${commit.sha}/${encodedPath}` };
+  if (pageChars === null) return { ...file, content };
+  return { ...file, ...githubFilePage(content, offset, pageChars) };
 }
