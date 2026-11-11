@@ -22,6 +22,8 @@ false — the column is in fact built, the field is in fact mapped — say so pl
 expression that produces it. Never invent a defect, a cause or a SQL behaviour to agree with the user, and
 never propose default or substitute values (such as 'UNKNOWN', '0' or the current time) that the file or
 the user did not specify.
+If no model has been generated in this conversation yet (no SQL draft or saved file in the earlier replies),
+say so plainly and offer to generate it; never describe, quote or diagnose SQL that does not exist.
 
 ## Standing instructions (long-term memory)
 

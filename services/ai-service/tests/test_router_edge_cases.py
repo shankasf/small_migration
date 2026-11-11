@@ -168,3 +168,15 @@ def test_history_recalls_in_a_chat_with_an_upload_keep_history(message, last):
 def test_a_complaint_during_a_pending_clarification_still_resumes_generation():
     """Audited, unchanged: a pending analyst question keeps consult readings (nodes.py clears it otherwise)."""
     assert routed("history", COMPLAINTS[1], pending=CLARIFICATION, last=Route.GENERATE) == Route.GENERATE
+
+
+@pytest.mark.parametrize("chosen", ["impact", "repository", "consult"])
+def test_numbered_answers_to_the_analyst_resume_generation_even_when_read_as_impact(chosen):
+    answers = ("1. put in placeholders for the moment 2 no there are no existing models 3 widgets "
+               "4 make them TBD for the moment 5 either its JSONB 6 no")
+    assert routed(chosen, answers, pending=CLARIFICATION, last="generate") == Route.GENERATE
+
+
+def test_an_explicit_impact_request_still_leaves_a_pending_clarification():
+    message = "Actually, what breaks downstream if I rename widget_id?"
+    assert routed("impact", message, pending=CLARIFICATION, last="generate") == Route.IMPACT

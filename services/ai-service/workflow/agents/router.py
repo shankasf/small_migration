@@ -141,7 +141,14 @@ class RouterAgent:
                     and HAND_IT_OVER.search(message) and not NAMES_A_REPOSITORY.search(message)):
                 return RouteDecision(route=Route.HISTORY.value, new_analysis=False)
             return decision
-        if pending["kind"] == "clarification" and chosen == Route.CONSULT:
+        if pending["kind"] == "clarification" and (
+                chosen == Route.CONSULT
+                # UAT replay: numbered answers to the analyst's questions ("1. put in placeholders
+                # ... 5 either its JSONB 6 no") were read as impact and got the evidence-source
+                # question instead of a model. Only an explicit impact request leaves the pending
+                # clarification; repository readings of an answer go back to it too.
+                or (chosen in (Route.IMPACT, Route.REPOSITORY) and not NAMES_IMPACT.search(message)
+                    and not NAMES_A_REPOSITORY.search(message))):
             return RouteDecision(route=pending["route"], new_analysis=False)
         if pending["kind"] == "impact_question" and chosen in (Route.CONSULT, Route.REPOSITORY, Route.IMPACT):
             return RouteDecision(route=Route.IMPACT.value, new_analysis=False)
