@@ -61,5 +61,8 @@ class InjectionGuard:
                 }, ensure_ascii=False)),
             ])
         except StructuredOutputError:
+            # Fails closed, but flagged as an outage so the user is not told
+            # their message or files were judged to be an attack.
             verdict = SafetyVerdict(manipulation=True, category="none", evidence="safety check unavailable")
+            return {"safety": {**verdict.model_dump(), "unavailable": True}}
         return {"safety": verdict.model_dump()}

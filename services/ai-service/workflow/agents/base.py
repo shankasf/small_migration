@@ -55,17 +55,25 @@ class ToolLoopSpec:
 class LoopOutcome:
     messages: list[BaseMessage] = field(default_factory=list)
     result: dict[str, Any] | None = None
+    start: int = 0            # where this run's own messages begin (after the brief)
+    grounded: bool = True     # False when the required first tool was never called
 
     @property
     def text(self) -> str:
-        return final_text(self.messages)
+        return final_text(self.messages[self.start:]) if self.grounded else ""
 
 
 def final_text(messages: Sequence[BaseMessage]) -> str:
-    """The last assistant text, without reasoning blocks."""
+    """The model's closing answer, without reasoning blocks.
+
+    Only the LAST assistant message counts. If it is a tool call, the loop was
+    cut off mid-work and there is no answer: walking further back would return
+    a stale reply — one the model gave before it was nudged to read the file,
+    or a previous turn's answer from the history in the brief.
+    """
     for message in reversed(messages):
-        if isinstance(message, AIMessage) and not message.tool_calls:
-            return message.text.strip()
+        if isinstance(message, AIMessage):
+            return "" if message.tool_calls else message.text.strip()
     return ""
 
 
@@ -120,7 +128,9 @@ class ToolLoopAgent:
     async def run(self, messages: list[BaseMessage], context: TurnContext) -> LoopOutcome:
         final = await self.graph.ainvoke({"messages": messages, "rounds": 0, "nudges": 0, "result": None},
                                          context=context)
-        outcome = LoopOutcome(messages=final["messages"], result=final.get("result"))
+        used = {m.name for m in final["messages"][len(messages):] if isinstance(m, ToolMessage)}
+        outcome = LoopOutcome(messages=final["messages"], result=final.get("result"), start=len(messages),
+                              grounded=not self.spec.first_tool or self.spec.first_tool in used)
         if self.spec.output_schema and outcome.result is None:
             outcome.result = await self._extract(messages, outcome.text, context)
         return outcome
@@ -133,7 +143,20 @@ class ToolLoopAgent:
         """
         schema = self.spec.output_schema
         if not reply:
-            raise StructuredOutputError(f"{self.spec.name} finished without submitting {schema.__name__}")
+            # The loop ended mid-tool-call (budget spent) with no closing answer. Fail soft:
+            # ask once for a structured result from the brief, with every gap recorded as an
+            # open question, instead of surfacing a 500 or reusing a stale earlier reply.
+            try:
+                result = await invoke_structured(context.models.get(self.spec.role), schema, [
+                    *brief,
+                    HumanMessage(f"Your tool budget is spent. Call `{schema.__name__}` now with what the request "
+                                 "and attached files establish. Do not guess: record anything you could not "
+                                 "confirm in the fields for open questions or missing information."),
+                ])
+            except StructuredOutputError as exc:
+                raise StructuredOutputError(
+                    f"{self.spec.name} finished without submitting {schema.__name__}") from exc
+            return result.model_dump(mode="json")
         result = await invoke_structured(context.models.get(self.spec.role), schema, [
             *brief, AIMessage(reply),
             HumanMessage(f"Record the reply above, unchanged in meaning, by calling `{schema.__name__}`. "

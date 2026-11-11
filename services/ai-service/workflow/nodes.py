@@ -23,6 +23,15 @@ INTAKE = "screen_input"
 OUTPUT = "screen_output"
 OUT_OF_SCOPE_REPLY = ("I can only help with your data migration — share a mapping or template and tell me "
                       "what you'd like generated.")
+FLAG_DESCRIPTIONS = {
+    "instruction_override": "an attempt to change the assistant's rules or role",
+    "prompt_extraction": "a request for the assistant's internal instructions",
+    "credential_or_data_exfiltration": "a request for secrets, another user's data, or data sent to an outside URL",
+    "confirmation_bypass": "an attempt to skip or fake the evidence-source confirmation",
+    "hidden_instructions_in_data": "instructions addressed to the AI assistant",
+}
+GUARD_UNAVAILABLE_REPLY = ("⚠️ I couldn't run the safety check on this message just now, so I haven't processed it "
+                           "(your message and files were not judged unsafe). Please send it again.")
 
 
 async def screen_input(state: TurnState, runtime: Runtime[TurnContext]) -> Command[Literal["route_intent", "injection_guard", "__end__"]]:
@@ -116,13 +125,29 @@ async def policy_gate(state: TurnState, runtime: Runtime[TurnContext]) -> Comman
     context = runtime.context
     safety = state.get("safety") or {}
     if safety.get("manipulation"):
-        reason = f"prompt_injection:{safety.get('category') or 'model_flagged'}"
+        # A classifier outage fails closed, but it is not an injection finding:
+        # telling the user their files "match prompt-injection patterns" when
+        # nothing was judged would be false.
+        unavailable = safety.get("unavailable")
+        category = safety.get("category")
+        reason = ("safety_check_unavailable" if unavailable else
+                  f"prompt_injection:{category if category and category != 'none' else 'model_flagged'}")
         verdict = {**(state.get("guardrail") or {}), "decision": "blocked",
                    "reasons": [*((state.get("guardrail") or {}).get("reasons") or []), reason]}
         record_guardrail_decision("blocked", stage="inbound")
         if context.logger:
             await context.logger.guardrail("inbound", "blocked", [reason], [])
-        return Command(update={"guardrail": verdict, "response": guardrails.block_message([reason])}, goto=END)
+        response = GUARD_UNAVAILABLE_REPLY if unavailable else guardrails.block_message([reason])
+        if not unavailable:
+            # Say where and what kind, so a false positive on a design document
+            # is something the user can act on. Never echo the flagged text: it
+            # is untrusted, and a blocked reply skips the outbound filters.
+            where = ("an attached file" if category == "hidden_instructions_in_data" and context.workspace.files
+                     else "your message or its attachments")
+            response += (f" What was flagged: {FLAG_DESCRIPTIONS.get(category, 'a manipulation attempt')} in "
+                         f"{where}. If that is ordinary migration content, rephrase it or remove that passage "
+                         "and send it again.")
+        return Command(update={"guardrail": verdict, "response": response}, goto=END)
     route = state["route"]
     # A confirmed grant covers the analysis it was given for. Whether this turn
     # is still that analysis is the Grant Judge's decision, not the router's:
@@ -182,12 +207,35 @@ async def screen_output(state: TurnState, runtime: Runtime[TurnContext]) -> dict
     if outbound.decision == "redacted" and context.logger:
         await context.logger.guardrail("outbound", "redacted", outbound.reasons,
                                        [{"type": k, "count": v} for k, v in outbound.findings.items()])
-    outputs = {name: guardrails.check_outbound(content).text for name, content in (state.get("outputs") or {}).items()}
+    # Generated files cross the same filter. When it changes one (a value that
+    # looks like a phone or IRD number becomes [PHONE_REDACTED], or an oversized
+    # file is cut), the user must be told: a file that silently differs from
+    # what the reply describes is a deliverable that claims to be complete and is not.
+    outputs, altered, output_findings = {}, [], {}
+    for name, content in (state.get("outputs") or {}).items():
+        checked = guardrails.check_outbound(content)
+        outputs[name] = checked.text
+        cut = len(content) > settings.MAX_INPUT_CHARS
+        if checked.findings or cut:
+            altered.append(f"`{name}`" + (" (cut at {:,} characters)".format(settings.MAX_INPUT_CHARS) if cut else ""))
+        for kind, count in checked.findings.items():
+            output_findings[kind] = output_findings.get(kind, 0) + count
+    response = outbound.text
+    output_reasons = []
+    if altered:
+        output_reasons = ["output_file_altered"]
+        response = (f"{response}\n\nNote: the security filter changed {', '.join(altered)} before delivery — "
+                    "values that look like personal data or secrets were replaced with `[..._REDACTED]` markers"
+                    ", or the file was cut where noted. Review those files before using them.").strip()
+        if context.logger:
+            await context.logger.guardrail("outbound", "redacted", output_reasons,
+                                           [{"type": k, "count": v} for k, v in output_findings.items()])
     inbound = state.get("guardrail") or {}
     findings = dict(inbound.get("findings") or {})
-    for kind, count in outbound.findings.items():
+    for kind, count in [*outbound.findings.items(), *output_findings.items()]:
         findings[kind] = findings.get(kind, 0) + count
-    decision = "redacted" if "redacted" in (inbound.get("decision"), outbound.decision) else "allow"
+    decision = "redacted" if altered or "redacted" in (inbound.get("decision"), outbound.decision) else "allow"
     verdict = GuardrailVerdict(decision=decision, findings=findings, data_class=inbound.get("data_class", "metadata"),
-                               reasons=list(dict.fromkeys([*(inbound.get("reasons") or []), *outbound.reasons])))
-    return {"response": outbound.text, "outputs": outputs, "guardrail": verdict}
+                               reasons=list(dict.fromkeys([*(inbound.get("reasons") or []), *outbound.reasons,
+                                                           *output_reasons])))
+    return {"response": response, "outputs": outputs, "guardrail": verdict}

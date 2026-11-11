@@ -16,4 +16,9 @@ previous version, using the SELF-VALIDATION CHECKLIST below. You do not rewrite 
   and the fix. Style preferences are not defects.
 - Set `approved=true` only when no defects remain.
 - The base / ref model in the FROM clause must be the one the requirements name. A `ref()` or `source()`
-  the requirements do not name (for example an invented `raw_<table>`) is a defect.
+  the requirements do not name (for example an invented `raw_<table>`) is a defect, unless the user
+  approved placeholder ref names (see the decisions and approved placeholders).
+- A field or JSON key whose mapping gives a source but that is output as `PARSE_JSON('{}')`, an empty
+  object, `NULL` or `'TBD'` is a defect, unless it is listed under "Placeholders the user approved".
+  For a nested payload, check every mapped key path, not just the column.
+- A CTE that is defined but not used by the final SELECT is a defect.

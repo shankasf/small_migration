@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from langgraph.graph import END
 from langgraph.runtime import Runtime
 from langgraph.types import Command, interrupt
 
@@ -24,8 +25,26 @@ SOURCES = {
 }
 
 
+SOURCE_QUESTION = "Before I analyze the impact, which evidence sources should I use?"
+NOT_A_SELECTION = "I could not find a source selection in that reply, so here is the list once more."
+SET_ASIDE = ("That reply did not choose any evidence sources either, so I have set the impact analysis aside "
+             "instead of asking the same question again. If you want an impact analysis, ask for it again and "
+             "reply to the source list with names or numbers, for example **uploads** or **1 and 3**. Otherwise, "
+             "tell me what you would like me to do and I will help with that.")
+
+
+def recent_source_questions(history: list[dict[str, str]]) -> int:
+    """How many of the latest assistant replies, in a row, were the source question."""
+    count = 0
+    for message in reversed([m for m in history if m.get("role") == "assistant"]):
+        if SOURCE_QUESTION not in (message.get("content") or ""):
+            break
+        count += 1
+    return count
+
+
 def source_question(connections: list[str]) -> str:
-    lines = ["Before I analyze the impact, which evidence sources should I use?", ""]
+    lines = [SOURCE_QUESTION, ""]
     for n, (source, label) in enumerate(SOURCES.items(), 1):
         status = "" if source in ("uploads", "history") else (
             " (connected)" if source in connections else " (connect in Settings → Integrations first)")
@@ -36,12 +55,23 @@ def source_question(connections: list[str]) -> str:
     return "\n".join(lines)
 
 
-def plan_sources(state: dict[str, Any], runtime: Runtime[TurnContext]) -> Command[Literal["ask_sources", "investigate"]]:
-    """Data step: does the backend's grant cover this turn?"""
+def plan_sources(state: dict[str, Any], runtime: Runtime[TurnContext]) -> Command[Literal["ask_sources", "investigate", "__end__"]]:
+    """Data step: does the backend's grant cover this turn?
+
+    A reply to a pending source question that selects nothing is not answered
+    with the identical menu forever: it gets the menu once more with a note,
+    and a second non-answer clears the pending analysis instead of looping.
+    """
     context = runtime.context
     grant = context.impact_state
-    question = PendingInput(kind="impact_sources", route=Route.IMPACT.value,
-                            question=source_question(context.impact.get("connections") or []))
+    menu = source_question(context.impact.get("connections") or [])
+    awaiting = bool(grant) and grant.get("phase") != "confirmed"
+    asked = recent_source_questions(context.workspace.history) if awaiting else 0
+    if asked >= 2:
+        return Command(update={"impact_action": "clear", "pending": None, "response": SET_ASIDE}, goto=END)
+    if asked == 1:
+        menu = f"{NOT_A_SELECTION}\n\n{menu}"
+    question = PendingInput(kind="impact_sources", route=Route.IMPACT.value, question=menu)
     if state["route"]["new_analysis"] or not grant:
         # A new analysis never inherits an earlier grant.
         return Command(update={"impact_action": "request_sources", "pending": question}, goto="ask_sources")

@@ -4,9 +4,12 @@
                                                           review ─defects→ author …
                                                                  └ approved → finish
 
-Validation errors and reviewer defects are LLM-recoverable: they go back to the
-author as feedback until the revision budget is spent, then the best draft is
-published with its open issues stated.
+Validation errors, reviewer defects and the deterministic draft audit
+(placeholders, unused CTEs) are LLM-recoverable: they go back to the
+author as feedback until the revision budget is spent, then the latest draft
+that passed static checks is published with its open issues and placeholders
+stated. A later revision that fails static checks never discards an earlier
+valid draft.
 
 GPT-OSS on Bedrock cannot be forced to call a function, so the draft is taken
 from whichever form the reply has: the ``ModelDraft`` call, or one SQL code
@@ -31,7 +34,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 from config import settings
-from validation import rejection_reason, supplied_macros, validate_output
+from validation import audit_draft, rejection_reason, supplied_macros, validate_output
 from workflow.agents.base import clean_tool_name
 from workflow.agents.formatting import files_block, history_messages, memory_notes
 from workflow.agents.migration.schemas import ModelDraft, ModelReview
@@ -103,6 +106,8 @@ class BuildState(TypedDict, total=False):
     feedback: list[str]
     validation: dict[str, Any]
     review: dict[str, Any]
+    # The latest draft that passed static checks, with its review outcome.
+    best: dict[str, Any]
     built: Annotated[list[dict[str, Any]], operator.add]
 
 
@@ -277,21 +282,47 @@ class ModelAuthor:
             + (f"\nRevision of: {target['revision_of']}" if target.get("revision_of") else ""),
             f"## User request\n{context.workspace.message}",
             f"## Requirements (from the analyst)\n{spec.get('requirements', '')}",
+            *spec_sections(spec, target),
             files_block(context.workspace.files),
             *memory_notes(context),
         ]
         if state.get("previous"):
             sections.append(f"## Previous version of this file — keep every CTE\n```sql\n{state['previous']}```")
         if state.get("feedback"):
-            if state.get("sql"):
-                sections.append(f"## Your last draft\n```sql\n{state['sql']}```")
+            last = state.get("sql") or (state.get("best") or {}).get("sql")
+            if last:
+                sections.append(f"## Your last draft\n```sql\n{last}```")
             sections.append("## Fix every one of these before anything else\n"
                             + "\n".join(f"- {item}" for item in state["feedback"]))
         return "\n\n".join(sections)
 
 
+def spec_sections(spec: dict[str, Any], target: dict[str, Any]) -> list[str]:
+    """The user's confirmed decisions and approved placeholders, shown to author and reviewer alike."""
+    sections = []
+    if spec.get("decisions"):
+        sections.append("## Decisions the user confirmed (each applies only to the fields it names)\n"
+                        + "\n".join(f"- {item}" for item in spec["decisions"]))
+    approved = spec.get("placeholders") or []
+    sections.append("## Placeholders the user approved\n" + (
+        "\n".join(f"- {item}" for item in approved) if approved else
+        "None. Every mapped field, including every key of a nested JSON/VARIANT payload, must be built from "
+        "its mapped source.")
+        + "\nAny other field with a mapped source must be implemented, never left as 'TBD' or an empty JSON "
+          "object, nor NULL unless the mapping says NULL.")
+    others = [name for name in spec.get("targets") or [] if name != target["file_name"]]
+    if others:
+        sections.append("## Other models in this build\n" + ", ".join(others)
+                        + "\nThe requirements cover every model; this file carries only the fields and CTEs "
+                          "that belong to it.")
+    return sections
+
+
+UNSPECIFIED_REVIEW = "The reviewer did not approve this model but named no specific defect; please review it."
+
+
 def validate(state: BuildState, runtime: Runtime[TurnContext]) -> Command[Literal["author", "review", "finish"]]:
-    """Data step: static SQL/dbt checks (sqlglot); never a warehouse run."""
+    """Data step: static SQL/dbt checks (sqlglot) and the draft audit; never a warehouse run."""
     workspace = runtime.context.workspace
     sources = [workspace.message, *workspace.files.values(), state.get("previous", ""),
                *(m["content"] for m in workspace.history if m.get("role") == "user")]
@@ -301,10 +332,28 @@ def validate(state: BuildState, runtime: Runtime[TurnContext]) -> Command[Litera
     else:
         report = validate_output(state["target"]["file_name"], state["sql"], sources=sources)
     if report["status"] != "rejected":
+        spec = state.get("spec") or {}
+        try:
+            report["audit"] = audit_draft(
+                state["sql"], allowed_macros=supplied_macros(sources), previous=state.get("previous", ""),
+                approved_placeholders=spec.get("placeholders") or [],
+                mapping_text="\n".join([spec.get("requirements", ""), *workspace.files.values()]),
+                supplied=[workspace.message, *workspace.files.values(),
+                          *(m["content"] for m in workspace.history if m.get("role") == "user")])
+        except Exception:  # the audit is advisory; it must never block a valid draft
+            report["audit"] = {"defects": [], "placeholders": [], "nulls": [], "notices": []}
         return Command(update={"validation": report}, goto="review")
     retry = attempts_left(state)
     reason = (rejection_reason(state["sql"], allowed_macros=supplied_macros(sources))
               if state.get("sql") else "") or report["errors"][0]
+    best = state.get("best") or {}
+    if not retry and best:
+        # The revision budget is spent: publish the last draft that passed static
+        # checks, with its open issues, rather than nothing at all.
+        issues = [*best["review"]["issues"], f"My final revision could not be used ({reason}), so this is "
+                                               "the last draft that passed the static checks."]
+        return Command(update={"sql": best["sql"], "notes": best["notes"], "validation": best["validation"],
+                               "review": {"approved": False, "issues": issues}}, goto="finish")
     if state.get("sql"):
         feedback = f"Static validation failed: {reason}"
     elif state.get("truncated"):
@@ -313,13 +362,17 @@ def validate(state: BuildState, runtime: Runtime[TurnContext]) -> Command[Litera
         feedback = (f"Your previous reply could not be used: {reason} "
                     f"{CAPTURE_INSTRUCTIONS[state.get('capture_mode') or 'tool']} "
                     "Include every required field and CTE; keep comments brief.")
+    # Review defects that are still unresolved must not be forgotten because
+    # the revision meant to fix them failed for another reason.
+    outstanding = [issue for issue in (best.get("review") or {}).get("issues", []) if issue != UNSPECIFIED_REVIEW]
     if not retry and not state.get("sql"):
         report["errors"] = [f"{report['errors'][0]} I tried {state.get('attempt', 0)} times. {RETRY_ADVICE}"]
-    return Command(update={"validation": report, "feedback": [feedback]}, goto="author" if retry else "finish")
+    return Command(update={"validation": report, "feedback": [feedback, *outstanding]},
+                   goto="author" if retry else "finish")
 
 
 class ModelReviewer:
-    """LLM step: checks the draft against the 12-point checklist."""
+    """LLM step: checks the draft against the 12-point checklist, plus the deterministic draft audit."""
 
     async def __call__(self, state: BuildState, runtime: Runtime[TurnContext]) -> Command[Literal["author", "finish"]]:
         context = runtime.context
@@ -330,19 +383,43 @@ class ModelReviewer:
             *history_messages(context.workspace.history),
             HumanMessage(self.brief(state, context)),
         ])
-        update = {"review": review.model_dump()}
-        if review.approved or not review.issues or not attempts_left(state):
+        # Deterministic defects stand even when the reviewer approves; an
+        # approval that still lists issues, or a rejection naming none, is not
+        # an approval.
+        audit = (state.get("validation") or {}).get("audit") or {}
+        issues = list(dict.fromkeys([*review.issues, *audit.get("defects", [])]))
+        if not review.approved and not issues:
+            issues = [UNSPECIFIED_REVIEW]
+        verdict = {"approved": not issues, "issues": issues}
+        best = {"sql": state.get("sql", ""), "notes": state.get("notes", ""),
+                "validation": state.get("validation") or {}, "review": verdict}
+        update = {"review": verdict, "best": best}
+        if context.logger and audit.get("defects"):
+            await context.logger.log("model.audit", "Deterministic draft checks found defects.", log_type="warning",
+                                     data={"defects": len(audit["defects"]),
+                                           "placeholders": len(audit.get("placeholders", []))})
+        if not issues or issues == [UNSPECIFIED_REVIEW] or not attempts_left(state):
             return Command(update=update, goto="finish")
-        return Command(update={**update, "feedback": review.issues}, goto="author")
+        return Command(update={**update, "feedback": issues}, goto="author")
 
     @staticmethod
     def brief(state: BuildState, context: TurnContext) -> str:
+        audit = (state.get("validation") or {}).get("audit") or {}
         sections = [
             f"## Model under review: {state['target']['file_name']}\nPurpose: {state['target']['purpose']}",
             f"## Requirements (from the analyst)\n{state['spec'].get('requirements', '')}",
+            *spec_sections(state["spec"], state["target"]),
             files_block(context.workspace.files),
             *memory_notes(context),
         ]
+        if audit.get("placeholders") or audit.get("nulls"):
+            sections.append("## Placeholder outputs found in this draft\n"
+                            + "\n".join(f"- {item}" for item in audit.get("placeholders", []))
+                            + "".join(f"\n- {name} (NULL)" for name in audit.get("nulls", []))
+                            + "\nEach one not approved by the user, kept from the user's SQL or mapped to NULL "
+                              "in the mapping is a defect.")
+        if audit.get("notices"):
+            sections.append("## Deterministic checks to confirm\n" + "\n".join(f"- {n}" for n in audit["notices"]))
         if state.get("previous"):
             sections.append(f"## Previous version\n```sql\n{state['previous']}```")
         sections.append(f"## Generated model\n```sql\n{state['sql']}```")
@@ -351,14 +428,18 @@ class ModelReviewer:
 
 def finish(state: BuildState) -> dict[str, Any]:
     validation = state.get("validation") or {}
-    issues = [] if (state.get("review") or {}).get("approved") else list((state.get("review") or {}).get("issues") or [])
+    review = state.get("review") or {}
+    issues = [] if review.get("approved") else list(review.get("issues") or [])
+    rejected = validation.get("status") == "rejected"
     return {"built": [{
         "file_name": state["target"]["file_name"],
         "sql": state.get("sql", ""),
         "notes": state.get("notes", ""),
         "validation": validation,
-        "approved": validation.get("status") != "rejected" and not issues,
+        "approved": not rejected and bool(review) and not issues,
         "open_issues": issues,
+        "placeholders": [] if rejected else list((validation.get("audit") or {}).get("placeholders") or []),
+        "nulls": [] if rejected else list((validation.get("audit") or {}).get("nulls") or []),
         "attempts": state.get("attempt", 0),
     }]}
 

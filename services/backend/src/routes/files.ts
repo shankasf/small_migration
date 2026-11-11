@@ -1,23 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
-import multer from 'multer';
-import * as XLSX from 'xlsx';
 import { screenPayload, testOutput } from '../services/aiService.js';
 import { AuthedRequest, canAccessSession, requireWriteAccess } from '../middleware/auth.js';
 import { recordAudit } from '../services/audit.js';
 import { snapshotFile } from '../services/fileLibrary.js';
+import { extractUploadText, upload, uploadLimitError } from '../services/fileContext.js';
 
 const router = Router();
 
 const getPrisma = (req: Request): PrismaClient => req.app.locals.prisma;
-
-// Configure multer for memory storage
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
-});
 
 // Ingest allowlist per the architecture doc (§5): metadata/document formats only
 const ALLOWED_EXTENSIONS = new Set([
@@ -56,50 +47,15 @@ function categorizeFile(filename: string): string {
   return filename.toLowerCase().replace(/\s+/g, '_').trim();
 }
 
-// Parse file content based on file type
-function parseFileContent(buffer: Buffer, filename: string): string {
-  const ext = filename.toLowerCase().split('.').pop() || '';
-
-  // Excel files
-  if (ext === 'xlsx' || ext === 'xls') {
-    try {
-      const workbook = XLSX.read(buffer, { type: 'buffer' });
-      let content = '';
-
-      for (const sheetName of workbook.SheetNames) {
-        const sheet = workbook.Sheets[sheetName];
-        const csv = XLSX.utils.sheet_to_csv(sheet);
-        content += `--- Sheet: ${sheetName} ---\n${csv}\n\n`;
-      }
-
-      return content;
-    } catch (error) {
-      console.error('Error parsing Excel file:', error instanceof Error ? error.name : 'unknown');
-      return buffer.toString('utf-8');
-    }
-  }
-
-  // JSON files - pretty print
-  if (ext === 'json') {
-    try {
-      const json = JSON.parse(buffer.toString('utf-8'));
-      return JSON.stringify(json, null, 2);
-    } catch {
-      return buffer.toString('utf-8');
-    }
-  }
-
-  // All other text-based files
-  return buffer.toString('utf-8');
-}
-
 // Upload files to session
 router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Response, next) => {
   console.log(`[UPLOAD] Received upload request for session ${req.params.sessionId}`);
   console.log(`[UPLOAD] Content-Type: ${req.headers['content-type']}`);
   console.log(`[UPLOAD] Content-Length: ${req.headers['content-length']}`);
   next();
-}, upload.array('files', 10), async (req: AuthedRequest, res: Response, next) => {
+}, (req: Request, res: Response, next) => {
+  upload.array('files', 10)(req, res, err => next(err ? uploadLimitError(err) : undefined));
+}, async (req: AuthedRequest, res: Response, next) => {
   try {
     const prisma = getPrisma(req);
     const { sessionId } = req.params;
@@ -147,15 +103,23 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
 
     console.log(`[UPLOAD] Session found, parsing ${files.length} files...`);
 
-    // Parse all files first, then upsert in parallel using compound unique key
+    // Parse all files first. Unreadable or empty files are rejected with a
+    // message instead of being stored as text the AI cannot use.
     const parsed = files.map(file => {
-      const content = parseFileContent(file.buffer, file.originalname);
+      const { content, warnings } = extractUploadText(file.buffer, file.originalname);
       const category = categorizeFile(file.originalname);
-      return { content, category, originalname: file.originalname };
+      return { content, warnings, category, originalname: file.originalname };
     });
+    const categories = new Set(parsed.map(f => f.category));
+    if (categories.size !== parsed.length) {
+      return res.status(400).json({ error: 'Two selected files have the same name. Rename one and upload again.' });
+    }
 
     console.log('[UPLOAD] Upserting files to database...');
     const screened = await screenPayload('', Object.fromEntries(parsed.map(f => [f.originalname, f.content])));
+    if (parsed.some(f => typeof screened.files[f.originalname] !== 'string')) {
+      throw new Error('Screening response omitted an uploaded file');
+    }
     // Capture the old upload before replacing it so referenced versions remain immutable.
     for (const item of parsed) {
       const old = await prisma.uploadedFile.findUnique({where: {sessionId_category: {sessionId, category: item.category}}});
@@ -190,7 +154,15 @@ router.post('/:sessionId/upload', requireWriteAccess, (req: Request, res: Respon
       detail: JSON.stringify({ files: uploadedFiles.map(f => f.filename) }),
       ip: req.ip
     });
-    res.status(201).json({ files: uploadedFiles.map(({content, ...file}) => file) });
+    // Tell the user when what the AI will read differs from what they uploaded.
+    res.status(201).json({ files: uploadedFiles.map(({content, ...file}) => {
+      const item = parsed.find(p => p.originalname === file.filename)!;
+      const warnings = [...item.warnings];
+      if (content !== item.content) warnings.push(screened.guardrail.decision === 'redacted'
+        ? 'Sensitive values were redacted before saving; the AI sees the redacted text.'
+        : 'Some characters (such as control characters) were removed before saving.');
+      return { ...file, chars: content.length, warnings };
+    }) });
   } catch (error) {
     next(error);
   }

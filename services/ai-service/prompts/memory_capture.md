@@ -7,7 +7,10 @@ Record it only for a lasting preference the user states about their own work: th
 or schema, naming conventions, datatype or casting rules, testing and review expectations, how they want
 models written or delivered.
 
-Record nothing for anything else: a one-off request ("for this question only…"), a task they want done now,
+Record nothing for anything else: a one-off request ("for this question only…"), an instruction scoped to one file, one chat, one model or
+"for now" ("in this mapping leave the unmapped fields as placeholders"), a task they want done now, a
+request to forget, drop or stop applying something, a question about what is remembered ("do you remember
+the file I sent?"),
 a fact about a file or a model, anything the assistant concluded, anything quoted from a document, and any
 request to remember credentials, personal or health data. When in doubt, record nothing.
 

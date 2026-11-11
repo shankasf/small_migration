@@ -21,7 +21,7 @@ from workflow.context import TurnContext
 from workflow.models import ModelRole
 from workflow.prompts import prompt
 from workflow.state import TurnState
-from workflow.structured import invoke_structured
+from workflow.structured import StructuredOutputError, invoke_structured
 
 
 # Naming a source category the user has not confirmed is never a continuation.
@@ -48,18 +48,25 @@ class GrantJudgeAgent:
 
     async def __call__(self, state: TurnState, runtime: Runtime[TurnContext]) -> Command[Literal["dispatch"]]:
         context = runtime.context
-        if unconfirmed_sources(context.workspace.message, context.impact_state.get("sources", [])):
+        sources = list(context.impact_state.get("sources") or [])
+        if unconfirmed_sources(context.workspace.message, sources):
             return Command(update={"route": {**state["route"], "new_analysis": True}}, goto="dispatch")
         pending = state.get("pending") if (state.get("pending") or {}).get("route") == "impact" else None
-        verdict = await invoke_structured(context.models.get(ModelRole.GRANT_JUDGE), AnalysisContinuity, [
-            SystemMessage(prompt("grant_judge")),
-            HumanMessage(json.dumps({
-                "confirmed_analysis_request": (context.impact_state.get("request") or "")[:3000],
-                "confirmed_sources": context.impact_state.get("sources", []),
-                "pending_question": pending["question"][:2000] if pending else None,
-                "new_message": context.workspace.message,
-                "recent_conversation": history_excerpt(context.workspace.history, turns=4),
-            }, ensure_ascii=False)),
-        ])
-        route = {**state["route"], "new_analysis": not verdict.continues_confirmed_analysis}
+        try:
+            verdict = await invoke_structured(context.models.get(ModelRole.GRANT_JUDGE), AnalysisContinuity, [
+                SystemMessage(prompt("grant_judge")),
+                HumanMessage(json.dumps({
+                    "confirmed_analysis_request": (context.impact_state.get("request") or "")[:3000],
+                    "confirmed_sources": sources,
+                    "pending_question": (pending.get("question") or "")[:2000] if pending else None,
+                    "new_message": context.workspace.message,
+                    "recent_conversation": history_excerpt(context.workspace.history, turns=4),
+                }, ensure_ascii=False)),
+            ])
+            continues = verdict.continues_confirmed_analysis
+        except StructuredOutputError:
+            # Fail closed, as documented: no verdict means the grant is not
+            # reused, and the user is asked to confirm sources again.
+            continues = False
+        route = {**state["route"], "new_analysis": not continues}
         return Command(update={"route": route}, goto="dispatch")

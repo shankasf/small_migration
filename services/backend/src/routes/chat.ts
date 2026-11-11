@@ -11,6 +11,7 @@ import { beginTurn } from '../services/aiLog.js';
 import { attachLibraryRefs, referenceData, resolveFileRefs, snapshotFile } from '../services/fileLibrary.js';
 import { impactBrief, impactState, parseImpactSources, requestImpactSources } from '../services/impactState.js';
 import { ownFeedback } from '../services/feedback.js';
+import { buildContextFiles, carriedAssetIds, supersedeCarried } from '../services/fileContext.js';
 
 
 const router = Router();
@@ -68,17 +69,27 @@ router.post('/:sessionId/messages', requireWriteAccess, async (req: AuthedReques
 
     const selected = await resolveFileRefs(prisma, user.id, req.body.fileRefs || []);
     // Restore explicit references on later turns; recheck source ownership on every use.
+    // Refs live on the last assistant reply plus any later user message (a turn
+    // whose AI call failed saved the user's selection but no reply).
     const previousTurn = await prisma.message.findFirst({
       where: {sessionId, role: 'assistant'}, orderBy: {createdAt: 'desc'},
       include: {libraryRefs: {where: {assetId: {not: null}}, orderBy: {createdAt: 'asc'}}},
     });
-    const previousAssets = await prisma.fileAsset.findMany({where: {
-      id: {in: (previousTurn?.libraryRefs || []).map(r => r.assetId!)}, session: {ownerUserId: user.id},
+    const laterUserTurns = await prisma.message.findMany({
+      where: {sessionId, role: 'user', ...(previousTurn ? {createdAt: {gt: previousTurn.createdAt}} : {})},
+      orderBy: {createdAt: 'asc'},
+      include: {libraryRefs: {where: {assetId: {not: null}}, orderBy: {createdAt: 'asc'}}},
+    });
+    const carriedIds = carriedAssetIds([previousTurn?.libraryRefs || [], ...laterUserTurns.map(m => m.libraryRefs)]);
+    const carriedFound = await prisma.fileAsset.findMany({where: {
+      id: {in: carriedIds}, session: {ownerUserId: user.id},
     }});
-    const assets = [...previousAssets.filter(a => !selected.some(s => s.id === a.id ||
-      (s.sessionId === a.sessionId && s.kind === a.kind && s.filename === a.filename))), ...selected];
-    const contextFiles = Object.fromEntries(session.files.filter(f => !assets.some(a => a.filename === f.filename)).map(f => [f.filename, f.content]));
-    for (const asset of assets) contextFiles[`${asset.filename} [v${asset.version}; ${asset.id}]`] = asset.content;
+    const previousAssets = carriedIds.map(id => carriedFound.find(a => a.id === id)).filter((a): a is NonNullable<typeof a> => Boolean(a));
+    // A newer pick of the same file (this turn, or a later failed turn) replaces the older one.
+    const carried = supersedeCarried(selected, previousAssets);
+    const assets = [...selected, ...carried];
+    const sessionFiles = [...session.files].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    const contextFiles = buildContextFiles(sessionFiles, selected, carried);
     const screened = await screenPayload(message,
       contextFiles,
       await historyWithFileEvidence(prisma, user.id, session.messages));

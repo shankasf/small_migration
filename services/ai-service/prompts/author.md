@@ -18,3 +18,13 @@ You write ONE complete, Snowflake-compatible dbt model file from the analyst's s
   require dbt compile in the user's target project. No `{% %}` blocks, hooks, DDL or DML; no run_query,
   statement, adapter access or other executable Jinja. The surrounding SQL is one read-only SELECT.
 - Use standard Snowflake functions only; user-defined or unknown functions fail validation.
+- Nested JSON / JSONB / VARIANT payloads: build every mapped key path from its source with nested
+  `OBJECT_CONSTRUCT` (`OBJECT_CONSTRUCT_KEEP_NULL` when an approved TBD key must stay visible), and child
+  arrays with `ARRAY_AGG(OBJECT_CONSTRUCT(...))` in a CTE grouped by the join key and joined in. Never emit
+  `PARSE_JSON('{}')`, an empty `OBJECT_CONSTRUCT()`, `NULL` or `'TBD'` for a field or key whose mapping is
+  specified. A placeholder is allowed only for the fields listed under "Placeholders the user approved";
+  each user decision applies only to the fields it names. When the user approved placeholder ref names,
+  write them as `{{ ref('placeholder_<source_table>') }}` (lower-case identifier) so they stay visible.
+- Every CTE you define must be used by the final SELECT; never build a CTE and leave it unjoined.
+- Notes must be truthful: list every placeholder, NULL or TBD output by name, and never claim that all
+  fields are present, complete or mapped.

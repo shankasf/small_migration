@@ -26,6 +26,7 @@ from workflow.context import TurnContext
 from workflow.memory import subject_key, user_namespace
 from workflow.models import ModelRole
 from workflow.prompts import prompt
+from workflow.tools.memory import FORGOT
 from workflow.state import TurnState
 
 # "remember that…", "from now on…", "always prefix…", "for my future chats".
@@ -51,8 +52,11 @@ def parse_capture(reply: str) -> tuple[str, str]:
     found = CAPTURED.search(text)
     if not found:
         return "", ""
-    subject = found.group("subject").strip().strip('"')
-    instruction = " ".join(found.group("instruction").split()).strip().strip('"')
+    subject = found.group("subject").strip().strip('"`')
+    # The instruction is one line. Anything after it (a closing ``` fence, the
+    # model's own commentary) is not what the user said and must not be stored.
+    first_line = next((line for line in found.group("instruction").splitlines() if line.strip()), "")
+    instruction = " ".join(first_line.split()).strip().strip('"`').strip()
     if not subject or not instruction or subject.upper() == "NONE":
         return "", ""
     return subject[:120], instruction
@@ -63,7 +67,8 @@ async def capture_memory(state: TurnState, runtime: Runtime[TurnContext]) -> dic
     context = runtime.context
     store = runtime.store
     workspace = context.workspace
-    if store is None or not context.actor_id or workspace.memory_writes:
+    forgotten = {entry[len(FORGOT):] for entry in workspace.memory_writes if entry.startswith(FORGOT)}
+    if store is None or not context.actor_id or len(workspace.memory_writes) > len(forgotten):
         return {}
     if not REMEMBER_REQUEST.search(workspace.message):
         return {}
@@ -80,6 +85,10 @@ async def capture_memory(state: TurnState, runtime: Runtime[TurnContext]) -> dic
         if not subject:
             span.result = "Nothing durable to save."
             return {}
+        if subject_key(subject) in forgotten:
+            # The user just asked for this to be dropped; do not bring it back.
+            span.result = f"Not saved: '{subject}' was just forgotten."
+            return {}
         text = guardrails.check_outbound(instruction[:settings.MEMORY_FACT_MAX_CHARS]).text
         await store.aput(user_namespace(context.actor_id), subject_key(subject), {
             "text": text, "subject": subject,
@@ -87,7 +96,8 @@ async def capture_memory(state: TurnState, runtime: Runtime[TurnContext]) -> dic
         workspace.memory_writes.append(subject)
         span.result = f"Saved '{subject}' for this user's future chats."
     response = state.get("response", "")
-    if "remember" in response.lower() or "saved" in response.lower():
+    if text in response:
         return {}
-    # The reply was written before this ran, so say plainly that it was kept.
+    # The reply was written before this ran and may even say nothing could be
+    # saved ("I can't remember between chats"), so always say plainly what was kept.
     return {"response": f"{response}\n\nSaved for your future chats: {text}".strip()}

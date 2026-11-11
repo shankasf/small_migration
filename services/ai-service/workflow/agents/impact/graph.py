@@ -24,7 +24,7 @@ from langgraph.types import Command, interrupt
 from workflow.agents.base import ToolLoopAgent, ToolLoopSpec
 from workflow.agents.formatting import as_json
 from workflow.agents.impact.schemas import EvidenceDossier, ImpactReport
-from workflow.agents.impact.sources import ask_sources, plan_sources
+from workflow.agents.impact.sources import SOURCES, ask_sources, plan_sources
 from workflow.context import TurnContext
 from workflow.models import ModelRole
 from workflow.prompts import prompt
@@ -44,6 +44,23 @@ DEEPEN = ("Your dossier leaves this open:\n{open}\nIf a confirmed source holds w
           "file in the repository tree you listed, such as the seed CSVs for questions about which rows are "
           "affected — read it yourself and submit a complete dossier. Ask the user only for what no confirmed "
           "source contains.")
+UNOPENED = "\nConfirmed sources you have not opened at all yet: {sources}. Open them before saying anything is missing."
+NOT_OPENED = ("I have not read anything yet from {sources}, which you confirmed for this analysis, so I cannot say "
+              "that a file there is missing or inaccessible. Reply **continue** and I will read it now, or tell me "
+              "which file and change to analyse.")
+NOT_OPENED_NOTE = ("\n\n**Not opened:** {sources}. You confirmed it for this analysis, but I did not read from it, "
+                   "so nothing above comes from it.")
+# A request for a file, or a claim of no access: only honest once the confirmed source was opened.
+ACCESS_CLAIM = re.compile(r"\b(?:access|paste|upload|attach|share|send|provide)\w*\b[\s\S]*\b(?:files?|manifest|sql|ya?ml|"
+                          r"csv|artifacts?|contents?)\b|\b(?:files?|manifest|artifacts?)\b[\s\S]*\b(?:access|paste|upload|"
+                          r"attach)\w*", re.IGNORECASE)
+REPORT_NOT_READY = ("The investigator established the target and change from evidence it read. Answer every "
+                    "question from the dossier and the evidence; put what is unverified in `gaps`. Do not ask "
+                    "the user for files or claim you cannot access them: you have no tools, and the evidence "
+                    "above is what was read. Return the complete report with ready=true.")
+REPORT_FALLBACK = ("I read evidence from your confirmed sources but could not write a complete answer from it. "
+                   "What I established: {lineage}\n\n**Gaps:** {gaps}")
+EARLIER_MESSAGE_CHARS = 4000
 PASTED_REFERENCE = re.compile(r"```(?:sql|ya?ml|json)\s*\n[\s\S]+?```", re.IGNORECASE)
 
 
@@ -61,6 +78,7 @@ class ImpactState(TypedDict, total=False):
     started: float
     reread: bool          # the investigator was already sent back once to read evidence
     deepened: bool        # ... or once to cover questions its dossier left open
+    consulted: list[str]  # confirmed sources the investigator called the evidence tool on
 
 
 def count_substantive_reads(messages: list) -> int:
@@ -73,6 +91,30 @@ def count_substantive_reads(messages: list) -> int:
                and is_substantive_read(operations[message.tool_call_id], message.text))
 
 
+def consulted_sources(messages: list) -> list[str]:
+    """Sources the investigator actually called the evidence tool on (any operation)."""
+    return list(dict.fromkeys(call["args"].get("source", "") for message in messages
+                              if isinstance(message, AIMessage) for call in message.tool_calls
+                              if call["name"] == "read_impact_evidence" and call["args"].get("source")))
+
+
+def unopened(state: ImpactState, context: TurnContext) -> list[str]:
+    consulted = set(state.get("consulted") or [])
+    return [source for source in context.impact_state.get("sources", []) if source not in consulted]
+
+
+def source_labels(sources: list[str]) -> str:
+    return ", ".join(SOURCES.get(source, source) for source in sources)
+
+
+def clip(text: str) -> str:
+    """Bound an earlier message without passing a cut paste off as the whole message."""
+    if len(text) <= EARLIER_MESSAGE_CHARS:
+        return text
+    return (text[:EARLIER_MESSAGE_CHARS] + f"\n… [truncated: only the first {EARLIER_MESSAGE_CHARS:,} of "
+            f"{len(text):,} characters are shown here; this is not the full message]")
+
+
 def analysis_brief(context: TurnContext) -> dict[str, Any]:
     """Server-owned brief: the model cannot inject a confirmation or replace the request.
 
@@ -81,12 +123,14 @@ def analysis_brief(context: TurnContext) -> dict[str, Any]:
     GitHub repository" cannot hide the question the user actually asked.
     """
     grant = context.impact_state
-    earlier = [m["content"][:4000] for m in context.workspace.history if m.get("role") == "user"][-6:]
+    earlier = [clip(m["content"]) for m in context.workspace.history if m.get("role") == "user"][-6:]
     return {"request": grant.get("request", ""), "confirmed_sources": grant.get("sources", []),
             "conversation": context.workspace.impact_history, "earlier_user_messages": earlier,
             "latest_user_message": context.workspace.message,
             "standing_instructions": [f"{m['subject']}: {m['text']}" for m in context.workspace.memories],
-            "earlier_conversation_summary": context.workspace.summary}
+            "earlier_conversation_summary": context.workspace.summary,
+            # Names only: contents are read through the uploads source when it is confirmed.
+            "attached_files": sorted(context.workspace.files)}
 
 
 class EvidenceInvestigator(ToolLoopAgent):
@@ -104,14 +148,18 @@ class EvidenceInvestigator(ToolLoopAgent):
             await context.logger.thinking("Reading the evidence sources you confirmed...")
         messages = [SystemMessage(prompt("impact_analysis", "investigator")),
                     HumanMessage(json.dumps(analysis_brief(context), ensure_ascii=False))]
+        not_opened = unopened(state, context) if state.get("reread") or state.get("deepened") else []
+        note = UNOPENED.format(sources=", ".join(not_opened)) if not_opened else ""
         if state.get("reread") and not state.get("evidence_reads"):
-            messages.append(HumanMessage(REREAD))
+            messages.append(HumanMessage(REREAD + note))
         if state.get("deepened"):
             messages += [HumanMessage("Your previous dossier:\n" + as_json(state["dossier"])),
-                         HumanMessage(DEEPEN.format(open=unresolved(state["dossier"])))]
+                         HumanMessage(DEEPEN.format(open=unresolved(state["dossier"])) + note)]
         outcome = await self.run(messages, context)
         reads = count_substantive_reads(outcome.messages) + (state.get("evidence_reads") or 0)
+        consulted = list(dict.fromkeys([*(state.get("consulted") or []), *consulted_sources(outcome.messages)]))
         return Command(update={"dossier": outcome.result, "evidence_reads": reads, "started": started,
+                               "consulted": consulted,
                                "impact": {**(state.get("impact") or {}), "evidence_reads": reads}},
                        goto="evidence_gate")
 
@@ -124,7 +172,10 @@ async def evidence_gate(state: ImpactState, runtime: Runtime[TurnContext]) -> Co
     user: a paused user-input step whose answer resumes the analysis.
     """
     dossier = state["dossier"]
-    grounded = bool(state["evidence_reads"]) or pasted_reference(runtime.context)
+    # Evidence is recorded before the tool-result size guard clips the message, so a
+    # large read (a page of manifest nodes) still counts as read.
+    grounded = (bool(state["evidence_reads"]) or bool(runtime.context.workspace.evidence)
+                or pasted_reference(runtime.context))
     if not grounded and not state.get("reread"):
         return Command(update={"reread": True}, goto="investigate")
     if grounded and unresolved(dossier) and not state.get("deepened"):
@@ -134,6 +185,10 @@ async def evidence_gate(state: ImpactState, runtime: Runtime[TurnContext]) -> Co
     if dossier["ready"] and grounded:
         return Command(goto="report")
     question = dossier["missing_information"].strip() if not dossier["ready"] else ""
+    not_opened = unopened(state, runtime.context)
+    if not_opened and ACCESS_CLAIM.search(question):
+        # Never pass on "I can't access / please paste the file" while a confirmed source is unopened.
+        question = NOT_OPENED.format(sources=source_labels(not_opened))
     question = question or UNVERIFIED
     await close_span(state, runtime, question)
     return Command(update={"response": question, "impact_action": "continue",
@@ -221,6 +276,10 @@ def command_issues(report: ImpactReport, evidence: list[dict[str, str]]) -> list
     return list(dict.fromkeys(issues))
 
 
+def answered(report: ImpactReport) -> bool:
+    return report.ready and any(answer.answer.strip() for answer in report.answers)
+
+
 class ImpactReporter:
     name = "report"
 
@@ -240,6 +299,15 @@ class ImpactReporter:
         ]
         model = context.models.get(ModelRole.REPORTER)
         report = await invoke_structured(model, ImpactReport, messages)
+        if not answered(report):
+            # The dossier was ready and grounded: a tool-less reporter must not turn it into a
+            # request for files it was given, or into an empty reply. One bounded repair.
+            report = await invoke_structured(model, ImpactReport, [*messages, HumanMessage(REPORT_NOT_READY)])
+            if not answered(report):
+                dossier = state["dossier"]
+                text = REPORT_FALLBACK.format(lineage=dossier.get("lineage_notes") or "see the gaps below.",
+                                              gaps=dossier.get("unverified") or "the answer could not be written.")
+                return Command(update={"response": text}, goto="finish")
         issues = command_issues(report, context.workspace.evidence) if requirement else []
         if issues:
             # One bounded repair; a repeated omission must not escape as a recommendation.
@@ -255,7 +323,12 @@ class ImpactReporter:
                     report.critical_warnings = ""
                 report.gaps = withheld if DBT_COMMAND.search(report.gaps) else "\n".join(
                     part for part in (report.gaps, withheld) if part)
-        return Command(update={"response": report.markdown()}, goto="finish")
+        response = report.markdown()
+        not_opened = unopened(state, context)
+        if not_opened:
+            # Say plainly which confirmed sources this answer does not draw on.
+            response += NOT_OPENED_NOTE.format(sources=source_labels(not_opened))
+        return Command(update={"response": response}, goto="finish")
 
 
 async def close_span(state: ImpactState, runtime: Runtime[TurnContext], result: str) -> None:

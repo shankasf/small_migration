@@ -19,11 +19,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.runtime import Runtime
 
 from config import settings
-from workflow.agents.formatting import history_messages
 from workflow.context import TurnContext
 from workflow.models import ModelRole
 from workflow.prompts import prompt
@@ -42,6 +41,28 @@ def split_for_summary(pending: list[dict[str, str]], keep: int) -> tuple[list[di
         if kept > keep:
             return pending[:index + 1], pending[index + 1:]
     return [], pending
+
+
+def batches(older: list[dict[str, str]], budget: int) -> list[list[BaseMessage]]:
+    """Every older turn, oldest first, in batches that each fit ``budget``.
+
+    All of it is about to leave the prompt for good, so none may be skipped:
+    an over-long message is clipped with a visible note rather than dropped,
+    and nothing is cut from the oldest end.
+    """
+    out: list[list[BaseMessage]] = [[]]
+    used = 0
+    for item in older:
+        content = item.get("content", "")
+        if len(content) > budget:
+            content = (content[:budget] + f"\n… [message clipped for summarising: {len(content):,} characters "
+                       "in total; the rest was not read]")
+        if out[-1] and used + len(content) > budget:
+            out.append([])
+            used = 0
+        used += len(content)
+        out[-1].append(AIMessage(content) if item.get("role") == "assistant" else HumanMessage(content))
+    return [batch for batch in out if batch]
 
 
 class Summarizer:
@@ -75,15 +96,24 @@ class Summarizer:
             return reset
         if context.logger:
             await context.logger.thinking("Catching up on this conversation...")
-        instruction = ("Extend the summary below with the conversation that follows it."
-                       if summary else "Summarise the conversation below.")
-        messages = [SystemMessage(prompt("summarizer")),
-                    *history_messages(older, budget=settings.SUMMARY_TRIGGER_CHARS * 2),
-                    HumanMessage(f"{instruction}\n\n"
-                                 + (f"Summary so far:\n{summary}\n\n" if summary else "")
-                                 + "Write the updated summary only.")]
-        reply = await context.models.get(ModelRole.SUMMARIZER).ainvoke(messages)
-        updated = reply.text.strip() or summary
+        updated = summary
+        # Usually one batch. A rebuilt or very long chat is folded in oldest
+        # first, batch by batch, so its earliest decisions are not the part lost.
+        for batch in batches(older, settings.SUMMARY_TRIGGER_CHARS * 2):
+            instruction = ("Extend the summary below with the conversation that follows it."
+                           if updated else "Summarise the conversation below.")
+            reply = await context.models.get(ModelRole.SUMMARIZER).ainvoke([
+                SystemMessage(prompt("summarizer")), *batch,
+                HumanMessage(f"{instruction}\n\n" + (f"Summary so far:\n{updated}\n\n" if updated else "")
+                             + "Write the updated summary only.")])
+            text = reply.text.strip()
+            if not text:
+                # No summary came back: never advance past turns nobody
+                # summarised. Keep them in the prompt; the next turn retries.
+                workspace.summary = summary
+                workspace.history = pending
+                return reset
+            updated = text
         workspace.summary = updated
         workspace.history = recent
         return {"summary": updated, "summarized_upto": summarized_upto + len(older)}

@@ -24,7 +24,16 @@ class MigrationSpec(BaseModel):
     targets: list[ModelTarget] = Field(description="Model files to create or revise; empty when not ready")
     requirements: str = Field(description="Complete raw build facts for the authors: every field with source "
                                           "expression, datatype, nullability and default; base ref model; CTEs; "
-                                          "joins; filters and macros; CASE code lists; numeric precision/scale")
+                                          "joins; filters and macros; CASE code lists; numeric precision/scale; "
+                                          "every key of a nested JSON/VARIANT/OBJECT payload with its source")
+    decisions: list[str] = Field(default_factory=list,
+                                 description="Each answer the user gave, paired with the question it answers and "
+                                             "the exact fields or refs it applies to, e.g. 'Q4 TBD fields "
+                                             "(Entitlement Type, Practitioner ID): user said leave as TBD'")
+    placeholders: list[str] = Field(default_factory=list,
+                                    description="Target fields (or JSON key paths / ref names) the user EXPLICITLY "
+                                                "allowed to be a placeholder, NULL or 'TBD'. Every other mapped "
+                                                "field must be implemented from its source")
 
 
 class ModelDraft(BaseModel):

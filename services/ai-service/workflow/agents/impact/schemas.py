@@ -6,6 +6,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+UNANSWERED = "Not answered: the evidence read for this analysis does not settle this question."
+NO_ANSWER = "I could not produce an answer from the evidence read for this analysis."
+
+
 class EvidenceItem(BaseModel):
     source: str = Field(description="Confirmed source category the evidence came from")
     locator: str = Field(description="Exact locator: file path and line, dbt node ID, commit SHA, run ID or version")
@@ -58,9 +62,12 @@ class ImpactReport(BaseModel):
 
     def markdown(self) -> str:
         if not self.ready:
-            return self.missing_information.strip()
-        blocks = [f"### {n}. {answer.question.strip()}\n\n{answer.answer.strip()}"
-                  for n, answer in enumerate(self.answers, 1) if answer.answer.strip()]
+            return self.missing_information.strip() or NO_ANSWER
+        # A question left blank is said to be unanswered, never silently dropped.
+        blocks = [f"### {n}. {answer.question.strip()}\n\n{answer.answer.strip() or UNANSWERED}"
+                  for n, answer in enumerate(self.answers, 1) if answer.question.strip() or answer.answer.strip()]
+        if not blocks:
+            blocks.append(NO_ANSWER)
         if self.critical_warnings.strip():
             blocks.append("### Watch out\n\n" + self.critical_warnings.strip())
         if self.gaps.strip():

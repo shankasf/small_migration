@@ -11,6 +11,7 @@ any other message; the specification stays in state for the analyst.
 from __future__ import annotations
 
 import operator
+import re
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -49,7 +50,9 @@ def plan_builds(state: MigrationState) -> dict[str, Any]:
 def assign_builds(state: MigrationState) -> list[Send]:
     work = state["migration"]
     spec, drafts = work["spec"], work.get("drafts") or {}
-    brief = {"requirements": spec["requirements"], "findings": spec["findings"]}
+    brief = {"requirements": spec["requirements"], "findings": spec["findings"],
+             "decisions": spec.get("decisions") or [], "placeholders": spec.get("placeholders") or [],
+             "targets": [target["file_name"] for target in spec["targets"]]}
     return [Send("build_model", {"target": target, "spec": brief,
                                  "previous": drafts.get(target.get("revision_of") or target["file_name"], "")})
             for target in spec["targets"]]
@@ -79,16 +82,49 @@ async def publish(state: MigrationState, runtime: Runtime[TurnContext]) -> dict[
             outputs[name] = drafts[name] = content
             span.result = f"File '{name}' saved ({len(content)} characters)."
         sections.append(render_model(item, content))
+    if work.get("skipped_targets"):
+        sections.append(f"Not generated this turn (at most {len(work['spec']['targets'])} models per request): "
+                        + ", ".join(f"`{name}`" for name in work["skipped_targets"])
+                        + ". Ask for them in a follow-up message.")
     work["drafts"] = drafts
     return {"outputs": outputs, "migration": work, "pending": None, "response": "\n\n".join(sections)}
 
 
+# A claim, in the author's own notes, that the model is complete.
+COMPLETENESS_CLAIM = re.compile(
+    r"\b(all|every)\b[^.!?\n]{0,60}\b(fields?|columns?|mappings?|requirements?|keys?)\b[^.!?\n]{0,40}"
+    r"\b(present|included|mapped|implemented|covered|complete|populated)\b"
+    r"|\b(fully|completely)\s+(implemented|mapped|complete)\b|\bno\s+placeholders?\b"
+    r"|\bnothing\s+(is\s+)?missing\b", re.IGNORECASE)
+
+
+def honest_notes(item: dict[str, Any]) -> str:
+    """The author's notes, minus completeness claims the build results contradict.
+
+    Notes are written before review: with open issues they are dropped, and
+    with placeholders any sentence claiming every field is present is removed.
+    """
+    notes = (item.get("notes") or "").strip()
+    if not notes or item.get("open_issues"):
+        return ""
+    if item.get("placeholders"):
+        sentences = re.split(r"(?<=[.!?])\s+", notes)
+        notes = " ".join(s for s in sentences if not COMPLETENESS_CLAIM.search(s)).strip()
+    return notes
+
+
 def render_model(item: dict[str, Any], content: str) -> str:
     parts = [f"### `{item['file_name']}`", f"```sql\n{content.rstrip()}\n```"]
-    if item.get("notes"):
-        parts.append(item["notes"])
+    if notes := honest_notes(item):
+        parts.append(notes)
     for warning in item.get("validation", {}).get("warnings", []):
         parts.append(warning)
+    if item.get("placeholders"):
+        parts.append("**Placeholders in this model — not real mappings yet:**\n"
+                     + "\n".join(f"- {placeholder}" for placeholder in item["placeholders"]))
+    if item.get("nulls"):
+        parts.append("Output as NULL (check these are intended): "
+                     + ", ".join(f"`{name}`" for name in item["nulls"]) + ".")
     if item["approved"]:
         parts.append("Checked against the 12-point self-validation checklist.")
     elif item["open_issues"]:

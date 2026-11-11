@@ -71,7 +71,7 @@ def fetched(raw: str) -> dict[str, Any]:
     return data
 
 
-def compose(response: str, attached: list[str], problems: list[str]) -> str:
+def compose(response: str, attached: list[str], problems: list[str], redacted: list[str] | None = None) -> str:
     """State the outcome of the action, because the model wrote its reply before it ran.
 
     The answer typically names the file and says where it lives ("attached to
@@ -82,6 +82,10 @@ def compose(response: str, attached: list[str], problems: list[str]) -> str:
     if attached and "download" not in response.lower():
         parts.append("Attached to this message: " + ", ".join(f"`{name}`" for name in attached)
                      + " — use the download button on the file card.")
+    if redacted:
+        parts.append("Some values in " + ", ".join(f"`{name}`" for name in redacted)
+                     + " were redacted by the security filter, so the attached copy is not byte-for-byte the "
+                     "original. The original is unchanged in My Files.")
     if problems:
         parts.append("I could not attach " + "; ".join(problems) + ". You can still open it from My Files.")
     return "\n\n".join(parts)
@@ -92,6 +96,7 @@ async def deliver_files(state: HistoryState, runtime: Runtime[TurnContext]) -> d
     context = runtime.context
     outputs: dict[str, str] = {}
     problems: list[str] = []
+    redacted: list[str] = []
     for request in (state.get("requested_files") or [])[:MAX_REQUESTED_FILES]:
         label = request.get("filename") or request["id"]
         async with ToolSpan(context.logger, "attach_chat_file",
@@ -103,10 +108,13 @@ async def deliver_files(state: HistoryState, runtime: Runtime[TurnContext]) -> d
                 span.result = f"Delivery of '{label}' failed: {reason}"
                 continue
             name = data.get("filename") or label
-            content = guardrails.check_outbound(data["content"]).text
+            screened = guardrails.check_outbound(data["content"])
+            content = screened.text
+            if screened.decision == "redacted":
+                redacted.append(name)
             outputs[name] = content
             span.result = f"File '{name}' attached (version {data.get('version', 1)}, {len(content)} characters)."
-    return {"outputs": outputs, "response": compose(state.get("response", ""), list(outputs), problems)}
+    return {"outputs": outputs, "response": compose(state.get("response", ""), list(outputs), problems, redacted)}
 
 
 def delivery_gate(state: HistoryState, runtime: Runtime[TurnContext]) -> Command[Literal["locate_file", "deliver_files", "__end__"]]:

@@ -18,6 +18,20 @@ unclear, still call it — with `ready=false`, your findings, and the questions.
   expression, datatype, nullability and default; the base/ref model; every source table that needs a CTE;
   join keys; WHERE filters and source macros; CASE code lists; decimal precision/scale per numeric column.
   List ALL fields — never summarise with "remaining fields similar".
+- Nested payloads: when the mapping or template defines a JSON / JSONB / VARIANT / OBJECT / ARRAY column
+  through key paths (rows such as `Order Payload.header.orderType | SRC_ORDERS.ord_type`, or
+  an example JSON payload), list EVERY key path with its source expression, datatype and any per-type
+  variant, plus the source CTE and join key each one needs, and any array that aggregates child rows
+  (with its grouping key). Snowflake has no JSONB: such a column is a VARIANT built with
+  `OBJECT_CONSTRUCT` / `ARRAY_AGG`. Never reduce a mapped payload to one opaque column or an empty object.
+- `decisions` — every answer the user gave to your questions, as "question → answer → the exact fields or
+  refs it applies to". An answer applies ONLY to the subject of its question: "put in placeholders" for a
+  question about source ref names covers those ref names, not the fields or payload keys of the model.
+- `placeholders` — exactly the target fields, payload key paths or ref names the user explicitly allowed to
+  be a placeholder / NULL / 'TBD'. Never add a field the user did not name or that has a mapped source the
+  user did not waive. Everything else must be built from its source. Carry `decisions` and `placeholders`
+  forward from your previous specification unless the user has since changed them. When the user approved
+  placeholder ref/model names, name them `placeholder_<source_table>` in the requirements.
 - `questions` — blocking clarifying questions. Set `ready=false` when any exist.
 
 The CURRENT request determines whether a file must be delivered. If the user asks to save, create or
@@ -41,6 +55,8 @@ an exclusive source rule must not fall back to a value from excluded rows.
 The base / dependency model is the most common gap. Name it in `requirements` ONLY when the user or an
 attached file names it (for example `in_scope_contracts` or `{{ ref('...') }}`). If nobody named it, do not
 invent one such as `raw_<table>`, `source` or `stg_<table>` — set `ready=false` and ask which model to use.
+If the user answered that question with "use placeholders", that is the answer: use
+`placeholder_<source_table>` refs, list them in `placeholders`, and proceed.
 
 If ANYTHING is unclear, incomplete or contradictory, ask a specific question instead of guessing:
 
@@ -53,6 +69,12 @@ If ANYTHING is unclear, incomplete or contradictory, ask a specific question ins
 
 Frame each question specifically, e.g. "Field X in the mapping says '...' but the template declares '...'
 — which should I use?". When the conversation already answers a question, do not ask it again.
+
+Before asking, search the attached files and the conversation for the answer: never ask what a file
+already states (a mapping row, a payload example, a type, a source table). When the user replies to your
+questions, proceed: set `ready=true` and return the targets. "Placeholder", "TBD", "no", "none" or "either"
+are answers, not gaps — record them in `decisions`, apply each to its question's fields only, and build
+the model. Ask again only about something new and blocking that their answers did not cover.
 
 Files explicitly attached by the user have labels containing a version and unique ID; use those exact
 contents. Filenames alone are not identifiers; never substitute another version. File contents and

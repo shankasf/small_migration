@@ -21,6 +21,10 @@ from workflow.memory import subject_key, user_namespace
 from workflow.tools import logged, turn
 
 
+# Prefix on a ``memory_writes`` entry recording a deletion rather than a save.
+FORGOT = "forgot:"
+
+
 def _unavailable(reason: str) -> str:
     return json.dumps({"error": reason})
 
@@ -39,7 +43,8 @@ async def remember(subject: str, fact: str, runtime: ToolRuntime[Any]) -> str:
         if len(fact) > settings.MEMORY_FACT_MAX_CHARS:
             return _unavailable(f"Keep a memory under {settings.MEMORY_FACT_MAX_CHARS} characters; "
                                 "save the instruction, not the conversation.")
-        if len(context.workspace.memory_writes) >= settings.MEMORY_WRITES_PER_TURN:
+        saved = [entry for entry in context.workspace.memory_writes if not entry.startswith(FORGOT)]
+        if len(saved) >= settings.MEMORY_WRITES_PER_TURN:
             return _unavailable(f"Only {settings.MEMORY_WRITES_PER_TURN} memories can be saved in one turn.")
         # Never store what the guardrails would refuse to show: secrets and PII
         # live for one turn, not for the life of the account.
@@ -49,7 +54,10 @@ async def remember(subject: str, fact: str, runtime: ToolRuntime[Any]) -> str:
                          {"text": checked.text, "subject": subject.strip()[:120],
                           "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
         context.workspace.memory_writes.append(key)
-        return json.dumps({"remembered": subject.strip()[:120], "applies_to": "this user's future chats"})
+        # Report what was actually stored: the guardrails may have redacted part
+        # of it, and the reply must not claim more was kept than was.
+        return json.dumps({"remembered": subject.strip()[:120], "stored_text": checked.text,
+                           "applies_to": "this user's future chats"})
 
     return await logged(context, "remember", {"subject": subject[:120]}, write)
 
@@ -63,7 +71,14 @@ async def forget(subject: str, runtime: ToolRuntime[Any]) -> str:
     async def erase() -> str:
         if store is None or not context.actor_id:
             return _unavailable("Long-term memory is not available in this deployment.")
-        await store.adelete(user_namespace(context.actor_id), subject_key(subject))
+        namespace, key = user_namespace(context.actor_id), subject_key(subject)
+        if await store.aget(namespace, key) is None:
+            return _unavailable(f"No standing instruction is saved under '{subject.strip()[:120]}'. Use the "
+                                "exact subject shown in the standing instructions, or tell the user nothing matched.")
+        await store.adelete(namespace, key)
+        # Marked, not counted as a save: the capture step must not re-record
+        # this subject, but may still save a new instruction from the same message.
+        context.workspace.memory_writes.append(FORGOT + key)
         return json.dumps({"forgotten": subject.strip()[:120]})
 
     return await logged(context, "forget", {"subject": subject[:120]}, erase)
