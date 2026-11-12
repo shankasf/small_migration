@@ -15,8 +15,9 @@ unclear, still call it — with `ready=false`, your findings, and the questions.
 - `targets` — one entry per model file to create or revise. Use the user's file name when given; a
   revision keeps the exact existing file name and sets `revision_of`.
 - `requirements` — everything the authors need, as raw facts: every mapped target field with its source
-  expression, datatype, nullability and default; the base/ref model; every source table that needs a CTE;
-  join keys; WHERE filters and source macros; CASE code lists; decimal precision/scale per numeric column.
+  expression, datatype, nullability and default; the base/ref model; the grain / primary key column(s) of
+  each target model; every source table, and whether it is joined directly or needs a filtering,
+  de-duplicating or aggregating CTE; join keys; WHERE filters and source macros; CASE code lists; decimal precision/scale per numeric column.
   List ALL fields — never summarise with "remaining fields similar".
 - Nested payloads: when the mapping or template defines a JSON / JSONB / VARIANT / OBJECT / ARRAY column
   through key paths (rows such as `Order Payload.header.orderType | SRC_ORDERS.ord_type`, or
@@ -47,7 +48,7 @@ configuration into the requirements; change only the requested rule. Do not inve
 different template or repeat questions the user already answered. Read the actual ref expression;
 comments mentioning an older model name do not override it. Existing scalar macro/env_var calls may
 be preserved verbatim without executing them; their expansion requires target-project dbt compile.
-Make the requirements internally consistent: every join key must be selected by its source CTE, and
+Make the requirements internally consistent: every join key must be selected by its source relation or CTE, and
 an exclusive source rule must not fall back to a value from excluded rows.
 
 ## Ask before you assume
@@ -66,6 +67,9 @@ If ANYTHING is unclear, incomplete or contradictory, ask a specific question ins
 - The base / dependency model (ref) is not specified or is ambiguous in the mapping.
 - A transformation rule, join condition or filter could be interpreted more than one way.
 - You are unsure what a column refers to or which source table it comes from.
+
+The grain / primary key is not a blocking question on its own: when the mapping, template or baseline SQL
+states it, put it in `requirements`; otherwise write "grain unspecified" there and proceed.
 
 Frame each question specifically, e.g. "Field X in the mapping says '...' but the template declares '...'
 — which should I use?". When the conversation already answers a question, do not ask it again.

@@ -98,19 +98,32 @@ COMPLETENESS_CLAIM = re.compile(
     r"|\bnothing\s+(is\s+)?missing\b", re.IGNORECASE)
 
 
+# A complete fenced code block in the notes, captured whole.
+NOTES_FENCE = re.compile(r"(^```[^\n]*\n.*?^```[ \t]*$)", re.MULTILINE | re.DOTALL)
+
+
 def honest_notes(item: dict[str, Any]) -> str:
     """The author's notes, minus completeness claims the build results contradict.
 
-    Notes are written before review: with open issues they are dropped, and
-    with placeholders any sentence claiming every field is present is removed.
+    Notes are written before review: with open issues their prose is dropped,
+    and with placeholders any sentence claiming every field is present is
+    removed. Fenced code blocks (the dbt tests) are always kept verbatim.
     """
     notes = (item.get("notes") or "").strip()
-    if not notes or item.get("open_issues"):
+    if not notes:
         return ""
-    if item.get("placeholders"):
-        sentences = re.split(r"(?<=[.!?])\s+", notes)
-        notes = " ".join(s for s in sentences if not COMPLETENESS_CLAIM.search(s)).strip()
-    return notes
+    # Fenced blocks (the dbt test definitions) are code, not claims: they are
+    # kept verbatim and only the prose around them is filtered.
+    parts = []
+    for index, chunk in enumerate(NOTES_FENCE.split(notes)):
+        if index % 2:
+            parts.append(chunk.strip())
+        elif not item.get("open_issues"):
+            if item.get("placeholders"):
+                sentences = re.split(r"(?<=[.!?])\s+", chunk.strip())
+                chunk = " ".join(s for s in sentences if not COMPLETENESS_CLAIM.search(s))
+            parts.append(chunk.strip())
+    return "\n\n".join(part for part in parts if part)
 
 
 def render_model(item: dict[str, Any], content: str) -> str:

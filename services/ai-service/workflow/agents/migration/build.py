@@ -37,7 +37,7 @@ from config import settings
 from validation import audit_draft, rejection_reason, supplied_macros, validate_output
 from workflow.agents.base import clean_tool_name
 from workflow.agents.formatting import files_block, history_messages, memory_notes
-from workflow.agents.migration.schemas import ModelDraft, ModelReview
+from workflow.agents.migration.schemas import NOTES_MAX_CHARS, ModelDraft, ModelReview
 from workflow.context import TurnContext
 from workflow.models import PROFILES, ModelRole
 from workflow.prompts import prompt
@@ -64,7 +64,7 @@ TRUNCATED_AGAIN_ERROR = ("The model reached its output limit before it finished 
                          "shorter retry with less reasoning.")
 NO_SQL_ERROR = "The model replied without any SQL for this model."
 INVALID_DRAFT_ERROR = ("The model returned an invalid structured draft. Expected non-empty raw SQL "
-                       "in sql and optional short text in notes, with no extra fields.")
+                       "in sql and the dbt tests and short notes in notes, with no extra fields.")
 RETRY_ADVICE = ("Please ask again; if it keeps failing, ask for fewer checks per model (for example, split "
                 "them across two models) or attach only the files this model needs.")
 
@@ -75,8 +75,8 @@ TRUNCATED_FEEDBACK = ("Your previous reply was cut off at the output limit befor
                       "nothing was saved. Reason briefly and return the complete model at once: keep every "
                       "required field and CTE, keep SQL comments to a minimum and notes to one short sentence.")
 CAPTURE_INSTRUCTIONS = {
-    "tool": ("Call ModelDraft exactly once with the complete raw SQL in sql and optional short text in notes. "
-             "No Markdown fences or extra fields."),
+    "tool": ("Call ModelDraft exactly once with the complete raw SQL in sql and the dbt tests and short notes "
+             "in notes. No Markdown fences in sql and no extra fields."),
     "text": ("Do not call any function this time: reply with the complete model in exactly one ```sql code "
              "block, then at most one short sentence of notes."),
 }
@@ -202,7 +202,7 @@ def text_draft(sql: str, notes: str) -> ModelDraft:
     notes = notes.strip()
     try:
         # Notes beyond the schema limit are dropped rather than failing the SQL.
-        return ModelDraft(sql=sql.strip(), notes=notes if len(notes) <= 4000 else "")
+        return ModelDraft(sql=sql.strip(), notes=notes if len(notes) <= NOTES_MAX_CHARS else "")
     except ValidationError as exc:
         raise ModelReplyError(NO_SQL_ERROR) from exc
 
@@ -287,7 +287,7 @@ class ModelAuthor:
             *memory_notes(context),
         ]
         if state.get("previous"):
-            sections.append(f"## Previous version of this file — keep every CTE\n```sql\n{state['previous']}```")
+            sections.append(f"## Previous version of this file — keep every transformation CTE\n```sql\n{state['previous']}```")
         if state.get("feedback"):
             last = state.get("sql") or (state.get("best") or {}).get("sql")
             if last:
@@ -361,7 +361,7 @@ def validate(state: BuildState, runtime: Runtime[TurnContext]) -> Command[Litera
     else:
         feedback = (f"Your previous reply could not be used: {reason} "
                     f"{CAPTURE_INSTRUCTIONS[state.get('capture_mode') or 'tool']} "
-                    "Include every required field and CTE; keep comments brief.")
+                    "Include every required field and transformation CTE; keep comments brief.")
     # Review defects that are still unresolved must not be forgotten because
     # the revision meant to fix them failed for another reason.
     outstanding = [issue for issue in (best.get("review") or {}).get("issues", []) if issue != UNSPECIFIED_REVIEW]

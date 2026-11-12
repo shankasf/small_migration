@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from fakes import FakeGateway, FakeRegistry, RecordingLogger, call, calls
+from workflow.agents.migration.schemas import NOTES_MAX_CHARS
 from workflow.context import TurnRequest
 from workflow.models import ModelRole
 from workflow.orchestrator import SpecialistRegistry, build_turn_graph, default_specialists
@@ -420,7 +421,7 @@ def truncated(reply=None):
     (call("ModelDraft", sql=123), "invalid structured draft"),
     (call("ModelDraft", sql=[SQL]), "invalid structured draft"),
     (call("ModelDraft", sql=SQL, notes=["a note"]), "invalid structured draft"),
-    (call("ModelDraft", sql=SQL, notes="x" * 4001), "invalid structured draft"),
+    (call("ModelDraft", sql=SQL, notes="x" * (NOTES_MAX_CHARS + 1)), "invalid structured draft"),
     (call("ModelDraft", sql=SQL, filename="unexpected.sql"), "invalid structured draft"),
     (calls(("ModelDraft", {"sql": SQL}), ("ModelDraft", {"sql": SQL})), "exactly one SQL draft"),
     (call("generate_output", sql=SQL), "exactly one SQL draft"),
@@ -772,3 +773,21 @@ def test_failed_generation_does_not_reuse_an_unverified_specification(harness):
     second = harness.models.requests('analyst')[1]['messages'][-1].content
     assert 'STALE_PLAN_ADDS_AN_UNREQUESTED_COLUMN' not in second
     assert 'Rebuild the specification' in second
+
+
+DBT_TESTS = ("```yaml\nversion: 2\nmodels:\n  - name: stg_contracts\n    columns:\n      - name: contract_id\n"
+             "        tests: [not_null, unique]\n```\n\n```sql\nSELECT contract_id, COUNT(*) AS row_cnt\n"
+             "FROM {{ ref('stg_contracts') }}\nGROUP BY contract_id\nHAVING COUNT(*) > 1\n```")
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_author_dbt_tests_reach_the_user_outside_the_model_file(harness, approved):
+    harness.models.script("router", route("generate"))
+    harness.models.script("analyst", spec())
+    harness.models.script("author", *[draft(notes=DBT_TESTS + "\n\nAmount keeps its 2-decimal scale.")] * 3)
+    issues = [] if approved else ["amount must default to 0.00"]
+    harness.models.script("reviewer", *[call("ModelReview", approved=approved, issues=issues)] * 3)
+    result = harness.turn("Generate stg_contracts from in_scope_contracts")
+    assert DBT_TESTS in result.response
+    assert "HAVING COUNT(*) > 1" not in result.files["stg_contracts.sql"]
+    assert ("Amount keeps its 2-decimal scale." in result.response) is approved

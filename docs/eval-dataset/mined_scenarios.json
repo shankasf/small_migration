@@ -3255,7 +3255,7 @@
     "topic": "LangGraph rewrite; tester impact feedback replay; file hand-over; memory",
     "commit": "e59585d"
    },
-   "expected_behaviour": "With the base model named, the accounts mapping is unambiguous: deliver stg_accounts.sql using IFNULL(TRIM(...), 'NA') for the defaulted string.",
+   "expected_behaviour": "With the base model named, the accounts mapping is unambiguous: deliver stg_accounts.sql using IFNULL(NULLIF(TRIM(...), ''), 'NA') for the defaulted string.",
    "inputs": {
     "turns": [
      {

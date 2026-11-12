@@ -36,14 +36,18 @@ class MigrationSpec(BaseModel):
                                                 "field must be implemented from its source")
 
 
+NOTES_MAX_CHARS = 12000
+
+
 class ModelDraft(BaseModel):
     """One complete SQL file from the author, separate from its explanation."""
 
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 
     sql: str = Field(min_length=1, description="The complete raw dbt SQL model. No Markdown fences or explanation.")
-    notes: str = Field(default="", max_length=4000,
-                       description="Optional short notes about the model; never include SQL here.")
+    notes: str = Field(default="", max_length=NOTES_MAX_CHARS,
+                       description="dbt tests for the final model (YAML schema tests and duplicate-row test SQL) "
+                                   "plus short notes; never the model SQL itself.")
 
     @field_validator("sql")
     @classmethod

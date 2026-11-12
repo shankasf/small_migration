@@ -22,3 +22,10 @@ previous version, using the SELF-VALIDATION CHECKLIST below. You do not rewrite 
   object, `NULL` or `'TBD'` is a defect, unless it is listed under "Placeholders the user approved".
   For a nested payload, check every mapped key path, not just the column.
 - A CTE that is defined but not used by the final SELECT is a defect.
+- A pass-through CTE (only `SELECT *` or plain columns from one ref, with no filter, aggregation or
+  calculation) is a defect in new SQL; removing one from a previous version is not. On a narrow "don't
+  change anything else" revision, legacy baseline CTEs kept as supplied are not defects.
+- The author's dbt tests are returned separately and are not shown to you. Check checklist item 12 on
+  the SQL (grain and fan-out); missing tests are never a defect you report.
+- A supplied macro call kept verbatim whose alias argument no longer matches the queried relation is a
+  note for the user, not a defect: the author may not change macro arguments.

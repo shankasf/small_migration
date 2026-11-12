@@ -292,7 +292,8 @@ def audit_draft(content: str, *, allowed_macros: set[str] | None = None, previou
             used_before = []
         after = set(_cte_names(tree))
         notices += [f"CTE {name}, used by the previous version, is missing from this draft. It is a defect "
-                    "unless the user asked for its removal." for name in used_before if name not in after]
+                    "unless the user asked for its removal or it was a pass-through (SELECT *) wrapper whose ref is "
+                    "now joined directly." for name in used_before if name not in after]
     return {"defects": list(dict.fromkeys(defects)), "placeholders": list(dict.fromkeys(placeholders)),
             "nulls": nulls, "notices": notices}
 
